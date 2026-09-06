@@ -27,7 +27,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http://localhost:* https://*; font-src 'self' data:; object-src 'none'"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http://localhost:* http://127.0.0.1:* https://*; font-src 'self' data:; object-src 'none'"
     }
   },
   "bundle": {
@@ -54,6 +54,9 @@
         "headerImage": "icons/icon.ico",
         "sidebarImage": "icons/icon.ico"
       }
+    },
+    "macOS": {
+      "minimumSystemVersion": "13.0"
     }
   },
   "plugins": {
