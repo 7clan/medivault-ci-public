@@ -2712,7 +2712,14 @@ jobs:
           }
           echo "[gate 2] nodejs.org SHASUMS256.txt entry"
           curl -fsSL --retry 3 -o /tmp/SHASUMS256.txt "$NODE_DIST_URL/v$NODE_VERSION/SHASUMS256.txt"
-          grep -F " $TARBALL" /tmp/SHASUMS256.txt | shasum -a 256 --check --strict - || {
+          # Rewrite the matched line to the ABSOLUTE tarball path (shasum
+          # resolves the filename relative to CWD, not to the list file).
+          LINE="$(grep -F " $TARBALL" /tmp/SHASUMS256.txt || true)"
+          [ -n "$LINE" ] || {
+            echo "::error::$TARBALL is not listed in the official SHASUMS256.txt"
+            exit 1
+          }
+          echo "$LINE" | sed "s| $TARBALL\$| /tmp/$TARBALL|" | shasum -a 256 --check --strict - || {
             echo "::error::Node tarball does not match nodejs.org SHASUMS256.txt"
             exit 1
           }
