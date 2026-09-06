@@ -2278,7 +2278,7 @@ jobs:
           set -euo pipefail
           . /tmp/config-a.env
           . /tmp/bundle.env
-          export PATH="$BUNDLE/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          export PATH="$BUNDLE/bin:$PATH"
           STATUS="$MV_A_APP_SUPPORT/runtime-state/supervisor-status.json"
           SUP_PID=$(jq -r .pid "$STATUS")
           kill -TERM "$SUP_PID"
@@ -2295,7 +2295,7 @@ jobs:
       # ------------------------------------------------------------------
       # Cluster B: the 4-state matrix with a data-preservation sentinel.
       # ------------------------------------------------------------------
-      - name: Matrix B1 — CLEAN bootstrap + sentinel + VALID_EXISTING (sentinel survives)
+      - name: "Matrix B1 — CLEAN bootstrap + sentinel + VALID_EXISTING (sentinel survives)"
         shell: bash
         env:
           PGPASSWORD: ${{ env.MV_PG_SUPER_PASSWORD }}
@@ -2303,7 +2303,10 @@ jobs:
           set -euo pipefail
           . /tmp/bundle.env
           . /tmp/config-b.env
-          export PATH="$BUNDLE/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          # Prepend the bundle's bin (PG binaries take precedence) while
+          # KEEPING the toolchain PATH (node must stay resolvable — the
+          # provisioner and prisma CLI run through it).
+          export PATH="$BUNDLE/bin:$PATH"
           PROV="node $PWD/macos/provision/dist/index.js"
           PGDATA_B="$MV_B_APP_SUPPORT/PostgreSQL/17/data"
 
@@ -2353,7 +2356,7 @@ jobs:
           set -euo pipefail
           . /tmp/bundle.env
           . /tmp/config-b.env
-          export PATH="$BUNDLE/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          export PATH="$BUNDLE/bin:$PATH"
           PROV="node $PWD/macos/provision/dist/index.js"
           PGDATA_B="$MV_B_APP_SUPPORT/PostgreSQL/17/data"
 
