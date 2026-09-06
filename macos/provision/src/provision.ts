@@ -431,8 +431,19 @@ function resolvePending(
       needRole = true;
     } else {
       const roleRow = roleProbe.stdout;
+      // Boolean text-cast renders 'true'/'false' (SQL `||` casts booleans
+      // to text); psql's bare display form is 't'/'f'. Accept both.
+      const norm = (tok: string | undefined): boolean | null => {
+        if (tok === 't' || tok === 'true') return true;
+        if (tok === 'f' || tok === 'false') return false;
+        return null;
+      };
       const [canlogin, rolsuper, rolcreatedb, rolcreaterole] = roleRow.split(',');
-      if (canlogin !== 't' || rolsuper !== 'f' || rolcreatedb !== 'f' || rolcreaterole !== 'f') {
+      const c = norm(canlogin);
+      const s = norm(rolsuper);
+      const cd = norm(rolcreatedb);
+      const cr = norm(rolcreaterole);
+      if (c !== true || s !== false || cd !== false || cr !== false) {
         logger.error(
           `role ${resolved.appUser} exists with unexpected attributes (${roleRow}) — fail closed`,
         );

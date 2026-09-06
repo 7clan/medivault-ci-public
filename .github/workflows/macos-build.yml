@@ -2378,8 +2378,8 @@ jobs:
           echo "[B3.3] role + db exist again with exact identity"
           pg_ctl -D "$PGDATA_B" -w -t 120 -l "$PGDATA_B/pg-b.log" start
           ROLE=$(psql -h 127.0.0.1 -p "$MV_B_PGPORT" -U postgres -d postgres -t -A -c "SELECT rolcanlogin||','||rolsuper FROM pg_roles WHERE rolname='medivault';")
-          echo "role identity: $ROLE (expect t,f)"
-          test "$ROLE" = "t,f"
+          echo "role identity: $ROLE (expect true,false — SQL text-cast booleans)"
+          test "$ROLE" = "true,false"
           OWNER=$(psql -h 127.0.0.1 -p "$MV_B_PGPORT" -U postgres -d postgres -t -A -c "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='medivault';")
           echo "db owner: $OWNER (expect medivault)"
           test "$OWNER" = "medivault"
