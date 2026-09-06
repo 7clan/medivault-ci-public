@@ -1,13 +1,26 @@
 # MediVault — macOS Supervisor Contract (stage: supervisor-lifecycle)
 
-Status: **IN PROGRESS — first-red discipline active** (this document
-formalizes the contract; it is marked FROZEN GREEN only when the
-`supervisor-lifecycle` CI mode is green on both architectures)
-Lane: `platform/macos`
-Predecessor stages (FROZEN GREEN, not reopened): `integration` @ `a282f45`
-(run `34031521912`), `pg-bundle-verify` @ `795df26` (run `34051758040`)
-CI job: `.github/workflows/macos-build.yml` → `supervisor-lifecycle`
-(dispatch-only, matrix: arm64 `macos-15` + x64 `macos-15-intel`)
+Status: **FROZEN GREEN** (stage: supervisor-lifecycle — do not reopen unless
+a later first-red directly proves this contract wrong)
+Lane: `platform/macos` · Verified GREEN @ `c71ac4c`, run `34063917607`
+(both arches, 2026-09-06) · Predecessor stages (FROZEN GREEN, not
+reopened): `integration` @ `a282f45` (run `34031521912`),
+`pg-bundle-verify` @ `795df26` (run `34051758040`)
+First-red ledger for this stage (all fixed in the private lane, mirrored
+after each fix): (1) run `34062829878` — stage-pg-bundle app-root path
+math (2 levels up → Contents/Resources); (2) run `34063304408` —
+executable dir omitted the Contents/ component (`.app/MacOS` vs
+`.app/Contents/MacOS`); (3) run `34063575936` — harness provisioned the
+cluster at a _temp path while the supervisor resolves the production
+layout `<app_support>/PostgreSQL/17/data` (supervisor fail-closed
+correctly; harness moved to the production layout, proving the real
+contract). GREEN run 34063917607: Mach-O gates GREEN (supervisor binary
++ PG bundle re-proof, both arches), startup → healthy, independent
+pg_isready/SCRAM SELECT 1//health//ready proofs, single-instance lock
+exit 3, SIGKILL crash-resilience (restart 1/5, ~1 s, healthy again,
+/health 200), graceful SIGTERM ladder (API signal 15 exit 0 → PG signal
+2 exit 0 → supervisor exit 0, state stopped, zero orphans, postmaster.pid
+gone), log redaction GREEN.
 
 ---
 
