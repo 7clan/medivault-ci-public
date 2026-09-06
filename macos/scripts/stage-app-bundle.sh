@@ -97,6 +97,7 @@ mkdir -p "$APP_ROOT/Contents/Library/LaunchAgents"
 cp "$LAUNCHAGENT_SRC" "$APP_ROOT/Contents/Library/LaunchAgents/dev.medivault.supervisor.plist"
 
 echo "[done] full bundle layout:"
-find "$APP_ROOT" -not -path "*/runtime/postgresql/17/share/*" -not -path "*/runtime/postgresql/17/lib/*" | sed "s|$APP_ROOT|<APP>|" | sort | head -60
+# sed reads to EOF (no SIGPIPE under set -o pipefail, unlike `head`).
+find "$APP_ROOT" -not -path "*/runtime/postgresql/17/share/*" -not -path "*/runtime/postgresql/17/lib/*" | sed "s|$APP_ROOT|<APP>|" | sort | sed -n '1,60p'
 echo "bundle size: $(du -sh "$APP_ROOT" | cut -f1)"
 echo "STAGE-APP-BUNDLE-GREEN"
