@@ -2695,10 +2695,33 @@ jobs:
           echo "STAGE=$STAGE" | tee /tmp/api-stage.env
 
       # ------------------------------------------------------------------
-      # The pinned nodejs.org runtime: exact version + double hash gate
-      # (the workflow-pinned SHA AND the dist SHASUMS256.txt entry must
-      # BOTH match).
+      # The packaged prisma CLI needs its FULL runtime dependency closure
+      # (@prisma/config requires 'effect' etc. — not bundled into
+      # build/index.js). Stage it with npm from the EXACT version the repo
+      # lockfile installed (same discipline as the API runtime staging).
       # ------------------------------------------------------------------
+      - name: Stage the packaged prisma CLI (npm dependency closure)
+        shell: bash
+        run: |
+          set -euo pipefail
+          PRISMA_STAGE="$RUNNER_TEMP/prisma-cli-stage"
+          rm -rf "$PRISMA_STAGE"
+          mkdir -p "$PRISMA_STAGE"
+          PRISMA_VERSION="$(node -p "require('$PWD/node_modules/prisma/package.json').version")"
+          echo "staging prisma CLI $PRISMA_VERSION (exact, from the installed lockfile tree)"
+          cat > "$PRISMA_STAGE/package.json" <<EOF
+          {"name":"mv-prisma-cli","private":true,"dependencies":{"prisma":"$PRISMA_VERSION"}}
+          EOF
+          ( cd "$PRISMA_STAGE" && npm install --omit=dev --no-audit --no-fund --loglevel=error )
+          test -f "$PRISMA_STAGE/node_modules/prisma/build/index.js"
+          test -d "$PRISMA_STAGE/node_modules/@prisma/engines" || {
+            echo "::error::@prisma/engines missing from the staged closure (migrate deploy needs the schema engine)"
+            exit 1
+          }
+          echo "[closure] prisma runtime deps present:"
+          ls "$PRISMA_STAGE/node_modules" | tr '\n' ' '; echo
+          echo "PRISMA_STAGE=$PRISMA_STAGE" | tee /tmp/prisma-stage.env
+
       - name: Download + verify the pinned Node ${{ env.NODE_VERSION }} runtime
         shell: bash
         run: |
@@ -2741,12 +2764,13 @@ jobs:
           set -euo pipefail
           . /tmp/node-tarball.env
           . /tmp/api-stage.env
+          . /tmp/prisma-stage.env
           APP_ROOT="$RUNNER_TEMP/MediVault.app"
           APP_ROOT="$APP_ROOT" \
             NODE_TARBALL="$NODE_TARBALL" \
             API_STAGE="$STAGE" \
             PROVISION_DIR="$PWD/macos/provision" \
-            PRISMA_MODULES="$PWD/node_modules" \
+            PRISMA_MODULES="$PRISMA_STAGE/node_modules" \
             PRISMA_SCHEMA_DIR="$PWD/packages/db/prisma" \
             LAUNCHAGENT_SRC="$PWD/macos/launchagent/dev.medivault.supervisor.plist" \
             bash macos/scripts/stage-app-bundle.sh
