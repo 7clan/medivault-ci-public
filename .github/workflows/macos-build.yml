@@ -71,6 +71,22 @@
 #                  nothing altered). Contract:
 #                  acceptance/macos-provision-contract.md.
 #
+#   bundle-verify : the Node/PG app-bundle staging stage — the complete
+#                  MediVault.app tree as it will ship: the PINNED
+#                  nodejs.org Node 22 LTS runtime (exact version +
+#                  SHASUMS256.txt fail-closed hash gate, both arches;
+#                  third-party prebuilt binary passes the same Mach-O gate
+#                  family: arch + minOS <= 13.0 recorded), the staged API
+#                  tree, the provisioner, the prisma CLI (self-contained
+#                  bundle + engines) + schema/migrations, the LaunchAgent
+#                  plist, and the supervisor binary — all under
+#                  Contents/{MacOS,Resources,Library}. Then the FULL
+#                  keychain + delegated-provisioning + lifecycle proof runs
+#                  FROM THE PACKAGED TREE (config points at the bundle's
+#                  own node/api/provision/prisma paths — the packaged
+#                  runtime, not the dev tree). Contract:
+#                  acceptance/macos-app-bundle-contract.md.
+#
 #   full / desktop-launch-regression / reinstall-regression / dmg-only :
 #                  reserved by the audit's CI matrix; not yet wired (the
 #                  guard job fails them explicitly instead of pretending).
@@ -86,7 +102,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'CI mode (wired: integration, pg-bundle-verify, supervisor-lifecycle, provision-lifecycle)'
+        description: 'CI mode (wired: integration, pg-bundle-verify, supervisor-lifecycle, provision-lifecycle, bundle-verify)'
         required: true
         default: 'integration'
         type: choice
@@ -95,6 +111,7 @@ on:
           - pg-bundle-verify
           - supervisor-lifecycle
           - provision-lifecycle
+          - bundle-verify
           - full
           - desktop-launch-regression
           - reinstall-regression
@@ -109,12 +126,12 @@ jobs:
   # ---------------------------------------------------------------------------
   not-yet-wired:
     name: "Mode guard"
-    if: github.event.inputs.mode != 'integration' && github.event.inputs.mode != 'pg-bundle-verify' && github.event.inputs.mode != 'supervisor-lifecycle' && github.event.inputs.mode != 'provision-lifecycle'
+    if: github.event.inputs.mode != 'integration' && github.event.inputs.mode != 'pg-bundle-verify' && github.event.inputs.mode != 'supervisor-lifecycle' && github.event.inputs.mode != 'provision-lifecycle' && github.event.inputs.mode != 'bundle-verify'
     runs-on: ubuntu-latest
     steps:
       - name: Mode not yet wired on this lane
         run: |
-          echo "::error::Mode '${{ github.event.inputs.mode }}' is reserved by the macOS CI matrix but not yet wired. The lane is built stage-by-stage (first-red discipline). Wired modes today: integration, pg-bundle-verify, supervisor-lifecycle, provision-lifecycle."
+          echo "::error::Mode '${{ github.event.inputs.mode }}' is reserved by the macOS CI matrix but not yet wired. The lane is built stage-by-stage (first-red discipline). Wired modes today: integration, pg-bundle-verify, supervisor-lifecycle, provision-lifecycle, bundle-verify."
 
   # ---------------------------------------------------------------------------
   # Integration mode — the shared app proof on real macOS runners, both archs.
@@ -2499,4 +2516,474 @@ jobs:
             /Users/runner/work/_temp/mv-a/PostgreSQL/17/data/pg-b.log
             /Users/runner/work/_temp/mv-b/PostgreSQL/17/data/pg-b.log
             /Users/runner/work/_temp/medivault-api/api.log
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # bundle-verify — the Node/PG app-bundle staging stage.
+  #
+  # Lane order: integration (FROZEN) -> pg-bundle-verify (FROZEN) ->
+  # supervisor-lifecycle (FROZEN) -> provision-lifecycle (FROZEN @ 1a0c48f,
+  # run 34065567722) -> Node/PG app-bundle staging (THIS JOB) -> Tauri ->
+  # DMG -> macOS 26 -> reinstall/uninstall.
+  # Contract: acceptance/macos-app-bundle-contract.md.
+  # ---------------------------------------------------------------------------
+  bundle-verify:
+    name: "bundle-verify (${{ matrix.label }})"
+    if: github.event.inputs.mode == 'bundle-verify'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: arm64
+            runner: macos-15
+            expected_uname: arm64
+            node_arch: arm64
+            node_sha256: '61130f394c1630d211dd50aecc4353d379480f36d3ac913cd85dbba1aed585c6'
+          - label: x64
+            runner: macos-15-intel
+            expected_uname: x86_64
+            node_arch: x64
+            node_sha256: '58e99022c2ff89395576cc7fd4d98cea24bb68081475d5f88b801ee8729fb026'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+
+    env:
+      PG_VERSION: '17.11'
+      PG_SHA256: '5367f6fb2ec97efe1eb2e0c7926bb33438e51b0bd3a9733b88498056a7dc9a7e'
+      PG_TARBALL_URL: 'https://ftp.postgresql.org/pub/source/v17.11/postgresql-17.11.tar.gz'
+      PG_INSTALL: '/Users/runner/pg17-install-dt13'
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+      NODE_VERSION: '22.23.2'
+      NODE_DIST_URL: 'https://nodejs.org/dist'
+      MV_APP_SUPPORT: '/Users/runner/work/_temp/mv-bundle'
+      MV_PGPORT: '55438'
+      MV_API_PORT: '4576'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Preflight — runner architecture proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "uname -m: $(uname -m) (expected ${{ matrix.expected_uname }})"
+          echo "macOS:    $(sw_vers -productVersion)"
+          test "$(uname -m)" = "${{ matrix.expected_uname }}"
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            mini-services/api-service/node_modules
+            packages/*/node_modules
+          key: macos-deps-${{ matrix.label }}-${{ hashFiles('bun.lock', 'package.json', 'packages/*/package.json', 'mini-services/api-service/package.json') }}
+          restore-keys: |
+            macos-deps-${{ matrix.label }}-
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+          cd macos/supervisor
+          rustup toolchain install --profile minimal "$(grep -oE 'channel = "[^"]+"' ../../rust-toolchain.toml | cut -d'"' -f2)"
+          cargo --version
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            macos/supervisor/target
+          key: macos-supervisor-${{ matrix.label }}-${{ hashFiles('macos/supervisor/Cargo.lock', 'macos/supervisor/Cargo.toml') }}
+
+      - name: Build supervisor + ad-hoc codesign
+        shell: bash
+        run: |
+          set -euo pipefail
+          export MACOSX_DEPLOYMENT_TARGET=13.0
+          cd macos/supervisor
+          cargo build --release --locked
+          codesign --force --sign - target/release/mediavault-supervisor
+          codesign --verify --strict target/release/mediavault-supervisor
+          target/release/mediavault-supervisor version
+
+      - name: Cache PostgreSQL ${{ env.PG_VERSION }} build (MACOSX_DEPLOYMENT_TARGET=13.0)
+        id: pg-cache
+        uses: actions/cache@v4
+        with:
+          path: '/Users/runner/pg17-install-dt13'
+          key: macos-pg17-dt13-${{ matrix.label }}-${{ env.PG_VERSION }}-${{ env.PG_SHA256 }}
+
+      - name: Build PostgreSQL ${{ env.PG_VERSION }} from source (MACOSX_DEPLOYMENT_TARGET=13.0)
+        if: steps.pg-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export MACOSX_DEPLOYMENT_TARGET=13.0
+          curl -fsSL --retry 3 -o /tmp/postgresql-$PG_VERSION.tar.gz "$PG_TARBALL_URL"
+          echo "$PG_SHA256  /tmp/postgresql-$PG_VERSION.tar.gz" | shasum -a 256 --check --strict || {
+            echo "::error::PostgreSQL tarball SHA-256 mismatch"
+            exit 1
+          }
+          rm -rf "/tmp/postgresql-$PG_VERSION"
+          tar -xzf "/tmp/postgresql-$PG_VERSION.tar.gz" -C /tmp
+          cd "/tmp/postgresql-$PG_VERSION"
+          ./configure --prefix="$PG_INSTALL" --without-icu --without-readline
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+
+      - name: Build the provisioner (macos/provision)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd macos/provision
+          bun install
+          bun run build
+          test -f dist/index.js
+
+      - name: Prisma generate (native engine for this arch)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./node_modules/.bin/prisma generate --schema packages/db/prisma/schema.prisma 2>&1 | tee /tmp/prisma-generate.log
+          test -f node_modules/prisma/build/index.js
+
+      - name: Build Fastify API (tsc)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./node_modules/.bin/tsc --project mini-services/api-service/tsconfig.json
+          test -f mini-services/api-service/dist/mini-services/api-service/src/index.js
+
+      - name: Stage the API runtime tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="$RUNNER_TEMP/medivault-api"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE/api/dist" "$STAGE/api/node_modules/@medivault"/{auth,crypto,db}
+          cp -R mini-services/api-service/dist/mini-services/api-service/src/. "$STAGE/api/dist/"
+          cp mini-services/api-service/package.json "$STAGE/api/package.json"
+          ( cd "$STAGE/api" && npm install --omit=dev --no-audit --no-fund --loglevel=error )
+          cp -R mini-services/api-service/dist/packages/auth/src/.    "$STAGE/api/node_modules/@medivault/auth/"
+          cp -R mini-services/api-service/dist/packages/crypto/src/. "$STAGE/api/node_modules/@medivault/crypto/"
+          cp -R mini-services/api-service/dist/packages/db/src/.     "$STAGE/api/node_modules/@medivault/db/"
+          printf '{"name":"@medivault/auth","version":"1.0.0","type":"module","main":"./index.js"}\n'   > "$STAGE/api/node_modules/@medivault/auth/package.json"
+          printf '{"name":"@medivault/crypto","version":"1.0.0","type":"module","main":"./index.js"}\n' > "$STAGE/api/node_modules/@medivault/crypto/package.json"
+          printf '{"name":"@medivault/db","version":"1.0.0","type":"module","main":"./client.js"}\n'    > "$STAGE/api/node_modules/@medivault/db/package.json"
+          rm -rf "$STAGE/api/node_modules/.prisma"
+          cp -R node_modules/.prisma "$STAGE/api/node_modules/.prisma"
+          echo "STAGE=$STAGE" | tee /tmp/api-stage.env
+
+      # ------------------------------------------------------------------
+      # The pinned nodejs.org runtime: exact version + double hash gate
+      # (the workflow-pinned SHA AND the dist SHASUMS256.txt entry must
+      # BOTH match).
+      # ------------------------------------------------------------------
+      - name: Download + verify the pinned Node ${{ env.NODE_VERSION }} runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARBALL="node-v$NODE_VERSION-darwin-${{ matrix.node_arch }}.tar.gz"
+          curl -fsSL --retry 3 -o "/tmp/$TARBALL" "$NODE_DIST_URL/v$NODE_VERSION/$TARBALL"
+          echo "[gate 1] workflow-pinned SHA-256"
+          echo "${{ matrix.node_sha256 }}  /tmp/$TARBALL" | shasum -a 256 --check --strict || {
+            echo "::error::Node tarball does not match the workflow-pinned SHA-256 — refusing to bundle"
+            exit 1
+          }
+          echo "[gate 2] nodejs.org SHASUMS256.txt entry"
+          curl -fsSL --retry 3 -o /tmp/SHASUMS256.txt "$NODE_DIST_URL/v$NODE_VERSION/SHASUMS256.txt"
+          grep -F " $TARBALL" /tmp/SHASUMS256.txt | shasum -a 256 --check --strict - || {
+            echo "::error::Node tarball does not match nodejs.org SHASUMS256.txt"
+            exit 1
+          }
+          echo "NODE_TARBALL=/tmp/$TARBALL" | tee /tmp/node-tarball.env
+
+      - name: Stage the PG bundle + supervisor (frozen contract)
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUNDLE="$RUNNER_TEMP/MediVault.app/Contents/Resources/runtime/postgresql/17"
+          PG_INSTALL="$PG_INSTALL" BUNDLE="$BUNDLE" PG_VERSION="$PG_VERSION" \
+            SUPERVISOR_BIN="$PWD/macos/supervisor/target/release/mediavault-supervisor" \
+            bash macos/scripts/stage-pg-bundle.sh
+          echo "BUNDLE=$BUNDLE" | tee /tmp/bundle.env
+
+      - name: Assemble the complete MediVault.app tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/node-tarball.env
+          . /tmp/api-stage.env
+          APP_ROOT="$RUNNER_TEMP/MediVault.app"
+          APP_ROOT="$APP_ROOT" \
+            NODE_TARBALL="$NODE_TARBALL" \
+            API_STAGE="$STAGE" \
+            PROVISION_DIR="$PWD/macos/provision" \
+            PRISMA_MODULES="$PWD/node_modules" \
+            PRISMA_SCHEMA_DIR="$PWD/packages/db/prisma" \
+            LAUNCHAGENT_SRC="$PWD/macos/launchagent/dev.medivault.supervisor.plist" \
+            bash macos/scripts/stage-app-bundle.sh
+          echo "APP_ROOT=$APP_ROOT" | tee /tmp/app-root.env
+
+      - name: Mach-O gate — node binary + full-tree re-proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/app-root.env
+          bash macos/scripts/macho-gate.sh "$APP_ROOT/Contents/Resources/runtime/nodejs/bin/node" "${{ matrix.expected_uname }}" 13.0
+          bash macos/scripts/macho-gate.sh "$APP_ROOT/Contents/MacOS/mediavault-supervisor" "${{ matrix.expected_uname }}" 13.0
+          bash macos/scripts/macho-gate.sh "$APP_ROOT/Contents/Resources/runtime/postgresql/17" "${{ matrix.expected_uname }}" 13.0
+
+      - name: Bundle layout verification (the exact tree that would ship)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/app-root.env
+          test -x "$APP_ROOT/Contents/MacOS/mediavault-supervisor"
+          test -x "$APP_ROOT/Contents/Resources/runtime/nodejs/bin/node"
+          test -f "$APP_ROOT/Contents/Resources/api/dist/index.js"
+          test -f "$APP_ROOT/Contents/Resources/api/node_modules/.prisma/client/index.js"
+          test -f "$APP_ROOT/Contents/Resources/provision/dist/index.js"
+          test -f "$APP_ROOT/Contents/Resources/prisma-cli/node_modules/prisma/build/index.js"
+          test -d "$APP_ROOT/Contents/Resources/prisma-cli/node_modules/@prisma/engines"
+          test -f "$APP_ROOT/Contents/Resources/prisma/schema.prisma"
+          test -d "$APP_ROOT/Contents/Resources/prisma/migrations"
+          test -f "$APP_ROOT/Contents/Library/LaunchAgents/dev.medivault.supervisor.plist"
+          test -f "$APP_ROOT/Contents/Resources/runtime/postgresql/17/bin/postgres"
+          echo "bundle layout: GREEN"
+          echo "--- sizes:"
+          du -sh "$APP_ROOT/Contents/MacOS" "$APP_ROOT/Contents/Resources/runtime/nodejs" \
+                 "$APP_ROOT/Contents/Resources/runtime/postgresql" "$APP_ROOT/Contents/Resources/api" \
+                 "$APP_ROOT/Contents/Resources/prisma-cli" "$APP_ROOT/Contents/Resources/prisma" 2>/dev/null
+
+      # ------------------------------------------------------------------
+      # The lifecycle proof FROM THE PACKAGED TREE: keychain secrets,
+      # delegated provisioning with the PACKAGED provisioner + prisma,
+      # the API on the PACKAGED node runtime, the packaged supervisor.
+      # ------------------------------------------------------------------
+      - name: Write the bundle supervisor config (packaged paths)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/app-root.env
+          cat > "$APP_ROOT/Contents/Resources/supervisor-config.json" <<EOF
+          {
+            "version": 1,
+            "paths": {
+              "pg_bundle": "$APP_ROOT/Contents/Resources/runtime/postgresql/17",
+              "node_binary": "$APP_ROOT/Contents/Resources/runtime/nodejs/bin/node",
+              "api_entry": "$APP_ROOT/Contents/Resources/api/dist/index.js",
+              "api_working_dir": "$APP_ROOT/Contents/Resources/api",
+              "app_support_dir": "$MV_APP_SUPPORT",
+              "log_dir": "$MV_APP_SUPPORT/logs"
+            },
+            "postgres": {
+              "host": "127.0.0.1",
+              "port": $MV_PGPORT,
+              "superuser": "postgres",
+              "app_user": "medivault",
+              "app_database": "medivault",
+              "pgdata_rel": "PostgreSQL/17/data"
+            },
+            "api": { "host": "127.0.0.1", "port": $MV_API_PORT, "allowed_origins": "http://localhost:3000" },
+            "secrets": { "source": "keychain" },
+            "provisioner": {
+              "entry": "$APP_ROOT/Contents/Resources/provision/dist/index.js",
+              "prisma_cli": "$APP_ROOT/Contents/Resources/prisma-cli/node_modules/prisma/build/index.js",
+              "prisma_schema": "$APP_ROOT/Contents/Resources/prisma/schema.prisma",
+              "timeout_sec": 600
+            },
+            "limits": { "pg_start_timeout_sec": 120, "api_start_timeout_sec": 90, "health_interval_sec": 5 }
+          }
+          EOF
+          cat "$APP_ROOT/Contents/Resources/supervisor-config.json"
+          echo "CONFIG=$APP_ROOT/Contents/Resources/supervisor-config.json" | tee /tmp/config-bundle.env
+
+      - name: Keychain bootstrap (REAL login keychain)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/config-bundle.env
+          . /tmp/app-root.env
+          "$APP_ROOT/Contents/MacOS/mediavault-supervisor" bootstrap-secrets --config "$CONFIG"
+          for account in pg-app-password pg-bootstrap master-key jwt-secret csrf-secret; do
+            security find-generic-password -s dev.medivault -a "$account" >/dev/null 2>&1 || {
+              echo "::error::keychain item missing: $account"
+              exit 1
+            }
+          done
+          echo "keychain items: 5/5 present"
+
+      - name: Run the packaged bundle — delegated provisioning to healthy
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/config-bundle.env
+          . /tmp/app-root.env
+          STATUS="$MV_APP_SUPPORT/runtime-state/supervisor-status.json"
+          rm -f /tmp/supervisor.exit
+          ( "$APP_ROOT/Contents/MacOS/mediavault-supervisor" run --config "$CONFIG" \
+              > "$RUNNER_TEMP/supervisor-stdout.log" 2>&1; echo $? > /tmp/supervisor.exit ) &
+
+          echo "[poll] bounded wait (300s) for healthy — full packaged bootstrap"
+          HEALTHY=0
+          for i in $(seq 1 600); do
+            S=$(jq -r '.state // "none"' "$STATUS" 2>/dev/null || echo none)
+            if [ "$S" = "healthy" ]; then HEALTHY=1; break; fi
+            if [ "$S" = "failed" ]; then break; fi
+            if [ -f /tmp/supervisor.exit ]; then break; fi
+            sleep 0.5
+          done
+          echo "final state: $(jq -r '.state // "none"' "$STATUS" 2>/dev/null || echo none)"
+          if [ "$HEALTHY" != "1" ]; then
+            echo "::error::packaged bundle did not reach healthy"
+            echo "--- supervisor.log:"; tail -30 "$MV_APP_SUPPORT/logs/supervisor.log" 2>/dev/null || true
+            echo "--- provision.log:"; tail -30 "$MV_APP_SUPPORT/logs/provision.log" 2>/dev/null || true
+            echo "--- supervisor-stdout.log:"; tail -40 "$RUNNER_TEMP/supervisor-stdout.log" 2>/dev/null || true
+            exit 1
+          fi
+          echo "[proof] the RUNNING node is the PACKAGED runtime:"
+          ps -axo pid,command | grep '[n]ode.*Resources/api/dist/index.js' | head -2
+          pgrep -f "$APP_ROOT/Contents/Resources/runtime/nodejs/bin/node" >/dev/null || {
+            echo "::error::the API is not running on the packaged node binary"
+            exit 1
+          }
+          echo "[api] /health + /ready through the packaged bundle"
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$MV_API_PORT/health" || echo 000)
+          echo "/health -> $CODE"; test "$CODE" = "200"
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$MV_API_PORT/ready" || echo 000)
+          echo "/ready -> $CODE"; test "$CODE" = "200"
+          echo "[markers]"
+          test -f "$MV_APP_SUPPORT/config/provisioned.json"
+          cat "$MV_APP_SUPPORT/config/provisioned.json"
+          echo "[migrations] count through the packaged prisma path"
+          MIGRATIONS=$(jq -r '.pgMajor' "$MV_APP_SUPPORT/config/provisioned.json" 2>/dev/null || echo "?")
+          echo "provisioned marker pgMajor: $MIGRATIONS"
+
+      - name: Graceful shutdown + zero orphans + relocation proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/config-bundle.env
+          . /tmp/app-root.env
+          . /tmp/bundle.env
+          export PATH="$BUNDLE/bin:$PATH"
+          STATUS="$MV_APP_SUPPORT/runtime-state/supervisor-status.json"
+          kill -TERM "$(jq -r .pid "$STATUS")"
+          for i in $(seq 1 180); do [ -f /tmp/supervisor.exit ] && break; sleep 0.5; done
+          EXIT_CODE=$(cat /tmp/supervisor.exit 2>/dev/null || echo MISSING)
+          echo "supervisor exit code: $EXIT_CODE"
+          test "$EXIT_CODE" = "0"
+          test "$(jq -r .state "$STATUS")" = "stopped"
+          LEFT=$(pgrep -fl "postgres -D" | grep -v pgrep || true)
+          [ -z "$LEFT" ] || { echo "::error::orphans: $LEFT"; exit 1; }
+          test ! -e "$MV_APP_SUPPORT/PostgreSQL/17/data/postmaster.pid"
+
+          echo "[relocation] move the WHOLE .app to a new path and re-run the lifecycle"
+          MOVED="$RUNNER_TEMP/MediVault-relocated.app"
+          rm -rf "$MOVED"
+          mv "$APP_ROOT" "$MOVED"
+          NEW_CONFIG="$MOVED/Contents/Resources/supervisor-config.json"
+          # Re-point only the path fields that name the .app location; the
+          # app-support dir (user data) deliberately stays put.
+          python3 - "$NEW_CONFIG" "$MOVED" <<'PYEOF'
+          import json, sys
+          path, new_root = sys.argv[1], sys.argv[2]
+          cfg = json.load(open(path))
+          cfg["paths"]["pg_bundle"] = f"{new_root}/Contents/Resources/runtime/postgresql/17"
+          cfg["paths"]["node_binary"] = f"{new_root}/Contents/Resources/runtime/nodejs/bin/node"
+          cfg["paths"]["api_entry"] = f"{new_root}/Contents/Resources/api/dist/index.js"
+          cfg["paths"]["api_working_dir"] = f"{new_root}/Contents/Resources/api"
+          cfg["provisioner"]["entry"] = f"{new_root}/Contents/Resources/provision/dist/index.js"
+          cfg["provisioner"]["prisma_cli"] = f"{new_root}/Contents/Resources/prisma-cli/node_modules/prisma/build/index.js"
+          cfg["provisioner"]["prisma_schema"] = f"{new_root}/Contents/Resources/prisma/schema.prisma"
+          json.dump(cfg, open(path, "w"), indent=2)
+          PYEOF
+          rm -f /tmp/supervisor.exit
+          ( "$MOVED/Contents/MacOS/mediavault-supervisor" run --config "$NEW_CONFIG" \
+              > "$RUNNER_TEMP/supervisor-relocated.log" 2>&1; echo $? > /tmp/supervisor.exit ) &
+          RELOCATED_HEALTHY=0
+          for i in $(seq 1 240); do
+            S=$(jq -r '.state // "none"' "$STATUS" 2>/dev/null || echo none)
+            if [ "$S" = "healthy" ]; then RELOCATED_HEALTHY=1; break; fi
+            sleep 0.5
+          done
+          echo "relocated state: $(jq -r '.state // none' "$STATUS" 2>/dev/null || echo none)"
+          if [ "$RELOCATED_HEALTHY" != "1" ]; then
+            echo "--- relocated run log:"; tail -30 "$RUNNER_TEMP/supervisor-relocated.log" 2>/dev/null || true
+            exit 1
+          fi
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$MV_API_PORT/health" || echo 000)
+          echo "/health after relocation -> $CODE"; test "$CODE" = "200"
+          kill -TERM "$(jq -r .pid "$STATUS")"
+          for i in $(seq 1 180); do [ -f /tmp/supervisor.exit ] && break; sleep 0.5; done
+          test "$(cat /tmp/supervisor.exit)" = "0"
+          echo "relocated bundle: healthy -> graceful exit 0 (VALID_EXISTING path — cluster preserved, no re-provisioning)"
+
+      - name: Teardown + orphan sweep (always)
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          . /tmp/bundle.env 2>/dev/null || true
+          BUNDLE="${BUNDLE:-/Users/runner/work/_temp/MediVault.app/Contents/Resources/runtime/postgresql/17}"
+          export PATH="$BUNDLE/bin:$PATH"
+          d="/Users/runner/work/_temp/mv-bundle/PostgreSQL/17/data"
+          if [ -d "$d" ] && [ -f "$d/PG_VERSION" ]; then
+            pg_ctl -D "$d" -m fast -w -t 60 stop || true
+          fi
+          sleep 2
+          LEFT=$(pgrep -fl "postgres -D" | grep -v pgrep || true)
+          if [ -n "$LEFT" ]; then
+            echo "::warning::postgres processes still alive:"
+            echo "$LEFT"
+            pkill -9 -f "postgres -D" 2>/dev/null || true
+          else
+            echo "clean — zero postgres processes"
+          fi
+
+      - name: Upload evidence (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-verify-${{ matrix.label }}-evidence
+          retention-days: 1
+          path: |
+            /tmp/macho-gate-records.txt
+            /Users/runner/work/_temp/mv-bundle/runtime-state/supervisor-status.json
+            /Users/runner/work/_temp/mv-bundle/config/
+            /Users/runner/work/_temp/mv-bundle/logs/
+            /Users/runner/work/_temp/supervisor-stdout.log
+            /Users/runner/work/_temp/supervisor-relocated.log
+          if-no-files-found: ignore
+
+      - name: Upload diagnostic logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-verify-${{ matrix.label }}-logs
+          retention-days: 1
+          path: |
+            /tmp/prisma-generate.log
+            /Users/runner/work/_temp/mv-bundle/PostgreSQL/17/data/pg.log
           if-no-files-found: ignore
