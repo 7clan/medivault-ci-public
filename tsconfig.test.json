@@ -1,0 +1,38 @@
+{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "noImplicitAny": false,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+    "types": ["vitest/globals"],
+    "paths": {
+      "@/*": ["./src/*"],
+      "@medivault/auth": ["./packages/auth/src/index.ts"],
+      "@medivault/crypto": ["./packages/crypto/src/index.ts"],
+      "@medivault/db": ["./packages/db/src/client.ts"],
+      "../../packages/crypto/src": ["./packages/crypto/src/index.ts"]
+    }
+  },
+  "include": [
+    "tests/**/*.ts",
+    "tests/**/*.tsx",
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "packages/crypto/src/**/*.ts",
+    "packages/db/src/**/*.ts",
+    "packages/auth/src/**/*.ts",
+    "mini-services/api-service/src/**/*.ts",
+    "windows/tests/**/*.ts",
+    "windows/service/**/*.js"
+  ],
+  "exclude": ["node_modules", "examples", "skills", ".next"]
+}

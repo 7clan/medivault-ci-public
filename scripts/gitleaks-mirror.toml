@@ -1,0 +1,43 @@
+# gitleaks configuration for the public CI mirror publication audit.
+# Policy: strict default rule set. Broad exceptions are FORBIDDEN. The ONLY
+# exceptions are (a) non-publication surfaces (node_modules, .git) and
+# (b) the private frozen Windows lane that never ships in any snapshot, and
+# (c) EXACT synthetic CI/test fixture values, each verified by hand against
+# the frozen GREEN stages that use them. Every exception below is anchored to
+# an exact value so that ANY other/new secret still fails closed.
+# Adding a new exception requires a justification comment + human verification.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "non-publication surfaces + verified synthetic CI/test fixture values (exact-match only)"
+
+paths = [
+  # non-publication surfaces
+  '''(^|/)node_modules/''',
+  '''(^|/)\.git/''',
+  # frozen Windows lane: excluded from EVERY public snapshot (sync P4 removes
+  # windows/ + windows-*.yml workflows); its own synthetic test fixtures are
+  # private-lane-only and are never published.
+  '''(^|/)windows/''',
+]
+
+# Exact synthetic values used by the frozen GREEN macOS CI and its test
+# fixtures. Verified 2026-09-06 against platform/macos @ 5393f76:
+#  - macos-build.yml: CI-harness env for loopback-only PG/API (the SCRAM
+#    password guards a CI-created 127.0.0.1 database; the JWT/CSRF/master-key
+#    values exist only in the CI environment). These values already appear in
+#    this repository's own Actions logs and protect nothing real.
+#  - tests/*.ts: fixed fixtures REQUIRED by the frozen GREEN test suites
+#    (deterministic crypto round-trips, auth hashing). No production system
+#    accepts these values.
+regexTarget = "match"
+regexes = [
+  '''0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef''',
+  '''macos-ci-jwt-secret-0+''',
+  '''macos-ci-csrf-secret-0+''',
+  '''MedivaultMacCI2026!''',
+  '''c282f12b700adbb6745aedb01641cdf35b80b90ad940e74f4781283b064118ac''',
+  '''1f933d032ec00d2cc3a79455a17ece8fb1b71382f3996d8dfb6a5215d855f8d7''',
+  '''abcd1234-efgh-5678-ijkl-9012mnop3456''',
+]

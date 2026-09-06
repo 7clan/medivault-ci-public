@@ -1,0 +1,89 @@
+# =============================================================================
+# Public CI Mirror Proof — runs ONLY in 7clan/medivault-ci-public (the mirror).
+# Never dispatched in the private canonical repo.
+#
+# Proves (per the public mirror contract, one run, standard runners only):
+#   1. macos-15        -> uname -m == arm64   (native, no Rosetta)
+#   2. macos-15-intel  -> uname -m == x86_64  (native)
+#   3. public CI can check out ITSELF with GITHUB_TOKEN (contents: read)
+#   4. the mirror is publicly readable (anonymous git)
+#   5. the one-way boundary holds: the private canonical repo 7clan/medivault
+#      is NOT reachable — anonymously AND via the job's GITHUB_TOKEN
+#   6. every snapshot carries .public-ci-source.json traceability
+#
+# No secrets are present or used beyond the job-scoped GITHUB_TOKEN (READ).
+# =============================================================================
+name: Public CI Mirror Proof
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  arm64-proof:
+    name: "arm64 proof (macos-15, standard GitHub-hosted)"
+    runs-on: macos-15
+    steps:
+      - name: Self-checkout via GITHUB_TOKEN
+        uses: actions/checkout@v4
+      - name: Prove arm64 + snapshot traceability
+        run: |
+          set -euo pipefail
+          echo "uname -m: $(uname -m)"
+          echo "ImageOS: ${ImageOS:-unknown}"
+          echo "RUNNER_NAME: ${RUNNER_NAME:-unknown}"
+          [ "$(uname -m)" = "arm64" ] || { echo "FAIL: expected arm64 on macos-15"; exit 1; }
+          test -f .public-ci-source.json
+          jq -e '.private_source_sha and (.purpose == "public-ci-mirror")' .public-ci-source.json >/dev/null
+          echo "arm64 proof GREEN (standard macos-15 runner, self-checkout OK)"
+
+  intel-proof:
+    name: "x86_64 proof (macos-15-intel, standard GitHub-hosted)"
+    runs-on: macos-15-intel
+    steps:
+      - name: Self-checkout via GITHUB_TOKEN
+        uses: actions/checkout@v4
+      - name: Prove x86_64 + snapshot traceability
+        run: |
+          set -euo pipefail
+          echo "uname -m: $(uname -m)"
+          echo "ImageOS: ${ImageOS:-unknown}"
+          echo "RUNNER_NAME: ${RUNNER_NAME:-unknown}"
+          [ "$(uname -m)" = "x86_64" ] || { echo "FAIL: expected native x86_64 on macos-15-intel (no Rosetta)"; exit 1; }
+          test -f .public-ci-source.json
+          jq -e '.private_source_sha and (.purpose == "public-ci-mirror")' .public-ci-source.json >/dev/null
+          echo "x86_64 proof GREEN (standard macos-15-intel runner, self-checkout OK)"
+
+  boundary-proof:
+    name: "one-way boundary + visibility proof (ubuntu-latest)"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Self-checkout (credentials NOT persisted)
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prove the mirror is publicly readable (anonymous git)
+        run: |
+          set -euo pipefail
+          git ls-remote https://github.com/7clan/medivault-ci-public.git HEAD \
+            || { echo "FAIL: mirror is not anonymously readable"; exit 1; }
+          echo "visibility proof GREEN: 7clan/medivault-ci-public is public"
+      - name: Prove the job GITHUB_TOKEN cannot read the private canonical repo
+        run: |
+          set -euo pipefail
+          code="$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            https://api.github.com/repos/7clan/medivault)"
+          echo "private repo via job GITHUB_TOKEN: HTTP $code (expect 404)"
+          [ "$code" = "404" ] || { echo "FAIL: public job token can see the private repo"; exit 1; }
+      - name: Prove anonymous access to the private canonical repo is impossible
+        run: |
+          set -euo pipefail
+          if env -u GITHUB_TOKEN -u GH_TOKEN \
+             git ls-remote https://github.com/7clan/medivault.git HEAD >/dev/null 2>&1; then
+            echo "FAIL: 7clan/medivault is anonymously cloneable"
+            exit 1
+          fi
+          echo "boundary proof GREEN: 7clan/medivault unreachable from public CI (anonymous AND job token)"

@@ -1,0 +1,1248 @@
+# ==============================================================================
+# MediVault macOS Build & Integration Workflow (platform/macos lane)
+# ==============================================================================
+# Dispatch-only (same discipline as the Windows lanes: nothing auto-triggers,
+# nothing scheduled). Modes are wired stage-by-stage under first-red
+# discipline — the currently wired mode is `integration`:
+#
+#   integration  : shared app runs on BOTH architectures with a real PG 17
+#                  built from the postgresql.org source tarball (pinned
+#                  version + SHA256, --without-icu, CI-cached per arch):
+#                  initdb (SCRAM) -> start (127.0.0.1) -> pg_isready ->
+#                  role/database -> prisma generate + migrate deploy ->
+#                  SELECT 1 -> shared vitest suites -> tsc API build ->
+#                  live API /health + /ready -> SIGTERM graceful shutdown ->
+#                  no-orphan check.
+#
+#   pg-bundle-verify : formalizes the PostgreSQL 17.11 runtime that will
+#                  SHIP inside MediVault.app. PG is rebuilt from the same
+#                  pinned source with MACOSX_DEPLOYMENT_TARGET=13.0 (we
+#                  claim macOS 13+; the integration build ran WITHOUT an
+#                  explicit target, so its binaries are macOS-15-min by
+#                  runner default — here every Mach-O we compile is
+#                  verified fail-closed to require minOS <= 13.0), staged
+#                  as the minimal runtime layout, install names repaired
+#                  to @executable_path/@loader_path (ad-hoc re-signed
+#                  after every Mach-O edit), then the RELOCATION test: the
+#                  bundle is staged into a fresh app-bundle-shaped
+#                  directory and initdb/pg_ctl/pg_isready/psql/SCRAM
+#                  SELECT 1/migrate deploy (8 migrations)/the frozen
+#                  DB-integration serial suites all run FROM THE RELOCATED
+#                  TREE, with a PATH containing no Homebrew and no system
+#                  PostgreSQL (the DB-free unit/crypto suites stay with the
+#                  frozen integration stage — no PG signal here).
+#                  Contract: acceptance/macos-pg-bundle-contract.md.
+#
+#   full / desktop-launch-regression / reinstall-regression / dmg-only :
+#                  reserved by the audit's CI matrix; not yet wired (the
+#                  guard job fails them explicitly instead of pretending).
+#
+# Runner labels (verified 2026-09-06 against actions/runner-images):
+#   macos-15 = arm64, macos-15-intel = x86_64, macos-26 / macos-26-intel =
+#   newest-OS smoke lanes (wired later per the audit).
+# ==============================================================================
+
+name: macOS Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'CI mode (wired: integration, pg-bundle-verify)'
+        required: true
+        default: 'integration'
+        type: choice
+        options:
+          - integration
+          - pg-bundle-verify
+          - full
+          - desktop-launch-regression
+          - reinstall-regression
+          - dmg-only
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Guard: modes reserved by the audit but not yet wired fail EXPLICITLY.
+  # ---------------------------------------------------------------------------
+  not-yet-wired:
+    name: "Mode guard"
+    if: github.event.inputs.mode != 'integration' && github.event.inputs.mode != 'pg-bundle-verify'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mode not yet wired on this lane
+        run: |
+          echo "::error::Mode '${{ github.event.inputs.mode }}' is reserved by the macOS CI matrix but not yet wired. The lane is built stage-by-stage (first-red discipline). Wired modes today: integration, pg-bundle-verify."
+
+  # ---------------------------------------------------------------------------
+  # Integration mode — the shared app proof on real macOS runners, both archs.
+  # ---------------------------------------------------------------------------
+  api-integration:
+    name: "Integration (${{ matrix.label }})"
+    if: github.event.inputs.mode == 'integration'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: arm64
+            runner: macos-15
+            expected_uname: arm64
+          - label: x64
+            runner: macos-15-intel
+            expected_uname: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+
+    env:
+      # --- PostgreSQL 17 source bundle (audit default: postgresql.org, pinned) ---
+      PG_VERSION: '17.11'
+      PG_SHA256: '5367f6fb2ec97efe1eb2e0c7926bb33438e51b0bd3a9733b88498056a7dc9a7e'
+      PG_TARBALL_URL: 'https://ftp.postgresql.org/pub/source/v17.11/postgresql-17.11.tar.gz'
+      PG_INSTALL: '/Users/runner/pg17-install'
+      PGDATA: '/Users/runner/work/_temp/medivault-pgdata'
+      PGPORT: '55432'
+      PG_SUPERUSER: 'postgres'
+      # CI-only superuser password — set at initdb time via --pwfile (never
+      # on the command line, never in logs; GitHub masks secret-pattern env).
+      PG_SUPER_PASSWORD: 'MedivaultMacCI2026!'
+      # --- App database contract (CI test credentials only) ---
+      APP_DB_USER: 'medivault'
+      APP_DB_PASSWORD: 'MedivaultMacCI2026!'
+      APP_DB_NAME: 'medivault'
+      DATABASE_URL: 'postgresql://medivault:MedivaultMacCI2026!@127.0.0.1:55432/medivault'
+      # Several shared test files read TEST_DATABASE_URL (not DATABASE_URL) —
+      # the Windows lane sets both; mirror that exactly.
+      TEST_DATABASE_URL: 'postgresql://medivault:MedivaultMacCI2026!@127.0.0.1:55432/medivault'
+      # --- API env contract (same seam Windows fills; values are CI-only) ---
+      API_PORT: '4571'
+      API_HOST: '127.0.0.1'   # macOS local-only contract (audit: never 0.0.0.0 default)
+      AUTH_JWT_SECRET: 'macos-ci-jwt-secret-0000000000000000000000000000000000000000000000000000000000000000'
+      MEDIVAULT_MASTER_KEY: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+      CSRF_SECRET: 'macos-ci-csrf-secret-000000000000000000000000000000'
+      MEDIVAULT_DATA_DIR: '/Users/runner/work/_temp/medivault-data'
+      NODE_ENV: 'test'
+
+    steps:
+      # ------------------------------------------------------------------
+      # Preflight: prove the runner architecture (no Rosetta-based proof)
+      # ------------------------------------------------------------------
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Preflight — runner architecture proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "uname -m:        $(uname -m)"
+          echo "expected:        ${{ matrix.expected_uname }}"
+          echo "macOS:           $(sw_vers -productVersion)"
+          echo "CPU:             $(sysctl -n machdep.cpu.brand_string)"
+          echo "cores:           $(sysctl -n hw.ncpu)"
+          echo "Xcode CLT:       $(xcodebuild -version 2>/dev/null | head -1)"
+          if [ "$(uname -m)" != "${{ matrix.expected_uname }}" ]; then
+            echo "::error::Runner architecture mismatch — expected ${{ matrix.expected_uname }}, got $(uname -m). Rosetta does not count as native support."
+            exit 1
+          fi
+
+      # ------------------------------------------------------------------
+      # Toolchain: Node 22 LTS (the macOS lane's pinned runtime) + Bun
+      # ------------------------------------------------------------------
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # ------------------------------------------------------------------
+      # Dependencies (same nested-install layout as the Windows lane)
+      # ------------------------------------------------------------------
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            mini-services/api-service/node_modules
+            packages/*/node_modules
+          key: macos-deps-${{ matrix.label }}-${{ hashFiles('bun.lock', 'package.json', 'packages/*/package.json', 'mini-services/api-service/package.json') }}
+          restore-keys: |
+            macos-deps-${{ matrix.label }}-
+
+      - name: Install dependencies
+        run: bun install
+
+      # ------------------------------------------------------------------
+      # PostgreSQL 17 from the postgresql.org source tarball:
+      # pinned version + SHA256 (fail closed), --without-icu per the audit,
+      # installed under $PG_INSTALL, cached per architecture.
+      # ------------------------------------------------------------------
+      - name: Cache PostgreSQL ${{ env.PG_VERSION }} build
+        id: pg-cache
+        uses: actions/cache@v4
+        with:
+          path: '/Users/runner/pg17-install'
+          key: macos-pg17-${{ matrix.label }}-${{ env.PG_VERSION }}-${{ env.PG_SHA256 }}
+
+      - name: Build PostgreSQL ${{ env.PG_VERSION }} from source (provenance-verified)
+        if: steps.pg-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Downloading $PG_TARBALL_URL"
+          curl -fsSL --retry 3 -o /tmp/postgresql-$PG_VERSION.tar.gz "$PG_TARBALL_URL"
+
+          echo "Verifying SHA-256 (fail closed)"
+          echo "$PG_SHA256  /tmp/postgresql-$PG_VERSION.tar.gz" | shasum -a 256 --check --strict || {
+            echo "::error::PostgreSQL tarball SHA-256 mismatch — refusing to build (provenance contract)"
+            exit 1
+          }
+
+          echo "Extracting"
+          rm -rf "/tmp/postgresql-$PG_VERSION"
+          tar -xzf "/tmp/postgresql-$PG_VERSION.tar.gz" -C /tmp
+
+          echo "Configuring (prefix=$PG_INSTALL, --without-icu --without-readline — audit flags)"
+          cd "/tmp/postgresql-$PG_VERSION"
+          ./configure --prefix="$PG_INSTALL" --without-icu --without-readline
+
+          echo "Building with $(sysctl -n hw.ncpu) cores"
+          make -j"$(sysctl -n hw.ncpu)"
+
+          echo "Installing"
+          make install
+
+          echo "Proving the toolchain binaries exist"
+          for bin in initdb postgres pg_ctl pg_isready psql; do
+            test -x "$PG_INSTALL/bin/$bin" || { echo "::error::$PG_INSTALL/bin/$bin missing after install"; exit 1; }
+            file "$PG_INSTALL/bin/$bin"
+          done
+          echo "PG17 source build complete"
+
+      - name: Verify bundled PostgreSQL toolchain architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          for bin in initdb postgres pg_ctl pg_isready psql; do
+            echo "--- $bin"
+            file "$PG_INSTALL/bin/$bin"
+            lipo -info "$PG_INSTALL/bin/$bin" || true
+          done
+          echo "otool spot-check (postgres):"
+          otool -L "$PG_INSTALL/bin/postgres" | head -20
+
+      # ------------------------------------------------------------------
+      # Provision: initdb with SCRAM (real auth — no trust/md5 shortcuts),
+      # 127.0.0.1-only listener, bounded start, pg_isready, app role + db.
+      # ------------------------------------------------------------------
+      - name: initdb (SCRAM) + start PostgreSQL (127.0.0.1 only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$PG_INSTALL/bin:$PATH"
+          rm -rf "$PGDATA"
+          mkdir -p "$(dirname "$PGDATA")"
+
+          echo "[initdb] SCRAM-SHA-256 for local AND host auth"
+          # First-red finding (run 34029025809, both arches): initdb REFUSES to
+          # initialize with password auth unless the superuser password is
+          # provided at initdb time (--pwfile) — a later ALTER ROLE is too
+          # late. Password goes through a temp file, never the command line.
+          PWFILE="$(mktemp)"
+          chmod 600 "$PWFILE"
+          printf '%s\n' "$PG_SUPER_PASSWORD" > "$PWFILE"
+          initdb -D "$PGDATA" \
+            --username="$PG_SUPERUSER" \
+            --pwfile="$PWFILE" \
+            --auth-local=scram-sha-256 \
+            --auth-host=scram-sha-256 \
+            --encoding=UTF8 \
+            --no-instructions
+          rm -f "$PWFILE"
+
+          echo "[conf] localhost-only bind + port (macOS local-only contract)"
+          cat >> "$PGDATA/postgresql.conf" <<EOF
+          port = $PGPORT
+          listen_addresses = '127.0.0.1'
+          EOF
+
+          echo "[start] bounded pg_ctl start (-t 120)"
+          pg_ctl -D "$PGDATA" -w -t 120 -l "$PGDATA/pg.log" start
+
+          echo "[ready] pg_isready proof"
+          pg_isready -h 127.0.0.1 -p "$PGPORT" -d postgres
+
+      - name: Create app role + database (SCRAM-authenticated superuser session)
+        shell: bash
+        env:
+          PGPASSWORD: ${{ env.PG_SUPER_PASSWORD }}
+        run: |
+          set -euo pipefail
+          export PATH="$PG_INSTALL/bin:$PATH"
+          # The superuser password was set at initdb time via --pwfile.
+          psql -h 127.0.0.1 -p "$PGPORT" -U "$PG_SUPERUSER" -d postgres <<SQL
+          CREATE ROLE "$APP_DB_USER" LOGIN PASSWORD '$APP_DB_PASSWORD';
+          CREATE DATABASE "$APP_DB_NAME" OWNER "$APP_DB_USER";
+          SQL
+
+      # ------------------------------------------------------------------
+      # Prisma: generate the client for THIS architecture, deploy all
+      # migrations against the real PG, then prove the app-role SELECT 1.
+      # ------------------------------------------------------------------
+      - name: Prisma generate (native engine for this arch)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./node_modules/.bin/prisma generate --schema packages/db/prisma/schema.prisma 2>&1 | tee /tmp/prisma-generate.log || {
+            echo "::error::prisma generate failed"
+            exit 1
+          }
+          echo "--- engine files present:"
+          find node_modules/.prisma packages -name "libquery_engine*" -o -name "*.node" 2>/dev/null | head -10 || true
+
+      - name: Prisma migrate deploy (all migrations, real PG)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd packages/db
+          ../../node_modules/.bin/prisma migrate deploy --schema prisma/schema.prisma
+
+      - name: Authenticated SELECT 1 as the app role
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$PG_INSTALL/bin:$PATH"
+          export PGPASSWORD="$APP_DB_PASSWORD"
+          psql -h 127.0.0.1 -p "$PGPORT" -U "$APP_DB_USER" -d "$APP_DB_NAME" -c "SELECT 1;"
+
+      # ------------------------------------------------------------------
+      # Shared test suites.
+      #
+      # Two-step split (first-red finding, run 34029399420): the DB-integration
+      # files assume they own the database — running them in PARALLEL with
+      # other files produced a genuine race (setupFirstAdmin counted 0 users,
+      # then a parallel file's inserts made its transaction throw
+      # SetupAlreadyCompletedError). The Windows lane always ran targeted
+      # file lists; the macOS lane runs the same 10 DB files SERIALLY
+      # (--no-file-parallelism, in the listed order) and the pure files in
+      # parallel. windows/tests stays on the frozen lane — not run here.
+      # (first-red finding, run 34031073341): m3-memory-streaming also runs
+      # serially — its RSS-growth budget (<5 MB) is measured while 22 parallel
+      # workers compete for 2 cores on the Intel runner, inflating GC lag and
+      # measured growth (6.03 MB). A quiet runner is the honest measurement
+      # context; the shared test itself is unchanged.
+      # ------------------------------------------------------------------
+      - name: Create CI .env file (AUTH_JWT_SECRET fallback for .env-reading tests)
+        shell: bash
+        run: printf 'AUTH_JWT_SECRET=%0128x\n' 0 > .env
+
+      - name: Run shared unit suites (parallel)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./node_modules/.bin/vitest run \
+            packages/crypto \
+            tests/m4-auth-unit.test.ts \
+            tests/m4-cors.test.ts \
+            tests/m4-https-enforcement.test.ts \
+            tests/m4-lastseen-throttle.test.ts \
+            tests/unit-helpers.test.ts \
+            --reporter=verbose 2>&1 | tee /tmp/vitest-unit.log
+
+      - name: Run shared DB integration suites (serial — each file owns the DB)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./node_modules/.bin/vitest run --no-file-parallelism \
+            tests/api-route-integration.test.ts \
+            tests/db-schema.test.ts \
+            tests/m2-schema.test.ts \
+            tests/m3-gc-integration.test.ts \
+            tests/m3-integration.test.ts \
+            tests/m3-memory-streaming.test.ts \
+            tests/m4-api-routes.test.ts \
+            tests/m4-auth-integration.test.ts \
+            tests/m4-correction.test.ts \
+            tests/m4-device-proof.test.ts \
+            tests/m4-final-security.test.ts \
+            --reporter=verbose 2>&1 | tee /tmp/vitest-db.log
+
+      # ------------------------------------------------------------------
+      # API: tsc build, then stage the runtime tree (the macOS analog of the
+      # Windows api/dist packaging: dist/mini-services/api-service/src →
+      # api/dist, compiled @medivault/* + generated .prisma client +
+      # production node_modules), then a LIVE /health + /ready proof
+      # against the real PG, then SIGTERM → graceful exit.
+      # ------------------------------------------------------------------
+      - name: Build Fastify API (tsc)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./node_modules/.bin/tsc --project mini-services/api-service/tsconfig.json
+          # The emitted layout is rootDir-relative (tsconfig paths span
+          # ../../packages): the real entry is NOT dist/index.js — it is
+          # dist/mini-services/api-service/src/index.js. The Windows installer
+          # copies exactly this tree to $INSTDIR/api/dist.
+          test -f mini-services/api-service/dist/mini-services/api-service/src/index.js || {
+            echo "::error::API entry point missing after tsc build"
+            exit 1
+          }
+
+      - name: Stage the API runtime tree (api/dist + node_modules, Windows-packaging analog)
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="$RUNNER_TEMP/medivault-api"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE/api/dist" "$STAGE/api/node_modules/@medivault"/{auth,crypto,db}
+
+          echo "[stage] api/dist ← compiled api-service sources"
+          cp -R mini-services/api-service/dist/mini-services/api-service/src/. "$STAGE/api/dist/"
+          test -f "$STAGE/api/dist/index.js"
+
+          echo "[stage] production node_modules ← npm install --omit=dev of the API package.json"
+          cp mini-services/api-service/package.json "$STAGE/api/package.json"
+          ( cd "$STAGE/api" && npm install --omit=dev --no-audit --no-fund --loglevel=error )
+
+          echo "[stage] @medivault/{auth,crypto,db} ← compiled package sources + runtime package.json"
+          cp -R mini-services/api-service/dist/packages/auth/src/.    "$STAGE/api/node_modules/@medivault/auth/"
+          cp -R mini-services/api-service/dist/packages/crypto/src/. "$STAGE/api/node_modules/@medivault/crypto/"
+          cp -R mini-services/api-service/dist/packages/db/src/.     "$STAGE/api/node_modules/@medivault/db/"
+          printf '{"name":"@medivault/auth","version":"1.0.0","type":"module","main":"./index.js"}\n'   > "$STAGE/api/node_modules/@medivault/auth/package.json"
+          printf '{"name":"@medivault/crypto","version":"1.0.0","type":"module","main":"./index.js"}\n' > "$STAGE/api/node_modules/@medivault/crypto/package.json"
+          printf '{"name":"@medivault/db","version":"1.0.0","type":"module","main":"./client.js"}\n'    > "$STAGE/api/node_modules/@medivault/db/package.json"
+
+          echo "[stage] .prisma/client ← generated client + native query engine for this arch"
+          # The npm prod install's @prisma/client postinstall leaves a STUB
+          # node_modules/.prisma/client (43-line default.js that throws
+          # 'did not initialize yet'). cp -R src dst with an EXISTING dst
+          # directory would nest the real client as .prisma/.prisma/… and keep
+          # the stub — remove the stub first, then copy the generated tree.
+          rm -rf "$STAGE/api/node_modules/.prisma"
+          cp -R node_modules/.prisma "$STAGE/api/node_modules/.prisma"
+          ls "$STAGE/api/node_modules/.prisma/client/" | grep engine
+
+          echo "[stage] layout:"
+          find "$STAGE/api" -maxdepth 2 -name "index.js" -o -maxdepth 2 -name "client.js" -o -maxdepth 1 -type d | head
+
+      - name: Live API proof — /health, /ready (SELECT 1), SIGTERM graceful
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="$RUNNER_TEMP/medivault-api"
+          mkdir -p "$MEDIVAULT_DATA_DIR"
+
+          echo "[start] node api/dist/index.js (HOST=$API_HOST PORT=$API_PORT) — staged runtime, not the dev tree"
+          rm -f /tmp/api.exit
+          # NOTE: no comments inside the continuation chain — a '#' line after a
+          # backslash-continuation terminates the assignment list, silently
+          # turning the env prefix into unexported shell variables (that is
+          # exactly how run 34030561567 started the API on 3001/0.0.0.0).
+          # TRUSTED_LOCAL_TLS_TERMINATION mirrors the Windows secure-config
+          # production contract (nodeEnv=production + trusted local TLS
+          # termination; the CI proof runs the plain-HTTP local-only listener).
+          ( cd "$STAGE/api" &&
+          env \
+          PORT="$API_PORT" \
+          HOST="$API_HOST" \
+          DATABASE_URL="$DATABASE_URL" \
+          AUTH_JWT_SECRET="$AUTH_JWT_SECRET" \
+          MEDIVAULT_MASTER_KEY="$MEDIVAULT_MASTER_KEY" \
+          MEDIVAULT_DATA_DIR="$MEDIVAULT_DATA_DIR" \
+          ALLOWED_ORIGINS='http://localhost:3000' \
+          TRUSTED_LOCAL_TLS_TERMINATION='true' \
+          NODE_ENV=production \
+          node dist/index.js > /tmp/api.log 2>&1; echo $? > /tmp/api.exit ) &
+          sleep 3
+          # pgrep exits non-zero on no match — guard so `set -e`/pipefail does
+          # not kill the step before the error handler can print api.log.
+          API_PID=$(pgrep -f 'node dist/index.js' | head -1 || true)
+          if [ -z "$API_PID" ]; then
+            echo "::error::API process did not start"
+            echo "--- api.log:"
+            cat /tmp/api.log || true
+            exit 1
+          fi
+          echo "API_PID=$API_PID"
+
+          echo "[health] bounded poll (30s) for http://$API_HOST:$API_PORT/health"
+          HEALTH_OK=0
+          for i in $(seq 1 30); do
+            CODE=$(curl -s -o /tmp/health.json -w "%{http_code}" "http://$API_HOST:$API_PORT/health" || echo "000")
+            if [ "$CODE" = "200" ]; then HEALTH_OK=1; break; fi
+            sleep 1
+          done
+          if [ "$HEALTH_OK" != "1" ]; then
+            echo "::error::/health never returned 200"
+            echo "--- api.log (last 60 lines):"
+            tail -60 /tmp/api.log || true
+            kill -9 "$API_PID" 2>/dev/null || true
+            exit 1
+          fi
+          echo "/health 200: $(cat /tmp/health.json)"
+
+          echo "[ready] /ready must be 200 (SELECT 1 through the app)"
+          CODE=$(curl -s -o /tmp/ready.json -w "%{http_code}" "http://$API_HOST:$API_PORT/ready" || echo "000")
+          if [ "$CODE" != "200" ]; then
+            echo "::error::/ready returned $CODE (DB connectivity broken through the app)"
+            cat /tmp/ready.json || true
+            kill -9 "$API_PID" 2>/dev/null || true
+            exit 1
+          fi
+          echo "/ready 200: $(cat /tmp/ready.json)"
+
+          echo "[shutdown] SIGTERM — Fastify must close and exit cleanly (exit code 0)"
+          kill -TERM "$API_PID"
+          EXITED=0
+          for i in $(seq 1 30); do
+            if [ -f /tmp/api.exit ]; then
+              EXITED=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$EXITED" != "1" ]; then
+            echo "::error::API did not exit within 30s of SIGTERM"
+            kill -9 "$API_PID" 2>/dev/null || true
+            exit 1
+          fi
+          EXIT_CODE=$(cat /tmp/api.exit)
+          echo "API exited with code $EXIT_CODE"
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "::error::API exited non-zero ($EXIT_CODE) after SIGTERM — not a graceful shutdown"
+            exit 1
+          fi
+          echo "--- api.log tail:"
+          tail -20 /tmp/api.log || true
+
+      # ------------------------------------------------------------------
+      # Teardown: fast shutdown + orphan proof (no postgres left behind)
+      # ------------------------------------------------------------------
+      - name: Teardown + no-orphan proof
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          export PATH="$PG_INSTALL/bin:$PATH"
+          echo "[pg_ctl stop -m fast]"
+          pg_ctl -D "$PGDATA" -m fast -w -t 60 stop || true
+          sleep 2
+          echo "[orphan check] any postgres processes left?"
+          LEFT=$(pgrep -fl "postgres" | grep -v "pgrep" || true)
+          if [ -n "$LEFT" ]; then
+            echo "::warning::PostgreSQL processes still alive after stop:"
+            echo "$LEFT"
+            pkill -9 -f "$PGDATA/postgres" 2>/dev/null || true
+          else
+            echo "clean — zero postgres orphans"
+          fi
+
+      - name: Upload diagnostic logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-integration-${{ matrix.label }}-logs
+          retention-days: 1
+          path: |
+            /tmp/api.log
+            /tmp/api.exit
+            /tmp/vitest-unit.log
+            /tmp/vitest-db.log
+            /tmp/prisma-generate.log
+            /Users/runner/work/_temp/medivault-pgdata/pg.log
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # pg-bundle-verify — formalize the PostgreSQL 17.11 runtime that will SHIP.
+  #
+  # Lane order (per the stage plan): integration (FROZEN GREEN @ a282f45,
+  # run 34031521912 — NOT reopened) -> pg-bundle-verify (this job) -> Rust
+  # supervisor -> Keychain/provisioning -> Node/PG app-bundle staging ->
+  # Tauri -> DMG/signing -> macOS 26 -> reinstall/uninstall.
+  # One SHA + one mode = one run (first-red discipline).
+  #
+  # Contract under test (acceptance/macos-pg-bundle-contract.md):
+  #   1. PG 17.11 from the pinned postgresql.org tarball (SHA-256 fail-closed)
+  #      compiled with MACOSX_DEPLOYMENT_TARGET=13.0. We claim macOS 13+
+  #      (Ventura): every Mach-O WE compile must require minOS <= 13.0. The
+  #      runner default with no explicit target silently bakes macOS 15 in;
+  #      the vtool/LC_BUILD_VERSION gate below fails closed on exactly that.
+  #      Third-party PREBUILT binaries are never given a target blindly —
+  #      their declared minimum OS is inspected and rejected if it exceeds
+  #      13.0 (same gate).
+  #   2. Minimal runtime layout actually needed by MediVault (bin: initdb,
+  #      postgres, pg_ctl, pg_isready, psql; lib: libpq.5.dylib + dev
+  #      symlink; lib/postgresql: plpgsql.so; share: the bootstrap files
+  #      initdb requires + timezone + timezonesets + plpgsql extension SQL).
+  #   3. Install names repaired to @executable_path/@loader_path (nothing may
+  #      point at the build/install prefix); every edited Mach-O is re-signed
+  #      ad-hoc (arm64 REQUIRES a valid signature after ANY Mach-O edit — an
+  #      invalid signature means SIGKILL at exec).
+  #   4. Fail-closed Mach-O verification of EVERY shipped object: single arch
+  #      matching this lane (no fat, no Rosetta, no wrong-arch dylib), minOS
+  #      <= 13.0, dependencies restricted to /usr/lib + /System or @-prefixed
+  #      paths that resolve INSIDE the bundle; absolute Homebrew /usr/local /
+  #      runner / build-dir paths rejected; LC_RPATH entries must stay inside
+  #      the bundle.
+  #   5. RELOCATION: the bundle is staged into a fresh app-bundle-shaped
+  #      directory (Contents/Resources/runtime/postgresql/17) and the entire
+  #      DB proof runs FROM THERE, with a PATH that has NO /opt/homebrew,
+  #      NO /usr/local, and no system PostgreSQL: initdb (SCRAM local+host)
+  #      -> pg_ctl (bounded -w) -> pg_isready -> app role/database -> SCRAM
+  #      login SELECT 1 as the app role -> prisma migrate deploy (all 8
+  #      migrations) -> the frozen shared test suites. The in-server pg_config
+  #      view proves the running server resolved BINDIR/SHAREDIR/PKGLIBDIR
+  #      relative to the RELOCATED binary (PostgreSQL whole-tree relocation).
+  #   6. --without-icu is FROZEN (documented + verified: pg_collation has no
+  #      ICU-provider rows, schema/migrations declare no COLLATE, the frozen
+  #      suites pass against this ICU-less relocated server).
+  # ---------------------------------------------------------------------------
+  pg-bundle-verify:
+    name: "pg-bundle-verify (${{ matrix.label }})"
+    if: github.event.inputs.mode == 'pg-bundle-verify'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: arm64
+            runner: macos-15
+            expected_uname: arm64
+          - label: x64
+            runner: macos-15-intel
+            expected_uname: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+
+    env:
+      PG_VERSION: '17.11'
+      PG_SHA256: '5367f6fb2ec97efe1eb2e0c7926bb33438e51b0bd3a9733b88498056a7dc9a7e'
+      PG_TARBALL_URL: 'https://ftp.postgresql.org/pub/source/v17.11/postgresql-17.11.tar.gz'
+      # Separate install prefix AND separate cache key from the integration
+      # job: that frozen build had NO explicit deployment target, so its
+      # binaries are macOS-15-min. Restoring that cache into this job would
+      # be correctly RED-flagged by the minOS gate below — by design.
+      PG_INSTALL: '/Users/runner/pg17-install-dt13'
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+      PGDATA: '/Users/runner/work/_temp/medivault-pgdata-bundle'
+      PGPORT: '55433'
+      PG_SUPERUSER: 'postgres'
+      PG_SUPER_PASSWORD: 'MedivaultMacCI2026!'
+      APP_DB_USER: 'medivault'
+      APP_DB_PASSWORD: 'MedivaultMacCI2026!'
+      APP_DB_NAME: 'medivault'
+      DATABASE_URL: 'postgresql://medivault:MedivaultMacCI2026!@127.0.0.1:55433/medivault'
+      TEST_DATABASE_URL: 'postgresql://medivault:MedivaultMacCI2026!@127.0.0.1:55433/medivault'
+      MEDIVAULT_MASTER_KEY: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+      AUTH_JWT_SECRET: 'macos-ci-jwt-secret-0000000000000000000000000000000000000000000000000000000000000000'
+      CSRF_SECRET: 'macos-ci-csrf-secret-000000000000000000000000000000'
+      MEDIVAULT_DATA_DIR: '/Users/runner/work/_temp/medivault-data-bundle'
+      NODE_ENV: 'test'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Preflight — runner architecture proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "uname -m:        $(uname -m)"
+          echo "expected:        ${{ matrix.expected_uname }}"
+          echo "macOS:           $(sw_vers -productVersion)"
+          echo "CPU:             $(sysctl -n machdep.cpu.brand_string)"
+          echo "cores:           $(sysctl -n hw.ncpu)"
+          echo "Xcode CLT:       $(xcodebuild -version 2>/dev/null | head -1)"
+          if [ "$(uname -m)" != "${{ matrix.expected_uname }}" ]; then
+            echo "::error::Runner architecture mismatch — expected ${{ matrix.expected_uname }}, got $(uname -m). Rosetta does not count as native support."
+            exit 1
+          fi
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            mini-services/api-service/node_modules
+            packages/*/node_modules
+          key: macos-deps-${{ matrix.label }}-${{ hashFiles('bun.lock', 'package.json', 'packages/*/package.json', 'mini-services/api-service/package.json') }}
+          restore-keys: |
+            macos-deps-${{ matrix.label }}-
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Cache PostgreSQL ${{ env.PG_VERSION }} build (MACOSX_DEPLOYMENT_TARGET=13.0)
+        id: pg-cache
+        uses: actions/cache@v4
+        with:
+          path: '/Users/runner/pg17-install-dt13'
+          key: macos-pg17-dt13-${{ matrix.label }}-${{ env.PG_VERSION }}-${{ env.PG_SHA256 }}
+
+      - name: Build PostgreSQL ${{ env.PG_VERSION }} from source (MACOSX_DEPLOYMENT_TARGET=13.0)
+        if: steps.pg-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The WHOLE build (configure + make) must see the deployment target:
+          # clang turns it into the LC_BUILD_VERSION minOS of every object.
+          # Without it the runner SDK default (macOS 15) silently becomes our
+          # minimum — the exact failure the Mach-O gate below exists to catch.
+          # (Also exported at job level; re-exported here for emphasis.)
+          export MACOSX_DEPLOYMENT_TARGET=13.0
+          echo "MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET"
+
+          echo "Downloading $PG_TARBALL_URL"
+          curl -fsSL --retry 3 -o /tmp/postgresql-$PG_VERSION.tar.gz "$PG_TARBALL_URL"
+
+          echo "Verifying SHA-256 (fail closed)"
+          echo "$PG_SHA256  /tmp/postgresql-$PG_VERSION.tar.gz" | shasum -a 256 --check --strict || {
+            echo "::error::PostgreSQL tarball SHA-256 mismatch — refusing to build (provenance contract)"
+            exit 1
+          }
+
+          rm -rf "/tmp/postgresql-$PG_VERSION"
+          tar -xzf "/tmp/postgresql-$PG_VERSION.tar.gz" -C /tmp
+
+          echo "Configuring (prefix=$PG_INSTALL, --without-icu --without-readline — frozen audit flags)"
+          cd "/tmp/postgresql-$PG_VERSION"
+          ./configure --prefix="$PG_INSTALL" --without-icu --without-readline
+
+          echo "Building with $(sysctl -n hw.ncpu) cores"
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+
+          echo "[spot-check] vtool minOS right after install (the FULL fail-closed gate runs on the staged bundle):"
+          vtool -show-build "$PG_INSTALL/bin/postgres" 2>/dev/null || xcrun vtool -show-build "$PG_INSTALL/bin/postgres"
+
+      # ------------------------------------------------------------------
+      # Stage the MINIMAL runtime bundle into a fresh, app-bundle-shaped,
+      # ARBITRARY directory (never the build/install dir — that is the point
+      # of the relocation proof that follows).
+      # ------------------------------------------------------------------
+      - name: Stage the minimal PG runtime bundle (fresh app-bundle-shaped tree)
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUNDLE="$RUNNER_TEMP/MediVault.app/Contents/Resources/runtime/postgresql/17"
+          rm -rf "$(dirname "$BUNDLE")"
+          mkdir -p "$BUNDLE/bin" "$BUNDLE/lib/postgresql" "$BUNDLE/share/postgresql/extension"
+          echo "BUNDLE=$BUNDLE" > /tmp/bundle.env
+
+          echo "[record] everything make install produced (for the audit trail):"
+          ls -1 "$PG_INSTALL/bin"
+          ls -1 "$PG_INSTALL/lib"
+          ls -1 "$PG_INSTALL/lib/postgresql"
+          ls -1 "$PG_INSTALL/share/postgresql"
+
+          echo "[stage] executables (supervisor + provisioning contract)"
+          for bin in initdb postgres pg_ctl pg_isready psql; do
+            test -x "$PG_INSTALL/bin/$bin" || { echo "::error::$PG_INSTALL/bin/$bin missing"; exit 1; }
+            cp "$PG_INSTALL/bin/$bin" "$BUNDLE/bin/$bin"
+          done
+
+          echo "[stage] libpq (psql + pg_isready link it) + dev symlink"
+          test -f "$PG_INSTALL/lib/libpq.5.dylib" || { echo "::error::libpq.5.dylib missing"; exit 1; }
+          cp "$PG_INSTALL/lib/libpq.5.dylib" "$BUNDLE/lib/libpq.5.dylib"
+          cp -P "$PG_INSTALL/lib/libpq.dylib" "$BUNDLE/lib/libpq.dylib"
+          test -e "$BUNDLE/lib/libpq.dylib" || { echo "::error::libpq.dylib symlink dangling"; exit 1; }
+
+          echo "[stage] server-side dynamic modules (initdb LOADS both during cluster creation)"
+          # FIRST-RED (run 34047324482, both arches): on darwin PostgreSQL installs
+          # server-side modules as .dylib, NOT .so — plpgsql.so never existed;
+          # the file is lib/postgresql/plpgsql.dylib.
+          # FIRST-RED (run 34048563205, both arches): snowball_create.sql is not
+          # merely catalog rows — initdb EXECUTES CREATE FUNCTION ...
+          # '$libdir/dict_snowball' during post-bootstrap initialization, so
+          # dict_snowball.dylib must ship too (FATAL: could not access file
+          # "$libdir/dict_snowball" otherwise). plpgsql is loaded by initdb's
+          # 'installing PL/pgSQL' step (CREATE EXTENSION in template1).
+          for mod in plpgsql dict_snowball; do
+            test -f "$PG_INSTALL/lib/postgresql/$mod.dylib" || { echo "::error::lib/postgresql/$mod.dylib missing"; exit 1; }
+            cp "$PG_INSTALL/lib/postgresql/$mod.dylib" "$BUNDLE/lib/postgresql/$mod.dylib"
+          done
+
+          echo "[stage] bootstrap + server share files (each REQUIRED — missing any one fails initdb or the server)"
+          # FIRST-RED (run 34047324482 + 34048036069, both arches): PostgreSQL 17
+          # merged postgres.description + postgres.shdescription INTO postgres.bki
+          # (they no longer ship); initdb 17 processes system_functions.sql +
+          # system_constraints.sql; AND initdb's features_file (sql_features.txt)
+          # must ship — the complete initdb input set is: postgres.bki,
+          # snowball_create.sql, information_schema.sql, sql_features.txt,
+          # system_functions.sql, system_views.sql, system_constraints.sql, and
+          # the three .sample files it copies into PGDATA.
+          for f in postgres.bki \
+                   information_schema.sql sql_features.txt \
+                   system_functions.sql system_constraints.sql system_views.sql snowball_create.sql \
+                   postgresql.conf.sample pg_hba.conf.sample pg_ident.conf.sample; do
+            test -f "$PG_INSTALL/share/postgresql/$f" || { echo "::error::share/postgresql/$f missing — extend the minimal layout + contract doc"; exit 1; }
+            cp "$PG_INSTALL/share/postgresql/$f" "$BUNDLE/share/postgresql/$f"
+          done
+          cp -R "$PG_INSTALL/share/postgresql/timezone" "$BUNDLE/share/postgresql/timezone"
+          cp -R "$PG_INSTALL/share/postgresql/timezonesets" "$BUNDLE/share/postgresql/timezonesets"
+          test -f "$PG_INSTALL/share/postgresql/extension/plpgsql.control" || { echo "::error::extension/plpgsql.control missing"; exit 1; }
+          cp "$PG_INSTALL"/share/postgresql/extension/plpgsql* "$BUNDLE/share/postgresql/extension/"
+          ls -1 "$BUNDLE/share/postgresql/extension/"
+
+          echo "[stage] done — layout:"
+          find "$BUNDLE" | sed "s|$BUNDLE|<BUNDLE>|" | sort
+
+      # ------------------------------------------------------------------
+      # Portability repair: install names must never point at the build
+      # prefix. After ANY Mach-O edit the object is re-signed ad-hoc —
+      # required for arm64 (invalid signature = SIGKILL at exec).
+      # ------------------------------------------------------------------
+      - name: Repair install names (@executable_path/@loader_path) + ad-hoc re-sign
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/bundle.env
+
+          re_sign() {
+            codesign --force --sign - "$1" >/dev/null 2>&1
+            echo "  re-signed (ad-hoc): $1"
+          }
+
+          echo "[repair] libpq own install name (id):"
+          LIBID="$(otool -D "$BUNDLE/lib/libpq.5.dylib" | tail -n +2 | awk '{print $1}')"
+          echo "  current id: $LIBID"
+          case "$LIBID" in
+            "$PG_INSTALL"/*)
+              install_name_tool -id "@loader_path/libpq.5.dylib" "$BUNDLE/lib/libpq.5.dylib"
+              re_sign "$BUNDLE/lib/libpq.5.dylib"
+              ;;
+            *) echo "  no build-prefix id — left as-is (gate below still validates)" ;;
+          esac
+
+          echo "[repair] every Mach-O in bin/ + lib/postgresql/ — build-prefix deps, bare sonames, and build-prefix rpaths resolve into the bundle:"
+          for B in "$BUNDLE/bin/"* "$BUNDLE/lib/postgresql/"*.dylib; do
+            MOD=0
+            while IFS= read -r DEP; do
+              case "$DEP" in
+                "$PG_INSTALL"/*)
+                  BASE="$(basename "$DEP")"
+                  echo "  $(basename "$B"): $DEP -> @executable_path/../lib/$BASE"
+                  install_name_tool -change "$DEP" "@executable_path/../lib/$BASE" "$B"
+                  MOD=1
+                  ;;
+                */*) : ;;
+                *)
+                  if [ -e "$BUNDLE/lib/$DEP" ]; then
+                    echo "  $(basename "$B"): $DEP -> @executable_path/../lib/$DEP (bare soname repaired)"
+                    install_name_tool -change "$DEP" "@executable_path/../lib/$DEP" "$B"
+                    MOD=1
+                  fi
+                  ;;
+              esac
+            done < <(otool -L "$B" | tail -n +2 | awk '{print $1}')
+            # A build-prefix LC_RPATH is runner-specific state — remove it
+            # (deps are already rewritten to @executable_path, so it is
+            # redundant as well as non-portable). The gate below would
+            # reject anything left pointing outside the bundle.
+            for RP in $(otool -l "$B" | awk '/LC_RPATH/{f=1;next} f && $1=="path"{print $2; f=0}'); do
+              case "$RP" in
+                "$PG_INSTALL"/*)
+                  echo "  $(basename "$B"): deleting build-prefix rpath $RP"
+                  install_name_tool -delete_rpath "$RP" "$B"
+                  MOD=1
+                  ;;
+              esac
+            done
+            if [ "$MOD" = "1" ]; then re_sign "$B"; fi
+          done
+          echo "[repair] post-repair dependency view:"
+          for B in "$BUNDLE/bin/"*; do echo "--- $B"; otool -L "$B" | tail -n +2; done
+
+      # ------------------------------------------------------------------
+      # THE GATE: every shipped Mach-O must record ARCHITECTURE, MINOS,
+      # SDK, DEPENDENCIES — and satisfy: single lane arch; minOS <= 13.0;
+      # deps only /usr/lib + /System or resolvable @-paths inside the
+      # bundle; LC_RPATH entries inside the bundle only. Fail closed.
+      # ------------------------------------------------------------------
+      - name: Mach-O contract gate — arch, minOS <= 13.0, dependencies (fail closed)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/bundle.env
+          EXPECTED_ARCH="${{ matrix.expected_uname }}"
+          EXPECTED_MINOS="13.0"
+          REC="/tmp/macho-records.txt"; : > "$REC"
+          VIOLATIONS=0
+
+          ver_num() { printf '%s\n' "$1" | awk -F. '{printf "%d%02d%02d\n", $1+0, $2+0, $3+0}'; }
+
+          vtool_show() {
+            vtool -show-build "$1" 2>/dev/null || xcrun vtool -show-build "$1" 2>/dev/null || true
+          }
+
+          rpaths_of() {
+            otool -l "$1" | awk '/LC_RPATH/{f=1;next} f && $1=="path"{print $2; f=0}'
+          }
+
+          record_violation() {
+            echo "  [REJECT] $*"
+            VIOLATIONS=$((VIOLATIONS+1))
+          }
+
+          check_macho() {
+            local B="$1" DIR FTYPE ARCH VT MINOS SDK DEP RES RP
+            DIR="$(dirname "$B")"
+            FTYPE="$(file -b "$B")"
+            case "$FTYPE" in
+              *"Mach-O"*) ;;
+              *) echo "[skip] not Mach-O: $B"; return 0 ;;
+            esac
+
+            ARCH="$(lipo -info "$B" | awk -F': ' '{print $NF}')"
+            if [ "$ARCH" != "$EXPECTED_ARCH" ]; then
+              record_violation "$B: arch '$ARCH' != lane arch '$EXPECTED_ARCH' (no fat, no wrong-arch, no Rosetta)"
+            fi
+
+            VT="$(vtool_show "$B")"
+            # vtool -show-build prints space-separated fields (Xcode 16 format,
+            # confirmed by run 34047324482's spot-check): "    minos 13.0" and
+            # "      sdk 15.5" — NO colons. Accept both field spellings.
+            MINOS="$(printf '%s\n' "$VT" | awk '$1=="minos" || $1=="minos:" {print $2; exit}')"
+            SDK="$(printf '%s\n' "$VT" | awk '$1=="sdk" || $1=="sdk:" {print $2; exit}')"
+            if [ -z "$MINOS" ]; then
+              # otool -l fallback: the LC_VERSION_MIN_MACOSX block also uses
+              # "  minos X.Y" / " sdk X.Y" field lines.
+              MINOS="$(otool -l "$B" | awk '/LC_VERSION_MIN_MACOSX/{f=1;next} f && ($1=="minos" || $1=="version"){print $2; exit}')"
+              SDK="$(otool -l "$B" | awk '/LC_VERSION_MIN_MACOSX/{f=1;next} f && ($1=="sdk"){print $2; exit}')"
+            fi
+            if [ -z "$MINOS" ]; then
+              echo "  [diag] could not parse a minimum-OS load command; vtool said:"
+              printf '%s\n' "$VT" | sed 's/^/      /'
+              record_violation "$B: no LC_BUILD_VERSION / LC_VERSION_MIN_MACOSX — cannot prove macOS 13 support"
+            elif [ "$(ver_num "$MINOS")" -gt "$(ver_num "$EXPECTED_MINOS")" ]; then
+              record_violation "$B: minOS $MINOS > $EXPECTED_MINOS — requires macOS newer than Ventura"
+            fi
+
+            {
+              echo "MACHO|$(basename "$B")|arch=$ARCH|minos=$MINOS|sdk=$SDK|file=$B"
+              echo "      deps: $(otool -L "$B" | tail -n +2 | awk '{print $1}' | tr '\n' ' ')"
+            } >> "$REC"
+
+            while IFS= read -r DEP; do
+              case "$DEP" in
+                /usr/lib/*|/System/*)
+                  echo "      ok(system): $DEP" >> "$REC" ;;
+                @executable_path/*)
+                  RES="${DEP/@executable_path/$DIR}"
+                  if [ -e "$RES" ]; then echo "      ok(resolved): $DEP -> $RES" >> "$REC"
+                  else record_violation "$B: unresolvable $DEP (-> $RES)"; fi ;;
+                @loader_path/*)
+                  RES="${DEP/@loader_path/$DIR}"
+                  if [ -e "$RES" ]; then echo "      ok(resolved): $DEP -> $RES" >> "$REC"
+                  else record_violation "$B: unresolvable $DEP (-> $RES)"; fi ;;
+                @rpath/*)
+                  RES=""
+                  for RP in $(rpaths_of "$B"); do
+                    case "$RP" in
+                      @executable_path/*) RP="${RP/@executable_path/$DIR}" ;;
+                      @loader_path/*)     RP="${RP/@loader_path/$DIR}" ;;
+                    esac
+                    if [ -e "$RP/${DEP#@rpath/}" ]; then RES="$RP/${DEP#@rpath/}"; break; fi
+                  done
+                  if [ -n "$RES" ]; then echo "      ok(rpath): $DEP -> $RES" >> "$REC"
+                  else record_violation "$B: unresolvable $DEP (rpath search failed)"; fi ;;
+                *)
+                  record_violation "$B: non-system absolute/bare dependency '$DEP' (Homebrew? /usr/local? build dir? runner path?)" ;;
+              esac
+            done < <(otool -L "$B" | tail -n +2 | awk '{print $1}')
+
+            for RP in $(rpaths_of "$B"); do
+              case "$RP" in
+                "$BUNDLE"/*|@executable_path/*|@loader_path/*) : ;;
+                *) record_violation "$B: LC_RPATH '$RP' points outside the bundle" ;;
+              esac
+            done
+          }
+
+          echo "=== Mach-O contract verification (expected arch=$EXPECTED_ARCH, minOS<=$EXPECTED_MINOS) ==="
+          while IFS= read -r F; do check_macho "$F"; done < <(find "$BUNDLE" -type f | sort)
+
+          echo "=== Mach-O records (ARCH | MINOS | SDK | DEPENDENCIES) ==="
+          cat "$REC"
+          echo "=== summary ==="
+          echo "Mach-O files verified: $(grep -c '^MACHO|' "$REC" || true)"
+          echo "violations: $VIOLATIONS"
+          if [ "$VIOLATIONS" -gt 0 ]; then
+            echo "::error::Mach-O contract violations: $VIOLATIONS (see [REJECT] lines above)"
+            exit 1
+          fi
+          echo "Mach-O contract: GREEN"
+
+      - name: Bundle layout + SHA-256 manifest (the exact tree that would ship)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/bundle.env
+          {
+            echo "# MediVault PostgreSQL $PG_VERSION runtime bundle — layout"
+            find "$BUNDLE" | sed "s|$BUNDLE|<BUNDLE>|" | sort
+            echo
+            echo "# per-file SHA-256 (post repair + re-sign state) + symlinks"
+            ( cd "$BUNDLE" && find . -type f -exec shasum -a 256 {} + && find . -type l )
+          } > /tmp/bundle-manifest.txt
+          cat /tmp/bundle-manifest.txt
+          echo "bundle size: $(du -sh "$BUNDLE" | cut -f1)"
+          echo "file count:  $(find "$BUNDLE" -type f | wc -l | tr -d ' ')"
+
+      # ------------------------------------------------------------------
+      # RELOCATION TEST — everything DB-facing runs FROM the relocated tree,
+      # with a PATH that contains no Homebrew, no /usr/local, and (proven
+      # first) no system PostgreSQL at all.
+      # ------------------------------------------------------------------
+      - name: Relocation test — initdb SCRAM + bounded start from the RELOCATED bundle
+        shell: bash
+        env:
+          PGPASSWORD: ${{ env.PG_SUPER_PASSWORD }}
+        run: |
+          set -euo pipefail
+          . /tmp/bundle.env
+          # PATH deliberately contains NO /opt/homebrew/bin, NO /usr/local/bin.
+          export PATH="$BUNDLE/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+          echo "[proof] no PostgreSQL outside the bundle on this runner:"
+          OUTSIDE="$(env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin bash -c 'command -v postgres initdb pg_ctl pg_isready psql 2>/dev/null' || true)"
+          if [ -n "$OUTSIDE" ]; then
+            echo "::error::PostgreSQL binaries found OUTSIDE the bundle: $OUTSIDE"
+            exit 1
+          fi
+          echo "  none found — clean"
+          for t in initdb postgres pg_ctl pg_isready psql; do
+            echo "  $t -> $(command -v "$t")"
+            test "$(command -v "$t")" = "$BUNDLE/bin/$t"
+          done
+
+          rm -rf "$PGDATA"
+          mkdir -p "$(dirname "$PGDATA")"
+
+          echo "[initdb] SCRAM-SHA-256 for local AND host auth — executed from the RELOCATED tree"
+          PWFILE="$(mktemp)"
+          chmod 600 "$PWFILE"
+          printf '%s\n' "$PG_SUPER_PASSWORD" > "$PWFILE"
+          initdb -D "$PGDATA" \
+            --username="$PG_SUPERUSER" \
+            --pwfile="$PWFILE" \
+            --auth-local=scram-sha-256 \
+            --auth-host=scram-sha-256 \
+            --encoding=UTF8 \
+            --no-instructions
+          rm -f "$PWFILE"
+
+          echo "[hba proof] host auth method in the generated cluster:"
+          grep -v '^#' "$PGDATA/pg_hba.conf" | grep -v '^$'
+
+          cat >> "$PGDATA/postgresql.conf" <<EOF
+          port = $PGPORT
+          listen_addresses = '127.0.0.1'
+          EOF
+
+          echo "[start] bounded pg_ctl start (-w -t 120) from the relocated tree"
+          pg_ctl -D "$PGDATA" -w -t 120 -l "$PGDATA/pg.log" start
+
+          echo "[ready] pg_isready (bundle binary)"
+          pg_isready -h 127.0.0.1 -p "$PGPORT" -d postgres
+
+          echo "[server process proof]"
+          ps -axo pid,command | grep '[p]ostgres -D' || true
+
+          echo "[server version]"
+          psql -h 127.0.0.1 -p "$PGPORT" -U "$PG_SUPERUSER" -d postgres -c "SELECT version();"
+
+          echo "[relocation proof] in-server computed paths (pg_config view reflects the RUNNING server's exec location — must be INSIDE the bundle, not the build prefix):"
+          psql -h 127.0.0.1 -p "$PGPORT" -U "$PG_SUPERUSER" -d postgres -A -F' | ' -c \
+            "SELECT name, setting FROM pg_config WHERE name IN ('BINDIR','LIBDIR','SHAREDIR','PKGLIBDIR','LOCALEDIR','SYSCONFDIR','CONFIGURE') ORDER BY name;"
+          psql -h 127.0.0.1 -p "$PGPORT" -U "$PG_SUPERUSER" -d postgres -t -A -c "SELECT setting FROM pg_config WHERE name='BINDIR';" | grep -q "^$BUNDLE/bin$" || {
+            echo "::error::Server BINDIR does not resolve inside the relocated bundle — relocation failed"
+            exit 1
+          }
+
+      - name: App role + database + SCRAM SELECT 1 (as the app role, via the bundle psql)
+        shell: bash
+        env:
+          PGPASSWORD: ${{ env.PG_SUPER_PASSWORD }}
+        run: |
+          set -euo pipefail
+          . /tmp/bundle.env
+          export PATH="$BUNDLE/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+          psql -h 127.0.0.1 -p "$PGPORT" -U "$PG_SUPERUSER" -d postgres -v ON_ERROR_STOP=1 <<SQL
+          CREATE ROLE "$APP_DB_USER" LOGIN PASSWORD '$APP_DB_PASSWORD';
+          CREATE DATABASE "$APP_DB_NAME" OWNER "$APP_DB_USER";
+          SQL
+
+          echo "[scram proof] login AS THE APP ROLE (SCRAM-SHA-256 enforced by pg_hba) + SELECT 1:"
+          PGPASSWORD="$APP_DB_PASSWORD" psql -h 127.0.0.1 -p "$PGPORT" -U "$APP_DB_USER" -d "$APP_DB_NAME" -v ON_ERROR_STOP=1 -c "SELECT 1 AS ok;"
+
+      # ------------------------------------------------------------------
+      # The 8 shared migrations + the ICU/collation freeze proofs, all
+      # against the RELOCATED bundle server.
+      # ------------------------------------------------------------------
+      - name: Prisma generate (native engine for this arch)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./node_modules/.bin/prisma generate --schema packages/db/prisma/schema.prisma 2>&1 | tee /tmp/prisma-generate.log
+
+      - name: Prisma migrate deploy — all migrations against the RELOCATED bundle server
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd packages/db
+          ../../node_modules/.bin/prisma migrate deploy --schema prisma/schema.prisma
+
+      - name: Migration count + ICU/collation freeze proof
+        shell: bash
+        env:
+          PGPASSWORD: ${{ env.PG_SUPER_PASSWORD }}
+        run: |
+          set -euo pipefail
+          . /tmp/bundle.env
+          export PATH="$BUNDLE/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          MIGRATIONS_DIR="packages/db/prisma/migrations"
+          EXPECTED="$(ls -1 "$MIGRATIONS_DIR" | grep -v 'migration_lock.toml' | wc -l | tr -d ' ')"
+          echo "migration directories: $EXPECTED"
+          APPLIED="$(PGPASSWORD="$APP_DB_PASSWORD" psql -h 127.0.0.1 -p "$PGPORT" -U "$APP_DB_USER" -d "$APP_DB_NAME" -t -A -c 'SELECT count(*) FROM "_prisma_migrations";')"
+          echo "rows in _prisma_migrations: $APPLIED"
+          test "$APPLIED" = "$EXPECTED"
+
+          echo "[icu proof] collation providers actually present (built --without-icu):"
+          PGPASSWORD="$APP_DB_PASSWORD" psql -h 127.0.0.1 -p "$PGPORT" -U "$APP_DB_USER" -d "$APP_DB_NAME" -A -F' | ' -c \
+            "SELECT collprovider, count(*) FROM pg_collation GROUP BY collprovider ORDER BY collprovider;"
+          # FIRST-RED (run 34049189077, both arches): a --without-icu PG 17 cluster
+          # is NOT ICU-row-free — pg_collation.dat bootstraps exactly ONE
+          # provider-'i' row (oid 963, collname 'unicode', colllocale 'und',
+          # "sorts using the Unicode Collation Algorithm with default settings")
+          # in every PG 17 cluster regardless of ICU support; it is inert without
+          # ICU. An ICU-enabled build imports HUNDREDS. The honest freeze proof:
+          # exactly that one bootstrap row — not zero.
+          PGPASSWORD="$APP_DB_PASSWORD" psql -h 127.0.0.1 -p "$PGPORT" -U "$APP_DB_USER" -d "$APP_DB_NAME" -A -F' | ' -c \
+            "SELECT oid, collname, collprovider, colllocale FROM pg_collation WHERE collprovider = 'i';"
+          ICU_ROWS="$(PGPASSWORD="$APP_DB_PASSWORD" psql -h 127.0.0.1 -p "$PGPORT" -U "$APP_DB_USER" -d "$APP_DB_NAME" -t -A -c "SELECT count(*) FROM pg_collation WHERE collprovider = 'i';")"
+          ICU_ROW="$(PGPASSWORD="$APP_DB_PASSWORD" psql -h 127.0.0.1 -p "$PGPORT" -U "$APP_DB_USER" -d "$APP_DB_NAME" -t -A -c "SELECT collname FROM pg_collation WHERE collprovider = 'i' AND oid = 963;")"
+          echo "ICU-provider collations: $ICU_ROWS (expected 1 — the bootstrap 'unicode' row)"
+          test "$ICU_ROWS" = "1"
+          test "$ICU_ROW" = "unicode"
+
+          echo "[icu proof] per-database locale/encoding (libc collation only):"
+          PGPASSWORD="$APP_DB_PASSWORD" psql -h 127.0.0.1 -p "$PGPORT" -U "$APP_DB_USER" -d "$APP_DB_NAME" -A -F' | ' -c \
+            "SELECT datname, datcollate, datctype, pg_encoding_to_char(encoding) FROM pg_database ORDER BY datname;"
+
+          echo "[icu proof] schema/migrations declare no COLLATE / nondeterministic / ICU usage:"
+          if grep -rniE 'collate|nondeterministic|icu' "$MIGRATIONS_DIR" --include='*.sql'; then
+            echo "::error::schema uses explicit collation — the --without-icu freeze needs re-evaluation"
+            exit 1
+          fi
+          echo "  none — default collation only, freeze holds"
+
+          echo "[extension proof] initdb-installed PL/plpgsql loads from the RELOCATED tree:"
+          PGPASSWORD="$APP_DB_PASSWORD" psql -h 127.0.0.1 -p "$PGPORT" -U "$APP_DB_USER" -d "$APP_DB_NAME" -A -F' | ' -c \
+            "SELECT extname, extversion FROM pg_extension ORDER BY extname;"
+
+      # ------------------------------------------------------------------
+      # The frozen DB-integration serial suites, against the RELOCATED
+      # bundle server — the suites whose behavior depends on the PG
+      # runtime under test (migrations, schema, collations, app DB
+      # behavior): the ICU-compat proof. Same file list as the frozen
+      # integration mode's serial group.
+      #
+      # SCOPE (first-reds runs 34049669476 / 34050266206 / 34051053487):
+      # the DB-FREE unit/crypto suites are NOT run in this job. Rationale:
+      # (a) they exercise no PG behavior, so they carry zero signal for
+      # this stage's contract (the ICU/PG-compat question); (b) the same
+      # shared code is already proven GREEN on BOTH arches by the FROZEN
+      # integration stage (a282f45, run 34031521912); (c) re-running them
+      # here produced three runner-instance-variance REDs (x64
+      # crypto-streaming timeouts — 30–60s/test measured under both
+      # parallel AND serial execution; x64 crypto-roundtrip 1MB stall —
+      # 1-byte-over tests took 16s while a full stream roundtrip took
+      # 350ms on the same instance) with NO bundle-relevant findings.
+      # m3-memory-streaming STAYS: it is part of the frozen serial list;
+      # its context is already the accepted serial+quiet measurement
+      # context (frozen precedent, run 34031073341); if an instance's GC
+      # overshoots its in-test budget again, that is reported honestly as
+      # instance variance — a shared-test calibration question, not
+      # something this stage tunes around.
+      # ------------------------------------------------------------------
+      - name: Create CI .env file (AUTH_JWT_SECRET fallback for .env-reading tests)
+        shell: bash
+        run: printf 'AUTH_JWT_SECRET=%0128x\n' 0 > .env
+
+      - name: Run shared DB integration suites (serial — each file owns the DB)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./node_modules/.bin/vitest run --no-file-parallelism \
+            tests/api-route-integration.test.ts \
+            tests/db-schema.test.ts \
+            tests/m2-schema.test.ts \
+            tests/m3-gc-integration.test.ts \
+            tests/m3-integration.test.ts \
+            tests/m3-memory-streaming.test.ts \
+            tests/m4-api-routes.test.ts \
+            tests/m4-auth-integration.test.ts \
+            tests/m4-correction.test.ts \
+            tests/m4-device-proof.test.ts \
+            tests/m4-final-security.test.ts \
+            --reporter=verbose 2>&1 | tee /tmp/vitest-db.log
+
+      # ------------------------------------------------------------------
+      # Teardown + orphan proof (identical contract to the integration job).
+      # ------------------------------------------------------------------
+      - name: Teardown + no-orphan proof
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          BUNDLE="/Users/runner/work/_temp/MediVault.app/Contents/Resources/runtime/postgresql/17"
+          export PATH="$BUNDLE/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          echo "[pg_ctl stop -m fast]"
+          pg_ctl -D "$PGDATA" -m fast -w -t 60 stop || true
+          sleep 2
+          LEFT="$(pgrep -fl postgres | grep -v pgrep || true)"
+          if [ -n "$LEFT" ]; then
+            echo "::warning::PostgreSQL processes still alive after stop:"
+            echo "$LEFT"
+            pkill -9 -f "$PGDATA/postgres" 2>/dev/null || true
+          else
+            echo "clean — zero postgres orphans"
+          fi
+
+      - name: Upload evidence (always — Mach-O records + bundle manifest)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pg-bundle-verify-${{ matrix.label }}-evidence
+          retention-days: 1
+          path: |
+            /tmp/macho-records.txt
+            /tmp/bundle-manifest.txt
+          if-no-files-found: ignore
+
+      - name: Upload diagnostic logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pg-bundle-verify-${{ matrix.label }}-logs
+          retention-days: 1
+          path: |
+            /tmp/vitest-db.log
+            /tmp/prisma-generate.log
+            /Users/runner/work/_temp/medivault-pgdata-bundle/pg.log
+          if-no-files-found: ignore

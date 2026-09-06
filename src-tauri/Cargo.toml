@@ -1,0 +1,89 @@
+[package]
+name = "medivault"
+version = "0.1.0"
+description = "MediVault — Medical Document Manager Desktop Client"
+authors = ["MediVault Team"]
+edition = "2021"
+license = "proprietary"
+rust-version = "1.77.0"
+
+[lib]
+name = "medivault_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# ── Tauri 2 core ──
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-http = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-process = "2"
+
+# ── Serialization ──
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# ── HTTP client (Rust-side API calls) ──
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "json",
+    "multipart",
+    "stream",
+    "gzip",
+    "brotli",
+    "deflate",
+] }
+
+# ── RSA for device enrollment ──
+rsa = { version = "0.9", features = ["sha2"] }
+# ── Cryptographic primitives ──
+sha2 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+
+# ── Windows Credential Manager (FFI) ──
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Security_Credentials",
+    "Win32_Security_Cryptography",
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Registry",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+# ── Async runtime ──
+tokio = { version = "1", features = ["full"] }
+
+# ── Logging ──
+log = "0.4"
+env_logger = "0.11"
+
+# ── Utilities ──
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+rand = "0.8"
+
+mime_guess = "2"
+
+# ── ZIP for folder import ──
+zip = "2"
+
+# ── Credential file fallback encryption ──
+aes-gcm = "0.10"
+hostname = "0.4"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = "symbols"
+panic = "abort"

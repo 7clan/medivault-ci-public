@@ -1,0 +1,125 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Next.js
+.next/
+out/
+
+# Production
+build/
+dist/
+
+# Environment variables - NEVER commit secrets
+.env
+.env.local
+.env.*.local
+.env.production
+.env.production.local
+.env.test
+
+# Safe example files (NOT ignored)
+# !.env.example
+
+# Database files
+db/*.db
+db/*.db-journal
+*.db
+*.db-shm
+*.db-wal
+
+# Uploads - patient data
+uploads/
+
+# Backups - patient data
+backups/
+*.backup
+*.zip
+
+# TLS private keys
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.der
+!packages/**/*.pem
+
+# PostgreSQL data and credentials
+pg-data/
+pg-install/
+.secure-config.json
+windows/service/secure-config.json
+
+# Encrypted patient data
+encrypted-storage/
+
+# Test credential files
+*.cred.enc
+*.dpapi.key
+
+# Git bundles and archives (generated exports)
+*.bundle
+
+# Logs
+dev.log
+server.log
+*.log
+pg.log
+
+# Tool artifacts
+tool-results/
+agent-ctx/
+
+# Downloaded assets (screenshots, etc)
+download/
+login-screenshot.png
+pg-verification.png
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Prisma (migrations are now version-controlled in packages/db)
+
+# Misc
+*.pid
+server.pid
+*.tar.gz
+*.tar.bz2
+*.deb
+
+# Sandbox-specific
+keep-alive.sh
+keepalive.sh
+start-pg.sh
+start-server.sh
+audit-test.sh
+Caddyfile
+3001
+start-pg.sh
+
+# Rust / Tauri build artifacts
+src-tauri/target/
+
+# Skills (not part of MediVault source)
+skills/
+
+# Z-scripts sandbox control
+.zscripts/
+
+# Temporary / working files
+TODO
+examples/
+target/

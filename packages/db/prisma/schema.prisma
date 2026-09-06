@@ -1,0 +1,605 @@
+// ============================================================
+// MediVault — Authoritative Prisma Schema (packages/db)
+// ============================================================
+// This is the single source of truth for the database schema.
+// The root prisma/schema.prisma has been replaced by a pointer to this file.
+// All IDs use UUID v4 via @default(uuid()).
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────
+// RBAC — Roles & Permissions
+// ─────────────────────────────────────────────
+
+model Role {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users          User[]
+  rolePermissions RolePermission[]
+}
+
+model Permission {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  category    String?
+  createdAt   DateTime @default(now())
+
+  rolePermissions RolePermission[]
+}
+
+model RolePermission {
+  id          String   @id @default(uuid())
+  roleId      String
+  permissionId String
+  createdAt   DateTime @default(now())
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+}
+
+// ─────────────────────────────────────────────
+// User (formerly Doctor)
+// ─────────────────────────────────────────────
+
+model User {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  password     String
+  name         String
+  phone        String?
+  specialty    String?
+  roleId       String?
+  isActive            Boolean   @default(true)
+  mustChangePassword  Boolean   @default(false)
+  lastLoginAt         DateTime?
+  failedLoginAttempts Int       @default(0)
+  lockedUntil         DateTime?
+  sessionVersion      Int       @default(0)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  role          Role?           @relation(fields: [roleId], references: [id])
+  patients      Patient[]
+  visits        Visit[]
+  prescriptions Prescription[]
+  clinicalNotes ClinicalNote[]
+  annotations   Annotation[]
+  auditLogs     AuditLog[]
+  deviceRegistrations DeviceRegistration[]
+  documentVersionsCreated DocumentVersion[]  @relation("DocumentVersionCreator")
+  backups       BackupHistory[]  @relation("BackupTriggerUser")
+  loginHistory  LoginHistory[]
+  refreshTokens RefreshToken[]
+  pairingCodes  DevicePairingCode[]
+  approvedPairings DevicePairingCode[] @relation("PairingApprover")
+  authSessions  AuthSession[]
+
+  @@index([isActive])
+}
+
+// ─────────────────────────────────────────────
+// Patient
+// ─────────────────────────────────────────────
+
+model Patient {
+  id             String    @id @default(uuid())
+  doctorId       String
+  firstName      String
+  lastName       String
+  dateOfBirth    String?
+  phone          String?
+  email          String?
+  address        String?   @db.Text
+  notes          String?   @db.Text
+  deletedAt      DateTime?
+  revision       Int       @default(1)
+  originDeviceId String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  doctor        User            @relation(fields: [doctorId], references: [id], onDelete: Restrict)
+  documents     Document[]
+  visits        Visit[]
+  prescriptions Prescription[]
+  clinicalNotes ClinicalNote[]
+
+  @@index([doctorId])
+  @@index([firstName])
+  @@index([lastName])
+  @@index([deletedAt])
+  @@index([doctorId, deletedAt])
+}
+
+// ─────────────────────────────────────────────
+// Document & DocumentVersion
+// ─────────────────────────────────────────────
+
+model Document {
+  id                 String    @id @default(uuid())
+  patientId          String
+  fileName           String
+  filePath           String
+  fileSize           Int
+  mimeType           String    @default("application/octet-stream")
+  title              String?
+  notes              String?   @db.Text
+  category           String    @default("General")
+  scannedAt          DateTime  @default(now())
+  sha256Hash         String?
+  storedObjectId     String?
+  pageCount          Int?
+  sourceDeviceId     String?
+  documentVersionId  String?
+  deletedAt          DateTime?
+  revision           Int       @default(1)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  patient          Patient          @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  documentVersion  DocumentVersion?  @relation("DocumentCurrentVersion", fields: [documentVersionId], references: [id])
+  versionHistory  DocumentVersion[]  @relation("DocumentVersionBelongsTo")
+  annotations      Annotation[]
+  storedObject     StoredObject?    @relation(fields: [storedObjectId], references: [id], onDelete: SetNull)
+
+  @@index([patientId])
+  @@index([scannedAt])
+  @@index([category])
+  @@index([deletedAt])
+  @@index([sha256Hash])
+  @@index([storedObjectId])
+}
+
+model DocumentVersion {
+  id               String   @id @default(uuid())
+  documentId       String
+  versionNumber    Int
+  sha256Hash       String?
+  storedObjectId   String?
+  fileSize         Int?
+  createdBy        String
+  createdAt        DateTime @default(now())
+
+  document     Document     @relation("DocumentVersionBelongsTo", fields: [documentId], references: [id], onDelete: Cascade)
+  creator      User         @relation("DocumentVersionCreator", fields: [createdBy], references: [id])
+  documents    Document[]   @relation("DocumentCurrentVersion")
+  storedObject StoredObject? @relation(fields: [storedObjectId], references: [id], onDelete: SetNull)
+
+  @@index([documentId])
+  @@index([storedObjectId])
+}
+
+// ─────────────────────────────────────────────
+// Visit
+// ─────────────────────────────────────────────
+
+model Visit {
+  id             String    @id @default(uuid())
+  patientId      String
+  doctorId       String
+  visitDate      DateTime
+  visitTime      String?
+  visitType      String
+  chiefComplaint String?   @db.Text
+  diagnosis      String?   @db.Text
+  prescription   String?   @db.Text
+  followUpDate   DateTime?
+  followUpNotes  String?   @db.Text
+  status         String    @default("scheduled")
+  notes          String?   @db.Text
+  deletedAt      DateTime?
+  revision       Int       @default(1)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  patient       Patient        @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  doctor        User           @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  prescriptions Prescription[]
+  clinicalNotes ClinicalNote[]
+
+  @@index([patientId])
+  @@index([doctorId])
+  @@index([visitDate])
+}
+
+// ─────────────────────────────────────────────
+// Prescription
+// ─────────────────────────────────────────────
+
+model Prescription {
+  id          String   @id @default(uuid())
+  patientId   String
+  doctorId    String
+  visitId     String?
+  medications String   @db.Text
+  notes       String?  @db.Text
+  status      String   @default("active")
+  deletedAt   DateTime?
+  revision    Int      @default(1)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  doctor  User    @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  visit   Visit?  @relation(fields: [visitId], references: [id])
+
+  @@index([patientId])
+  @@index([doctorId])
+}
+
+// ─────────────────────────────────────────────
+// ClinicalNote
+// ─────────────────────────────────────────────
+
+model ClinicalNote {
+  id        String   @id @default(uuid())
+  patientId String
+  doctorId  String
+  visitId   String?
+  title     String
+  content   String   @db.Text
+  category  String   @default("General")
+  isPinned  Boolean  @default(false)
+  deletedAt DateTime?
+  revision  Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  doctor  User    @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  visit   Visit?  @relation(fields: [visitId], references: [id])
+
+  @@index([patientId])
+  @@index([doctorId])
+  @@index([isPinned])
+  @@index([deletedAt])
+}
+
+// ─────────────────────────────────────────────
+// Annotation
+// ─────────────────────────────────────────────
+
+model Annotation {
+  id         String   @id @default(uuid())
+  documentId String
+  doctorId   String
+  content    String   @db.Text
+  x          Float
+  y          Float
+  page       Int      @default(1)
+  color      String   @default("#10b981")
+  deletedAt  DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  doctor   User     @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+}
+
+// ─────────────────────────────────────────────
+// AuditLog (IMMUTABLE — no updatedAt)
+// ─────────────────────────────────────────────
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String
+  action     String
+  entityType String
+  entityId   String
+  details    Json?    @db.JsonB
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  actor User @relation(fields: [actorId], references: [id], onDelete: Cascade)
+
+  @@index([actorId])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+// ─────────────────────────────────────────────
+// DeviceRegistration
+// ─────────────────────────────────────────────
+
+model DeviceRegistration {
+  id            String    @id @default(uuid())
+  userId        String
+  deviceName    String
+  deviceType    String
+  platform      String?
+  appVersion    String?
+  publicKey     String?
+  lastSyncedAt  DateTime?
+  lastIp        String?
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  syncQueue SyncQueue[]
+  refreshTokens RefreshToken[]
+
+  @@index([userId])
+  @@index([isActive])
+}
+
+// ─────────────────────────────────────────────
+// SyncQueue
+// ─────────────────────────────────────────────
+
+model SyncQueue {
+  id            String    @id @default(uuid())
+  entityType    String
+  entityId      String
+  operation     String
+  payload       Json      @db.JsonB
+  deviceId      String
+  status        String    @default("pending")
+  attempts      Int       @default(0)
+  lastAttemptAt DateTime?
+  createdAt     DateTime  @default(now())
+  completedAt   DateTime?
+
+  device DeviceRegistration @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([deviceId])
+  @@index([entityType, entityId])
+}
+
+// ─────────────────────────────────────────────
+// BackupHistory
+// ─────────────────────────────────────────────
+
+model BackupHistory {
+  id           String    @id @default(uuid())
+  triggeredBy  String
+  backupType   String
+  filePath     String
+  fileSize     Int?
+  checksum     String?
+  status       String
+  errorMessage String?   @db.Text
+  completedAt  DateTime?
+  createdAt    DateTime  @default(now())
+
+  triggeredByUser User                @relation("BackupTriggerUser", fields: [triggeredBy], references: [id])
+  verifiedObjects  StoredObject[]     @relation("BackupVerifiedObject")
+  objectEntries   BackupObjectEntry[]
+  purgeTombstones PurgeTombstone[]
+
+  @@index([triggeredBy])
+  @@index([createdAt])
+}
+
+// ─────────────────────────────────────────────
+// LoginHistory
+// ─────────────────────────────────────────────
+
+model LoginHistory {
+  id            String   @id @default(uuid())
+  userId        String
+  ipAddress     String?
+  userAgent     String?
+  deviceName    String?
+  success       Boolean
+  failureReason String?  @db.Text
+  createdAt     DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([createdAt])
+}
+
+// ─────────────────────────────────────────────
+// RefreshToken (auth session management)
+// ─────────────────────────────────────────────
+
+model RefreshToken {
+  id               String    @id @default(uuid())
+  tokenHash        String
+  userId           String
+  familyId         String    @default("")
+  parentTokenId    String?
+  replacedByTokenId String?
+  deviceId         String?
+  authSessionId    String?
+  expiresAt        DateTime
+  usedAt           DateTime?
+  revokedAt        DateTime?
+  revocationReason String?
+  createdAt        DateTime  @default(now())
+
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device    DeviceRegistration? @relation(fields: [deviceId], references: [id])
+
+  @@index([tokenHash])
+  @@index([userId])
+  @@index([familyId])
+  @@index([deviceId])
+  @@index([expiresAt])
+}
+
+// ─────────────────────────────────────────────
+// StoredObject (encrypted blob metadata)
+// ─────────────────────────────────────────────
+
+model StoredObject {
+  id                      String    @id @default(uuid())
+  sha256Hash              String    @unique
+  encryptedPath           String
+  plaintextSize           Int
+  encryptionFormatVersion Int       @default(2)
+  keyId                   String?
+  chunkSize               Int?
+  chunkCount              Int?
+  pendingDeletionAt       DateTime?
+  retentionDays           Int       @default(30)
+  createdAt               DateTime  @default(now())
+  verifiedAt              DateTime?
+  purgeState              String    @default("ACTIVE")
+  backupVerifiedAt        DateTime?
+  verifiedBackupId        String?
+  corruptionStatus        String?
+
+  documents           Document[]
+  documentVersions    DocumentVersion[]
+  verifiedBackup      BackupHistory?       @relation("BackupVerifiedObject", fields: [verifiedBackupId], references: [id])
+  backupObjectEntries BackupObjectEntry[]
+  purgeTombstones     PurgeTombstone[]
+
+  @@index([createdAt])
+  @@index([pendingDeletionAt])
+}
+
+// ─────────────────────────────────────────────
+// Configuration (key-value store)
+// ─────────────────────────────────────────────
+
+// ─────────────────────────────────────────────
+// BackupObjectEntry (normalized backup manifest)
+// ─────────────────────────────────────────────
+
+model BackupObjectEntry {
+  id              String    @id @default(uuid())
+  backupId        String
+  storedObjectId  String
+  sha256Hash      String
+  encryptedSize   Int?
+  status          String    @default("pending")
+  checksumVerified Boolean   @default(false)
+  verifiedAt      DateTime?
+  error           String?   @db.Text
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  backup       BackupHistory @relation(fields: [backupId], references: [id], onDelete: Cascade)
+  storedObject StoredObject  @relation(fields: [storedObjectId], references: [id])
+
+  @@unique([backupId, storedObjectId])
+  @@index([backupId])
+  @@index([storedObjectId])
+  @@index([status])
+  @@index([verifiedAt])
+}
+
+// ─────────────────────────────────────────────
+// PurgeTombstone (permanent record of purged objects)
+// ─────────────────────────────────────────────
+
+model PurgeTombstone {
+  id               String   @id @default(uuid())
+  storedObjectId   String
+  sha256           String
+  purgedAt         DateTime @default(now())
+  actorId          String?
+  verifiedBackupId String?
+  auditEventId     String?
+  failureInfo      String?  @db.Text
+  createdAt        DateTime @default(now())
+
+  storedObject   StoredObject   @relation(fields: [storedObjectId], references: [id])
+  verifiedBackup BackupHistory? @relation(fields: [verifiedBackupId], references: [id])
+
+  @@index([storedObjectId])
+  @@index([sha256])
+  @@index([purgedAt])
+}
+
+// ─────────────────────────────────────────────
+// Configuration (key-value store)
+// ─────────────────────────────────────────────
+
+model Configuration {
+  id          String   @id @default(uuid())
+  key         String   @unique
+  value       String   @db.Text
+  description String?  @db.Text
+  updatedAt   DateTime @updatedAt
+}
+
+// ─────────────────────────────────────────────
+// DevicePairingCode (one-time device pairing)
+// ─────────────────────────────────────────────
+
+model DevicePairingCode {
+  id                String    @id @default(uuid())
+  userId            String
+  code              String
+  deviceFingerprint String    @default("")
+  deviceName        String    @default("")
+  deviceType        String    @default("")
+  platform          String?
+  appVersion        String?
+  challengeNonce     String?
+  signature         String?
+  expiresAt         DateTime
+  usedAt            DateTime?
+  approvedBy        String?
+  createdAt         DateTime  @default(now())
+
+  user      User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  approver  User? @relation("PairingApprover", fields: [approvedBy], references: [id], onDelete: SetNull)
+
+  @@index([code])
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// ─────────────────────────────────────────────
+// DeviceChallenge (short-lived, single-use proof nonce)
+// ─────────────────────────────────────────────
+
+model DeviceChallenge {
+  id        String    @id @default(uuid())
+  deviceId  String
+  nonce     String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([deviceId])
+  @@index([nonce, usedAt])
+}
+
+// ─────────────────────────────────────────────
+// AuthSession (server-side session tracking)
+// ─────────────────────────────────────────────
+
+model AuthSession {
+  id               String    @id @default(uuid())
+  userId           String
+  deviceId         String?
+  familyId         String    @default("")
+  createdAt        DateTime  @default(now())
+  lastSeenAt       DateTime  @default(now())
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  revocationReason String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([deviceId])
+  @@index([familyId])
+  @@index([expiresAt])
+  @@index([revokedAt])
+}
