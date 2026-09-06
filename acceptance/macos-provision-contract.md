@@ -1,11 +1,27 @@
 # MediVault — macOS Provisioner & Keychain Contract (stage: provision-lifecycle)
 
-Status: **IN PROGRESS — first-red discipline active** (marked FROZEN GREEN
-only when the `provision-lifecycle` CI mode is green on both architectures)
-Lane: `platform/macos`
-Predecessor stages (FROZEN GREEN, not reopened): `integration` @ `a282f45`
-(run `34031521912`), `pg-bundle-verify` @ `795df26` (run `34051758040`),
-`supervisor-lifecycle` @ `c71ac4c` (run `34063917607`)
+Status: **FROZEN GREEN** (stage: provision-lifecycle — do not reopen unless
+a later first-red directly proves this contract wrong)
+Lane: `platform/macos` · Verified GREEN @ `1a0c48f`, run `34065567722`
+(both arches, 2026-09-06) · Predecessor stages (FROZEN GREEN, not
+reopened): `integration` @ `a282f45` (run `34031521912`),
+`pg-bundle-verify` @ `795df26` (run `34051758040`), `supervisor-lifecycle`
+@ `c71ac4c` (run `34063917607`)
+First-red ledger: (1) run `34065127029` — the B-matrix steps replaced
+PATH and dropped setup-node's node dir (`node: command not found`);
+cluster A (real login-keychain bootstrap + read-back + delegated
+provisioning + graceful lifecycle) was GREEN already in that run.
+(2) run `34065334408` — SQL boolean text-cast renders `true`/`false`
+(`rolcanlogin || ','`), not psql's display form `t`/`f`; the provisioner's
+role-identity parser and the CI assertion fixed (both spellings
+normalized). GREEN run 34065567722: real login-keychain items created +
+read back by the supervisor (same ad-hoc-signed binary), delegated
+bootstrap with keychain-sourced random secrets to healthy, /health +
+/ready 200, SIGTERM graceful exit 0 with zero orphans; the full 4-state
+matrix with sentinel data-preservation (VALID_EXISTING never
+re-initializes), stale-pending reconciliation, RECOVERABLE_INCOMPLETE
+resume with exact role identity, INCOMPLETE_EXISTING fail-closed x2 with
+nothing altered; log redaction GREEN.
 
 ---
 
