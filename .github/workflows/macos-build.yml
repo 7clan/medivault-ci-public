@@ -1308,7 +1308,12 @@ jobs:
       # integration build without a target would be rejected by the gate).
       PG_INSTALL: '/Users/runner/pg17-install-dt13'
       MACOSX_DEPLOYMENT_TARGET: '13.0'
-      PGDATA: '/Users/runner/work/_temp/medivault-pgdata-supervisor'
+      # PGDATA at the PRODUCTION layout (cluster under Application
+      # Support, never inside the .app): the supervisor's config resolves
+      # <app_support>/PostgreSQL/17/data via pgdata_rel, and the harness
+      # provisions exactly there. (Third-red run 34063575936: supervisor
+      # correctly fail-closed because the harness used a _temp path.)
+      PGDATA: '/Users/runner/work/_temp/medivault-appsupport/PostgreSQL/17/data'
       PGPORT: '55434'
       PG_SUPERUSER: 'postgres'
       PG_SUPER_PASSWORD: 'MedivaultMacCI2026!'
@@ -1606,7 +1611,8 @@ jobs:
               "port": $PGPORT,
               "superuser": "postgres",
               "app_user": "$APP_DB_USER",
-              "app_database": "$APP_DB_NAME"
+              "app_database": "$APP_DB_NAME",
+              "pgdata_rel": "PostgreSQL/17/data"
             },
             "api": {
               "host": "$API_HOST",
@@ -1862,6 +1868,6 @@ jobs:
           retention-days: 1
           path: |
             /tmp/prisma-generate.log
-            /Users/runner/work/_temp/medivault-pgdata-supervisor/pg.log
+            /Users/runner/work/_temp/medivault-appsupport/PostgreSQL/17/data/pg.log
             /Users/runner/work/_temp/medivault-api/api.log
           if-no-files-found: ignore
