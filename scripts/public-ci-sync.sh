@@ -306,7 +306,8 @@ github_api GET "/repos/$PUBLIC_SLUG"
 if [ "$HTTP_CODE" = "200" ]; then
   [ "$(jq -r '.private' "$RESPONSE_FILE")" = "false" ] \
     || die "$PUBLIC_SLUG exists but is PRIVATE — the mirror must be public"
-  note "P9 public repo already exists (idempotent re-sync)"
+  PUBLIC_REPO_ID="$(jq -r '.id' "$RESPONSE_FILE")"
+  note "P9 public repo already exists (idempotent re-sync, id $PUBLIC_REPO_ID)"
 elif [ "$HTTP_CODE" = "404" ]; then
   OWNER="${PUBLIC_SLUG%%/*}"
   github_api GET "/user"
@@ -325,7 +326,8 @@ elif [ "$HTTP_CODE" = "404" ]; then
   github_api POST "$CREATE_PATH" \
     "{\"name\":\"${PUBLIC_SLUG#*/}\",\"description\":\"$PUBLIC_DESC\",\"private\":false,\"has_issues\":false,\"has_wiki\":false,\"has_projects\":false}"
   [ "$HTTP_CODE" = "201" ] || die "repo creation failed (HTTP $HTTP_CODE): $(jq -r '.message // empty' "$RESPONSE_FILE")"
-  note "P9 created PUBLIC repo $PUBLIC_SLUG (via $CREATE_PATH)"
+  PUBLIC_REPO_ID="$(jq -r '.id' "$RESPONSE_FILE")"
+  note "P9 created PUBLIC repo $PUBLIC_SLUG (via $CREATE_PATH, id $PUBLIC_REPO_ID)"
 else
   die "unexpected API response for /repos/$PUBLIC_SLUG (HTTP $HTTP_CODE): $(jq -r '.message // empty' "$RESPONSE_FILE")"
 fi
@@ -391,7 +393,11 @@ done < <(grep -rhoE 'uses:[[:space:]]*[^[:space:]]+' "$EXPORT_DIR/.github" 2>/de
   | sed -E 's/uses:[[:space:]]*//' | grep -v '^\./' | grep -v '^docker://' | sed 's/@.*//' | sort -u)
 [ "$(jq -r '.patterns_allowed | length' <<<"$ACTIONS_JSON")" -gt 0 ] \
   || die "no actions extracted from workflows — refusing to allowlist an empty set"
-github_api PUT "/repos/$PUBLIC_SLUG/actions/permissions/actions" "$ACTIONS_JSON"
+# NOTE: for user-owned repos the selected-actions list endpoint lives under
+# /repositories/{id}/actions/permissions/selected-actions (the
+# /repos/{owner}/{repo}/actions/permissions/actions path 404s on user repos —
+# diagnosed live; the base permissions response exposes selected_actions_url).
+github_api PUT "/repositories/$PUBLIC_REPO_ID/actions/permissions/selected-actions" "$ACTIONS_JSON"
 [ "$HTTP_CODE" = "204" ] || die "actions allowlist failed (HTTP $HTTP_CODE): $(jq -r '.message // empty' "$RESPONSE_FILE")"
 note "P12 actions allowed (selected): $(jq -r '.patterns_allowed | join(", ")' <<<"$ACTIONS_JSON")"
 github_api PUT "/repos/$PUBLIC_SLUG/actions/permissions/workflow" \
