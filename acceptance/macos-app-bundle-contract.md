@@ -1,11 +1,28 @@
 # MediVault — macOS App-Bundle Contract (stage: bundle-verify)
 
-Status: **IN PROGRESS — first-red discipline active** (marked FROZEN GREEN
-only when the `bundle-verify` CI mode is green on both architectures)
-Lane: `platform/macos`
-Predecessor stages (FROZEN GREEN): `integration` @ `a282f45` (34031521912),
-`pg-bundle-verify` @ `795df26` (34051758040), `supervisor-lifecycle` @
-`c71ac4c` (34063917607), `provision-lifecycle` @ `1a0c48f` (34065567722)
+Status: **FROZEN GREEN** (stage: bundle-verify — do not reopen unless a
+later first-red directly proves this contract wrong)
+Lane: `platform/macos` · Verified GREEN @ `2089913`, run `34066717890`
+(both arches, 2026-09-06) · Predecessor stages (FROZEN GREEN):
+`integration` @ `a282f45` (34031521912), `pg-bundle-verify` @ `795df26`
+(34051758040), `supervisor-lifecycle` @ `c71ac4c` (34063917607),
+`provision-lifecycle` @ `1a0c48f` (34065567722)
+First-red ledger: (1) run `34065953122` — SHASUMS256.txt gate resolved
+the tarball path relative to CWD (`No such file or directory`); fixed by
+rewriting the checksum line to the absolute path + a not-listed guard.
+(2) run `34066133860` — `find|sort|head -60` under `set -o pipefail`:
+head's early pipe close SIGPIPE-killed find (script exit 2); replaced
+with `sed -n '1,60p'`. (3) run `34066422328` — prisma's build/index.js
+is NOT self-contained (@prisma/config requires `effect` etc.): the
+packaged CLI now ships its FULL npm dependency closure (staged from the
+exact installed version, engines included, `effect` presence gated).
+GREEN run 34066717890: double-hash-gated Node 22.23.2, complete bundle
+assembly + Mach-O gates (node/supervisor/PG all violations 0), exact
+layout assertions, real login-keychain bootstrap, delegated
+provisioning + lifecycle FROM THE PACKAGED TREE (API proven running on
+the packaged node binary), graceful SIGTERM exit 0 + zero orphans, and
+the whole-.app RELOCATION proof (VALID_EXISTING re-run, cluster under
+Application Support untouched).
 
 ## 1. The shipped tree
 
