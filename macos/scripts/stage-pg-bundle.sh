@@ -132,12 +132,14 @@ if [ -n "$SUPERVISOR_BIN" ]; then
   test -x "$SUPERVISOR_BIN" || die "SUPERVISOR_BIN not executable: $SUPERVISOR_BIN"
   # BUNDLE = <APP>/Contents/Resources/runtime/postgresql/17
   # dirname = .../postgresql; FOUR levels up = the .app root.
-  # (first-red run 34062829878, both arches: two levels up resolved to
-  # Contents/Resources, so the binary landed in Resources/MacOS/ and the
-  # gate failed on the expected Contents/MacOS path.)
+  # (first-red run 34062829878: two levels up resolved to Contents/Resources.
+  # second-red run 34063304408: app root was right but the executable dir
+  # omitted the Contents/ component — the macOS bundle convention is
+  # <APP>/Contents/MacOS/, which is the plist Program path and what the
+  # gate correctly expects.)
   APP_ROOT="$(cd "$(dirname "$BUNDLE")/../../../.." && pwd)"
   test -d "$APP_ROOT/Contents" || die "computed app root has no Contents/: $APP_ROOT"
-  MACOS_DIR="$APP_ROOT/MacOS"
+  MACOS_DIR="$APP_ROOT/Contents/MacOS"
   mkdir -p "$MACOS_DIR"
   cp "$SUPERVISOR_BIN" "$MACOS_DIR/mediavault-supervisor"
   echo "[stage] supervisor binary -> $MACOS_DIR/mediavault-supervisor"
