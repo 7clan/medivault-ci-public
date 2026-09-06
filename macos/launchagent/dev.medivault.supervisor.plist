@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  MediVault supervisor LaunchAgent (SMAppService.agent contract).
+
+  This plist ships INSIDE the app bundle at
+  MediVault.app/Contents/Library/LaunchAgents/dev.medivault.supervisor.plist
+  and is registered from the desktop app at first-run setup via
+  SMAppService.agent.register() (ServiceManagement.framework, macOS 13+).
+  It is the USER-scoped agent: the backend runs while the doctor is logged
+  in, independent of the desktop window.
+
+  Fields (acceptance/macos-architecture-audit.md, SMAPPSERVICE DESIGN):
+    Label          dev.medivault.supervisor
+    Program        the supervisor binary at its app-bundle location
+    RunAtLoad      true  — starts at login
+    KeepAlive      true  — launchd restarts the supervisor itself on crash
+    ProcessType    Background — App Nap / scheduling class for a daemon-like agent
+    Disabled       false
+
+  NOTES
+    - No StandardOutPath/StandardErrorPath: launchd capture paths must be
+      per-user ABSOLUTE, which cannot be known at bundle-build time. The
+      supervisor performs its own structured file logging into
+      ~/Library/Logs/MediVault/ (supervisor.log, postgres.log, api.log);
+      pre-logging early crashes are observable via the unified log:
+        log show (predicate: process == "mediavault-supervisor")
+    - The supervisor's own crash resilience is redundant by design with
+      KeepAlive (launchd = outer ring, supervisor restart backoff = inner
+      ring for the CHILDREN).
+    - Registration/UX (Login Items approval pane) is an interactive-cloud-Mac
+      proof, NOT a CI proof; CI proves the foreground lifecycle contract of
+      the same binary. SMAppService registration lands with the app-bundle
+      stage.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.medivault.supervisor</string>
+
+    <key>Program</key>
+    <string>/Applications/MediVault.app/Contents/MacOS/mediavault-supervisor</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Applications/MediVault.app/Contents/MacOS/mediavault-supervisor</string>
+        <string>run</string>
+        <string>--config</string>
+        <string>/Applications/MediVault.app/Contents/Resources/supervisor-config.json</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>Disabled</key>
+    <false/>
+
+    <key>ExitTimeOut</key>
+    <integer>90</integer>
+</dict>
+</plist>

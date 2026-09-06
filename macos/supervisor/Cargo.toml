@@ -1,0 +1,30 @@
+[package]
+name = "mediavault-supervisor"
+version = "0.1.0"
+description = "MediVault macOS supervisor — launches, supervises and gracefully stops the bundled PostgreSQL 17 server and the Node API (LaunchAgent foreground process)"
+edition = "2021"
+license = "proprietary"
+rust-version = "1.77.0"
+publish = false
+
+# Deliberately tiny dependency set:
+#   - libc        : POSIX only (flock single-instance lock, SIGTERM/SIGINT handlers,
+#                   kill(2) for fast-mode PostgreSQL shutdown). No kqueue, no
+#                   macOS-only APIs — the resulting Mach-O links libSystem only,
+#                   which keeps the fail-closed Mach-O dependency gate trivial.
+#   - serde/json  : the supervisor config + status files are JSON (same format
+#                   discipline as the rest of the platform tree).
+# NO tokio / reqwest / keyring here: the supervisor is a small, synchronous,
+# poll-loop process manager. The HTTP /health probe is a hand-rolled
+# std::net::TcpStream request. The Keychain secret source arrives with the
+# provisioning stage behind the existing SecretsProvider seam.
+[dependencies]
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = "symbols"

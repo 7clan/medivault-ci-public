@@ -33,6 +33,26 @@
 #                  frozen integration stage — no PG signal here).
 #                  Contract: acceptance/macos-pg-bundle-contract.md.
 #
+#   supervisor-lifecycle : the Rust supervisor (macos/supervisor) —
+#                  the macOS replacement for the Windows service stack.
+#                  Built per-arch with MACOSX_DEPLOYMENT_TARGET=13.0,
+#                  gated by the same fail-closed Mach-O rules (arch,
+#                  minOS <= 13.0, deps /usr/lib + /System only), then the
+#                  FULL foreground lifecycle proof against the frozen PG
+#                  bundle contract: harness pre-provisions the cluster
+#                  (initdb SCRAM + app role + migrations — the
+#                  provisioner's future job), STOPS it, and the supervisor
+#                  must: start the existing cluster (bounded pg_isready,
+#                  SELECT 1 as the app role) → start the Node API (env
+#                  contract) → bounded GET /health 200 → healthy; then a
+#                  second instance must fail on the flock (exit 3);
+#                  SIGKILLing the API child must be survived (bounded
+#                  backoff restart, healthy again); SIGTERM must produce
+#                  the graceful ladder (API SIGTERM → PG SIGINT fast →
+#                  bounded escalation, never SIGKILL first), exit 0, zero
+#                  orphan processes, status file "stopped". Contract:
+#                  acceptance/macos-supervisor-contract.md.
+#
 #   full / desktop-launch-regression / reinstall-regression / dmg-only :
 #                  reserved by the audit's CI matrix; not yet wired (the
 #                  guard job fails them explicitly instead of pretending).
@@ -48,13 +68,14 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'CI mode (wired: integration, pg-bundle-verify)'
+        description: 'CI mode (wired: integration, pg-bundle-verify, supervisor-lifecycle)'
         required: true
         default: 'integration'
         type: choice
         options:
           - integration
           - pg-bundle-verify
+          - supervisor-lifecycle
           - full
           - desktop-launch-regression
           - reinstall-regression
@@ -69,12 +90,12 @@ jobs:
   # ---------------------------------------------------------------------------
   not-yet-wired:
     name: "Mode guard"
-    if: github.event.inputs.mode != 'integration' && github.event.inputs.mode != 'pg-bundle-verify'
+    if: github.event.inputs.mode != 'integration' && github.event.inputs.mode != 'pg-bundle-verify' && github.event.inputs.mode != 'supervisor-lifecycle'
     runs-on: ubuntu-latest
     steps:
       - name: Mode not yet wired on this lane
         run: |
-          echo "::error::Mode '${{ github.event.inputs.mode }}' is reserved by the macOS CI matrix but not yet wired. The lane is built stage-by-stage (first-red discipline). Wired modes today: integration, pg-bundle-verify."
+          echo "::error::Mode '${{ github.event.inputs.mode }}' is reserved by the macOS CI matrix but not yet wired. The lane is built stage-by-stage (first-red discipline). Wired modes today: integration, pg-bundle-verify, supervisor-lifecycle."
 
   # ---------------------------------------------------------------------------
   # Integration mode — the shared app proof on real macOS runners, both archs.
@@ -1245,4 +1266,602 @@ jobs:
             /tmp/vitest-db.log
             /tmp/prisma-generate.log
             /Users/runner/work/_temp/medivault-pgdata-bundle/pg.log
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # supervisor-lifecycle — the Rust supervisor stage (macos/supervisor).
+  #
+  # Lane order: integration (FROZEN GREEN @ a282f45) -> pg-bundle-verify
+  # (FROZEN GREEN @ 795df26) -> Rust supervisor (THIS JOB) ->
+  # Keychain/provisioning -> Node/PG app-bundle staging -> Tauri -> DMG ->
+  # macOS 26 -> reinstall/uninstall. One SHA + one mode = one run
+  # (first-red discipline). Contract: acceptance/macos-supervisor-contract.md.
+  #
+  # Stage-1 scope honesty: the Node child here is the runner's setup-node
+  # Node 22; the pinned nodejs.org runtime staging + hash gate lands with
+  # the app-bundle stage (which re-proves this lifecycle against the
+  # shipped runtime). Keychain secrets source arrives with the
+  # provisioning stage (secrets.source "keychain" fails closed today).
+  # ---------------------------------------------------------------------------
+  supervisor-lifecycle:
+    name: "supervisor-lifecycle (${{ matrix.label }})"
+    if: github.event.inputs.mode == 'supervisor-lifecycle'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: arm64
+            runner: macos-15
+            expected_uname: arm64
+          - label: x64
+            runner: macos-15-intel
+            expected_uname: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+
+    env:
+      PG_VERSION: '17.11'
+      PG_SHA256: '5367f6fb2ec97efe1eb2e0c7926bb33438e51b0bd3a9733b88498056a7dc9a7e'
+      PG_TARBALL_URL: 'https://ftp.postgresql.org/pub/source/v17.11/postgresql-17.11.tar.gz'
+      # SAME install prefix + cache key family as pg-bundle-verify: this job
+      # restores the MACOSX_DEPLOYMENT_TARGET=13.0 build (the frozen
+      # integration build without a target would be rejected by the gate).
+      PG_INSTALL: '/Users/runner/pg17-install-dt13'
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+      PGDATA: '/Users/runner/work/_temp/medivault-pgdata-supervisor'
+      PGPORT: '55434'
+      PG_SUPERUSER: 'postgres'
+      PG_SUPER_PASSWORD: 'MedivaultMacCI2026!'
+      APP_DB_USER: 'medivault'
+      APP_DB_PASSWORD: 'MedivaultMacCI2026!'
+      APP_DB_NAME: 'medivault'
+      DATABASE_URL: 'postgresql://medivault:MedivaultMacCI2026!@127.0.0.1:55434/medivault'
+      # --- supervisor secret env contract (secrets.source "env") ---
+      MV_PG_APP_PASSWORD: 'MedivaultMacCI2026!'
+      MV_AUTH_JWT_SECRET: 'macos-ci-jwt-secret-0000000000000000000000000000000000000000000000000000000000000000'
+      MV_MEDIVAULT_MASTER_KEY: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+      # --- API (started BY the supervisor, not by the harness) ---
+      API_PORT: '4572'
+      API_HOST: '127.0.0.1'
+      # --- supervisor runtime layout (config-driven, CI uses _temp) ---
+      MV_APP_SUPPORT: '/Users/runner/work/_temp/medivault-appsupport'
+      MV_LOG_DIR: '/Users/runner/work/_temp/medivault-appsupport/logs'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Preflight — runner architecture proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "uname -m:        $(uname -m)"
+          echo "expected:        ${{ matrix.expected_uname }}"
+          echo "macOS:           $(sw_vers -productVersion)"
+          echo "CPU:             $(sysctl -n machdep.cpu.brand_string)"
+          echo "cores:           $(sysctl -n hw.ncpu)"
+          echo "Xcode CLT:       $(xcodebuild -version 2>/dev/null | head -1)"
+          if [ "$(uname -m)" != "${{ matrix.expected_uname }}" ]; then
+            echo "::error::Runner architecture mismatch — expected ${{ matrix.expected_uname }}, got $(uname -m). Rosetta does not count as native support."
+            exit 1
+          fi
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            mini-services/api-service/node_modules
+            packages/*/node_modules
+          key: macos-deps-${{ matrix.label }}-${{ hashFiles('bun.lock', 'package.json', 'packages/*/package.json', 'mini-services/api-service/package.json') }}
+          restore-keys: |
+            macos-deps-${{ matrix.label }}-
+
+      - name: Install dependencies
+        run: bun install
+
+      # ------------------------------------------------------------------
+      # Rust toolchain: rust-toolchain.toml (repo root) pins the exact
+      # version; running cargo inside macos/supervisor auto-resolves it.
+      # ------------------------------------------------------------------
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            echo "rustup missing from runner image — installing"
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+          rustup --version
+          cd macos/supervisor
+          # Explicit install of the pinned toolchain (the file lookup would
+          # also auto-install; being explicit keeps the log honest).
+          rustup toolchain install --profile minimal "$(grep -oE 'channel = "[^"]+"' ../../rust-toolchain.toml | cut -d'"' -f2)"
+          cargo --version
+          rustc --version
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            macos/supervisor/target
+          key: macos-supervisor-${{ matrix.label }}-${{ hashFiles('macos/supervisor/Cargo.lock', 'macos/supervisor/Cargo.toml') }}
+
+      - name: Build supervisor (MACOSX_DEPLOYMENT_TARGET=13.0)
+        shell: bash
+        run: |
+          set -euo pipefail
+          export MACOSX_DEPLOYMENT_TARGET=13.0
+          cd macos/supervisor
+          cargo build --release --locked
+          BIN="target/release/mediavault-supervisor"
+          test -x "$BIN" || { echo "::error::supervisor binary missing after cargo build"; exit 1; }
+          file "$BIN"
+          "$BIN" version
+
+      # ------------------------------------------------------------------
+      # The supervisor binary gets the SAME fail-closed Mach-O gate as the
+      # frozen PG stage: single arch, minOS <= 13.0, deps only
+      # /usr/lib + /System (a std+libc+serde binary should link nothing
+      # else — anything more is a contract violation).
+      # ------------------------------------------------------------------
+      - name: Mach-O gate — supervisor binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash macos/scripts/macho-gate.sh \
+            "macos/supervisor/target/release/mediavault-supervisor" \
+            "${{ matrix.expected_uname }}" 13.0
+
+      # ------------------------------------------------------------------
+      # PostgreSQL: restore the frozen dt13 build (same cache key), or
+      # build from the pinned source exactly like pg-bundle-verify.
+      # ------------------------------------------------------------------
+      - name: Cache PostgreSQL ${{ env.PG_VERSION }} build (MACOSX_DEPLOYMENT_TARGET=13.0)
+        id: pg-cache
+        uses: actions/cache@v4
+        with:
+          path: '/Users/runner/pg17-install-dt13'
+          key: macos-pg17-dt13-${{ matrix.label }}-${{ env.PG_VERSION }}-${{ env.PG_SHA256 }}
+
+      - name: Build PostgreSQL ${{ env.PG_VERSION }} from source (MACOSX_DEPLOYMENT_TARGET=13.0)
+        if: steps.pg-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export MACOSX_DEPLOYMENT_TARGET=13.0
+          echo "MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET"
+          echo "Downloading $PG_TARBALL_URL"
+          curl -fsSL --retry 3 -o /tmp/postgresql-$PG_VERSION.tar.gz "$PG_TARBALL_URL"
+          echo "Verifying SHA-256 (fail closed)"
+          echo "$PG_SHA256  /tmp/postgresql-$PG_VERSION.tar.gz" | shasum -a 256 --check --strict || {
+            echo "::error::PostgreSQL tarball SHA-256 mismatch — refusing to build (provenance contract)"
+            exit 1
+          }
+          rm -rf "/tmp/postgresql-$PG_VERSION"
+          tar -xzf "/tmp/postgresql-$PG_VERSION.tar.gz" -C /tmp
+          echo "Configuring (prefix=$PG_INSTALL, --without-icu --without-readline — frozen audit flags)"
+          cd "/tmp/postgresql-$PG_VERSION"
+          ./configure --prefix="$PG_INSTALL" --without-icu --without-readline
+          echo "Building with $(sysctl -n hw.ncpu) cores"
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+          echo "[spot-check] vtool minOS right after install:"
+          vtool -show-build "$PG_INSTALL/bin/postgres" 2>/dev/null || xcrun vtool -show-build "$PG_INSTALL/bin/postgres"
+
+      # ------------------------------------------------------------------
+      # Stage the frozen minimal PG runtime bundle (same contract/layout as
+      # pg-bundle-verify — reusable script) + the supervisor binary at its
+      # LaunchAgent Program path, then RE-GATE the whole tree (cheap
+      # fail-closed re-proof after cache restore).
+      # ------------------------------------------------------------------
+      - name: Stage PG bundle + supervisor into app-bundle-shaped tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUNDLE="$RUNNER_TEMP/MediVault.app/Contents/Resources/runtime/postgresql/17"
+          PG_INSTALL="$PG_INSTALL" BUNDLE="$BUNDLE" PG_VERSION="$PG_VERSION" \
+            SUPERVISOR_BIN="$PWD/macos/supervisor/target/release/mediavault-supervisor" \
+            bash macos/scripts/stage-pg-bundle.sh
+          echo "BUNDLE=$BUNDLE" | tee /tmp/bundle.env
+
+      - name: Mach-O gate — PG bundle re-proof after cache restore
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/bundle.env
+          bash macos/scripts/macho-gate.sh "$BUNDLE" "${{ matrix.expected_uname }}" 13.0
+          bash macos/scripts/macho-gate.sh "$RUNNER_TEMP/MediVault.app/Contents/MacOS/mediavault-supervisor" "${{ matrix.expected_uname }}" 13.0
+
+      # ------------------------------------------------------------------
+      # Harness provisioning (the provisioner's future job, done here with
+      # the same frozen patterns): initdb SCRAM, app role + database,
+      # migrate deploy — then STOP the cluster, because the supervisor's
+      # contract is to START an existing provisioned cluster itself.
+      # ------------------------------------------------------------------
+      - name: Prisma generate (native engine for this arch)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./node_modules/.bin/prisma generate --schema packages/db/prisma/schema.prisma 2>&1 | tee /tmp/prisma-generate.log
+
+      - name: Harness — initdb SCRAM + role/db + migrations, then STOP
+        shell: bash
+        env:
+          PGPASSWORD: ${{ env.PG_SUPER_PASSWORD }}
+        run: |
+          set -euo pipefail
+          export PATH="$PG_INSTALL/bin:$PATH"
+          rm -rf "$PGDATA"
+          mkdir -p "$(dirname "$PGDATA")"
+
+          echo "[initdb] SCRAM-SHA-256 local + host (pwfile, never argv)"
+          PWFILE="$(mktemp)"; chmod 600 "$PWFILE"
+          printf '%s\n' "$PG_SUPER_PASSWORD" > "$PWFILE"
+          initdb -D "$PGDATA" \
+            --username="$PG_SUPERUSER" \
+            --pwfile="$PWFILE" \
+            --auth-local=scram-sha-256 \
+            --auth-host=scram-sha-256 \
+            --encoding=UTF8 \
+            --no-instructions
+          rm -f "$PWFILE"
+
+          cat >> "$PGDATA/postgresql.conf" <<EOF
+          port = $PGPORT
+          listen_addresses = '127.0.0.1'
+          EOF
+
+          pg_ctl -D "$PGDATA" -w -t 120 -l "$PGDATA/pg.log" start
+
+          psql -h 127.0.0.1 -p "$PGPORT" -U "$PG_SUPERUSER" -d postgres -v ON_ERROR_STOP=1 <<SQL
+          CREATE ROLE "$APP_DB_USER" LOGIN PASSWORD '$APP_DB_PASSWORD';
+          CREATE DATABASE "$APP_DB_NAME" OWNER "$APP_DB_USER";
+          SQL
+
+          echo "[migrations] prisma migrate deploy (all 8, via the app role)"
+          cd packages/db
+          ../../node_modules/.bin/prisma migrate deploy --schema prisma/schema.prisma
+          cd ../..
+
+          echo "[stop] harness stops the cluster — the supervisor must boot it itself"
+          pg_ctl -D "$PGDATA" -m fast -w -t 60 stop
+          sleep 2
+          pgrep -fl postgres && { echo "::error::harness teardown left postgres processes"; exit 1; }
+          echo "cluster provisioned + stopped cleanly"
+
+      # ------------------------------------------------------------------
+      # API runtime tree (Windows-packaging analog, same as the integration
+      # stage's staging). The supervisor will run THIS tree, not the dev tree.
+      # ------------------------------------------------------------------
+      - name: Build Fastify API (tsc)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./node_modules/.bin/tsc --project mini-services/api-service/tsconfig.json
+          test -f mini-services/api-service/dist/mini-services/api-service/src/index.js || {
+            echo "::error::API entry point missing after tsc build"
+            exit 1
+          }
+
+      - name: Stage the API runtime tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="$RUNNER_TEMP/medivault-api"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE/api/dist" "$STAGE/api/node_modules/@medivault"/{auth,crypto,db}
+          cp -R mini-services/api-service/dist/mini-services/api-service/src/. "$STAGE/api/dist/"
+          test -f "$STAGE/api/dist/index.js"
+          cp mini-services/api-service/package.json "$STAGE/api/package.json"
+          ( cd "$STAGE/api" && npm install --omit=dev --no-audit --no-fund --loglevel=error )
+          cp -R mini-services/api-service/dist/packages/auth/src/.    "$STAGE/api/node_modules/@medivault/auth/"
+          cp -R mini-services/api-service/dist/packages/crypto/src/. "$STAGE/api/node_modules/@medivault/crypto/"
+          cp -R mini-services/api-service/dist/packages/db/src/.     "$STAGE/api/node_modules/@medivault/db/"
+          printf '{"name":"@medivault/auth","version":"1.0.0","type":"module","main":"./index.js"}\n'   > "$STAGE/api/node_modules/@medivault/auth/package.json"
+          printf '{"name":"@medivault/crypto","version":"1.0.0","type":"module","main":"./index.js"}\n' > "$STAGE/api/node_modules/@medivault/crypto/package.json"
+          printf '{"name":"@medivault/db","version":"1.0.0","type":"module","main":"./client.js"}\n'    > "$STAGE/api/node_modules/@medivault/db/package.json"
+          rm -rf "$STAGE/api/node_modules/.prisma"
+          cp -R node_modules/.prisma "$STAGE/api/node_modules/.prisma"
+          echo "STAGE=$STAGE" | tee /tmp/api-stage.env
+
+      # ------------------------------------------------------------------
+      # Supervisor config (CI values; same env contract as production) and
+      # the run. The supervisor runs FOREGROUND in a background shell; the
+      # status file + logs are the observable contract.
+      # ------------------------------------------------------------------
+      - name: Write supervisor config (CI instance)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/bundle.env
+          . /tmp/api-stage.env
+          NODE_BIN="$(command -v node)"
+          test -n "$NODE_BIN"
+          cat > "$RUNNER_TEMP/supervisor-config.json" <<EOF
+          {
+            "version": 1,
+            "paths": {
+              "pg_bundle": "$BUNDLE",
+              "node_binary": "$NODE_BIN",
+              "api_entry": "$STAGE/api/dist/index.js",
+              "api_working_dir": "$STAGE/api",
+              "app_support_dir": "$MV_APP_SUPPORT",
+              "log_dir": "$MV_LOG_DIR"
+            },
+            "postgres": {
+              "host": "127.0.0.1",
+              "port": $PGPORT,
+              "superuser": "postgres",
+              "app_user": "$APP_DB_USER",
+              "app_database": "$APP_DB_NAME"
+            },
+            "api": {
+              "host": "$API_HOST",
+              "port": $API_PORT,
+              "allowed_origins": "http://localhost:3000"
+            },
+            "secrets": { "source": "env" },
+            "limits": {
+              "pg_start_timeout_sec": 120,
+              "api_start_timeout_sec": 90,
+              "pg_stop_timeout_sec": 60,
+              "api_stop_timeout_sec": 30,
+              "health_interval_sec": 5,
+              "health_fail_threshold": 3,
+              "max_restarts_per_child": 5,
+              "restart_backoff_base_ms": 500,
+              "restart_backoff_cap_ms": 8000
+            }
+          }
+          EOF
+          echo "--- supervisor-config.json:"
+          cat "$RUNNER_TEMP/supervisor-config.json"
+          echo "CONFIG=$RUNNER_TEMP/supervisor-config.json" | tee /tmp/supervisor-config.env
+
+      - name: Run supervisor — startup sequence to healthy
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/supervisor-config.env
+          STATUS="$MV_APP_SUPPORT/runtime-state/supervisor-status.json"
+          rm -f /tmp/supervisor.exit
+          mkdir -p "$MV_APP_SUPPORT"
+
+          ( "$RUNNER_TEMP/MediVault.app/Contents/MacOS/mediavault-supervisor" \
+              run --config "$CONFIG" > "$RUNNER_TEMP/supervisor-stdout.log" 2>&1; \
+            echo $? > /tmp/supervisor.exit ) &
+
+          echo "[poll] bounded wait (90s) for status state=healthy"
+          HEALTHY=0
+          for i in $(seq 1 180); do
+            S=$(jq -r '.state // "none"' "$STATUS" 2>/dev/null || echo none)
+            if [ "$S" = "healthy" ]; then HEALTHY=1; break; fi
+            if [ "$S" = "failed" ]; then break; fi
+            if [ -f /tmp/supervisor.exit ]; then break; fi
+            sleep 0.5
+          done
+          echo "state: $(jq -r '.state // "none"' "$STATUS" 2>/dev/null || echo none)"
+          if [ "$HEALTHY" != "1" ]; then
+            echo "::error::supervisor did not reach healthy"
+            echo "--- supervisor.log:"; tail -40 "$MV_LOG_DIR/supervisor.log" 2>/dev/null || true
+            echo "--- supervisor-stdout.log:"; tail -40 "$RUNNER_TEMP/supervisor-stdout.log" 2>/dev/null || true
+            echo "--- postgres.log:"; tail -20 "$MV_LOG_DIR/postgres.log" 2>/dev/null || true
+            echo "--- api.log:"; tail -20 "$MV_LOG_DIR/api.log" 2>/dev/null || true
+            exit 1
+          fi
+          echo "--- status file:"
+          jq . "$STATUS"
+          test "$(jq -r .pg_pid "$STATUS")" != "null"
+          test "$(jq -r .api_pid "$STATUS")" != "null"
+
+      - name: Independent proofs — pg_isready, SCRAM SELECT 1, /health, /ready
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/bundle.env
+          . /tmp/supervisor-config.env
+          export PATH="$BUNDLE/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          STATUS="$MV_APP_SUPPORT/runtime-state/supervisor-status.json"
+
+          echo "[pg_isready] through the supervisor-started server"
+          pg_isready -h 127.0.0.1 -p "$PGPORT" -d postgres
+
+          echo "[SCRAM SELECT 1 as the app role, bundle psql]"
+          PGPASSWORD="$MV_PG_APP_PASSWORD" psql -h 127.0.0.1 -p "$PGPORT" \
+            -U "$APP_DB_USER" -d "$APP_DB_NAME" -t -A -c "SELECT 1;"
+
+          echo "[/health] 200 through the supervisor-started API"
+          CODE=$(curl -s -o /tmp/health.json -w "%{http_code}" "http://127.0.0.1:$API_PORT/health" || echo 000)
+          echo "/health -> $CODE: $(cat /tmp/health.json 2>/dev/null || true)"
+          test "$CODE" = "200"
+
+          echo "[/ready] 200 (SELECT 1 through the app)"
+          CODE=$(curl -s -o /tmp/ready.json -w "%{http_code}" "http://127.0.0.1:$API_PORT/ready" || echo 000)
+          echo "/ready -> $CODE: $(cat /tmp/ready.json 2>/dev/null || true)"
+          test "$CODE" = "200"
+
+          echo "[status subcommand]"
+          "$RUNNER_TEMP/MediVault.app/Contents/MacOS/mediavault-supervisor" status --config "$CONFIG" | jq -e '.state == "healthy"'
+
+      - name: Proof — single instance lock (second run must fail exit 3)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/supervisor-config.env
+          set +e
+          "$RUNNER_TEMP/MediVault.app/Contents/MacOS/mediavault-supervisor" \
+            run --config "$CONFIG" > "$RUNNER_TEMP/second-instance.log" 2>&1
+          RC=$?
+          set -e
+          echo "second instance exit code: $RC (expect 3)"
+          grep -q "another supervisor instance is running" "$RUNNER_TEMP/second-instance.log" || {
+            echo "::error::second instance did not report the lock error"
+            cat "$RUNNER_TEMP/second-instance.log"
+            exit 1
+          }
+          test "$RC" = "3"
+
+      - name: Proof — crash resilience (SIGKILL the API child)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/supervisor-config.env
+          STATUS="$MV_APP_SUPPORT/runtime-state/supervisor-status.json"
+
+          API_OLD=$(jq -r .api_pid "$STATUS")
+          echo "[kill] SIGKILL api child pid $API_OLD"
+          kill -9 "$API_OLD"
+
+          echo "[poll] bounded wait (30s) for restart -> healthy with a NEW pid"
+          RECOVERED=0
+          for i in $(seq 1 60); do
+            API_NEW=$(jq -r '.api_pid // 0' "$STATUS" 2>/dev/null || echo 0)
+            S=$(jq -r '.state // "none"' "$STATUS" 2>/dev/null || echo none)
+            R=$(jq -r '.api_restarts // 0' "$STATUS" 2>/dev/null || echo 0)
+            if [ "$API_NEW" != "0" ] && [ "$API_NEW" != "$API_OLD" ] && [ "$S" = "healthy" ] && [ "$R" -ge 1 ]; then
+              RECOVERED=1; break
+            fi
+            sleep 0.5
+          done
+          echo "api: $API_OLD -> $API_NEW, restarts=$R, state=$S"
+          if [ "$RECOVERED" != "1" ]; then
+            echo "::error::supervisor did not restart the SIGKILLed API child within 30s"
+            tail -30 "$MV_LOG_DIR/supervisor.log" 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "[/health] 200 after restart"
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$API_PORT/health" || echo 000)
+          echo "/health -> $CODE"
+          test "$CODE" = "200"
+
+      - name: Proof — graceful SIGTERM shutdown + zero orphans
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/supervisor-config.env
+          . /tmp/bundle.env
+          export PATH="$BUNDLE/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          STATUS="$MV_APP_SUPPORT/runtime-state/supervisor-status.json"
+
+          SUP_PID=$(jq -r .pid "$STATUS")
+          PG_PID=$(jq -r .pg_pid "$STATUS")
+          API_PID=$(jq -r .api_pid "$STATUS")
+          echo "[term] SIGTERM supervisor pid $SUP_PID (api=$API_PID pg=$PG_PID)"
+          kill -TERM "$SUP_PID"
+
+          echo "[poll] bounded wait (90s) for exit"
+          EXITED=0
+          for i in $(seq 1 180); do
+            [ -f /tmp/supervisor.exit ] && { EXITED=1; break; }
+            sleep 0.5
+          done
+          EXIT_CODE=$(cat /tmp/supervisor.exit 2>/dev/null || echo "MISSING")
+          echo "supervisor exit code: $EXIT_CODE"
+          test "$EXITED" = "1"
+          test "$EXIT_CODE" = "0"
+
+          echo "[status] final state"
+          jq . "$STATUS"
+          test "$(jq -r .state "$STATUS")" = "stopped"
+          test "$(jq -r .pg_pid "$STATUS")" = "null"
+          test "$(jq -r .api_pid "$STATUS")" = "null"
+
+          echo "[orphan proof] no postgres / node-api processes remain"
+          LEFT_PG=$(pgrep -fl "$PGDATA" || true)
+          LEFT_NODE=$(pgrep -fl "medivault-api/dist/index.js" || true)
+          if [ -n "$LEFT_PG" ] || [ -n "$LEFT_NODE" ]; then
+            echo "::error::orphan processes after supervisor exit:"
+            echo "$LEFT_PG"; echo "$LEFT_NODE"
+            exit 1
+          fi
+          echo "zero orphans — clean"
+
+          echo "[cluster state] postmaster.pid must be gone (clean shutdown)"
+          test ! -e "$PGDATA/postmaster.pid" || {
+            echo "::error::postmaster.pid still present — PG did not shut down cleanly"
+            exit 1
+          }
+
+          echo "--- supervisor.log (shutdown ladder):"
+          tail -12 "$MV_LOG_DIR/supervisor.log"
+
+      - name: Proof — log redaction (CI secret values never in any log)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/supervisor-config.env
+          for f in "$MV_LOG_DIR/supervisor.log" "$MV_LOG_DIR/postgres.log" "$MV_LOG_DIR/api.log" "$RUNNER_TEMP/supervisor-stdout.log"; do
+            if grep -qF "$MV_PG_APP_PASSWORD" "$f" 2>/dev/null; then
+              echo "::error::CI secret value leaked into $f"
+              exit 1
+            fi
+            if grep -qF "$MV_AUTH_JWT_SECRET" "$f" 2>/dev/null; then
+              echo "::error::CI JWT secret value leaked into $f"
+              exit 1
+            fi
+          done
+          echo "redaction: GREEN (no secret values in any supervisor-owned log)"
+
+      # ------------------------------------------------------------------
+      # Teardown (always): belt-and-braces orphan sweep, then evidence.
+      # ------------------------------------------------------------------
+      - name: Teardown + orphan sweep (always)
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          . /tmp/bundle.env 2>/dev/null || true
+          BUNDLE="${BUNDLE:-/Users/runner/work/_temp/MediVault.app/Contents/Resources/runtime/postgresql/17}"
+          export PATH="$BUNDLE/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          if [ -d "$PGDATA" ] && [ -f "$PGDATA/PG_VERSION" ]; then
+            pg_ctl -D "$PGDATA" -m fast -w -t 60 stop || true
+          fi
+          sleep 2
+          LEFT=$(pgrep -fl "postgres -D" | grep -v pgrep || true)
+          if [ -n "$LEFT" ]; then
+            echo "::warning::postgres processes still alive:"
+            echo "$LEFT"
+            pkill -9 -f "postgres -D" 2>/dev/null || true
+          else
+            echo "clean — zero postgres processes"
+          fi
+
+      - name: Upload evidence (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: supervisor-lifecycle-${{ matrix.label }}-evidence
+          retention-days: 1
+          path: |
+            /tmp/macho-gate-records.txt
+            /Users/runner/work/_temp/medivault-appsupport/runtime-state/supervisor-status.json
+            /Users/runner/work/_temp/medivault-appsupport/logs/
+            /Users/runner/work/_temp/supervisor-stdout.log
+            /Users/runner/work/_temp/second-instance.log
+          if-no-files-found: ignore
+
+      - name: Upload diagnostic logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: supervisor-lifecycle-${{ matrix.label }}-logs
+          retention-days: 1
+          path: |
+            /tmp/prisma-generate.log
+            /Users/runner/work/_temp/medivault-pgdata-supervisor/pg.log
+            /Users/runner/work/_temp/medivault-api/api.log
           if-no-files-found: ignore

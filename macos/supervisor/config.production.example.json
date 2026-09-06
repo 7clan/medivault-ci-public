@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "paths": {
+    "pg_bundle": "/Applications/MediVault.app/Contents/Resources/runtime/postgresql/17",
+    "node_binary": "/Applications/MediVault.app/Contents/Resources/runtime/nodejs/bin/node",
+    "api_entry": "/Applications/MediVault.app/Contents/Resources/api/dist/index.js",
+    "api_working_dir": "/Applications/MediVault.app/Contents/Resources/api",
+    "app_support_dir": "~/Library/Application Support/MediVault",
+    "log_dir": "~/Library/Logs/MediVault"
+  },
+  "postgres": {
+    "host": "127.0.0.1",
+    "port": 55432,
+    "superuser": "postgres",
+    "app_user": "medivault",
+    "app_database": "medivault",
+    "pgdata_rel": "PostgreSQL/17/data"
+  },
+  "api": {
+    "host": "127.0.0.1",
+    "port": 3001,
+    "allowed_origins": "http://localhost:3000"
+  },
+  "secrets": {
+    "source": "keychain"
+  },
+  "limits": {
+    "pg_start_timeout_sec": 120,
+    "api_start_timeout_sec": 90,
+    "pg_stop_timeout_sec": 60,
+    "api_stop_timeout_sec": 30,
+    "health_interval_sec": 5,
+    "health_fail_threshold": 3,
+    "max_restarts_per_child": 5,
+    "restart_backoff_base_ms": 500,
+    "restart_backoff_cap_ms": 8000
+  }
+}

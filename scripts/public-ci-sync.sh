@@ -417,7 +417,23 @@ case "$DISPATCH_MODE" in
     [ "$HTTP_CODE" = "204" ] || die "dispatch failed (HTTP $HTTP_CODE): $(jq -r '.message // empty' "$RESPONSE_FILE")"
     note "P13 dispatched: public-mirror-proof @ $PUBLIC_BRANCH — watch https://github.com/$PUBLIC_SLUG/actions"
     ;;
-  *) die "unknown dispatch mode '$DISPATCH_MODE' (known: mirror-proof)" ;;
+  macos-*)
+    # Dispatch a macOS CI mode on the public mirror. The mode is validated
+    # against the workflow's DECLARED choice options (fail closed on typos
+    # or stale modes); wired-vs-reserved is enforced by the workflow's own
+    # guard job (reserved modes fail explicitly inside the run).
+    MV_MODE="${DISPATCH_MODE#macos-}"
+    WF_YML="$EXPORT_DIR/.github/workflows/macos-build.yml"
+    [ -f "$WF_YML" ] || die "macos dispatch requires macos-build.yml in the export"
+    if ! grep -qE "^[[:space:]]+- ${MV_MODE}$" "$WF_YML"; then
+      die "dispatch mode '$MV_MODE' is not a declared option in macos-build.yml"
+    fi
+    github_api POST "/repos/$PUBLIC_SLUG/actions/workflows/macos-build.yml/dispatches" \
+      '{"ref":"'"$PUBLIC_BRANCH"'","inputs":{"mode":"'"$MV_MODE"'"}}'
+    [ "$HTTP_CODE" = "204" ] || die "macos dispatch failed (HTTP $HTTP_CODE): $(jq -r '.message // empty' "$RESPONSE_FILE")"
+    note "P13 dispatched: macos-build.yml mode='$MV_MODE' @ $PUBLIC_BRANCH — watch https://github.com/$PUBLIC_SLUG/actions"
+    ;;
+  *) die "unknown dispatch mode '$DISPATCH_MODE' (known: mirror-proof, macos-<mode>)" ;;
 esac
 
 echo "SYNC-GREEN: private $PRIVATE_SHA -> public $PUBLIC_SLUG@$PUBLIC_BRANCH ($FINAL_COUNT files, scans GREEN, history-free, security settings applied)"
