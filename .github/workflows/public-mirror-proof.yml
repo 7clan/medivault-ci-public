@@ -71,6 +71,8 @@ jobs:
             || { echo "FAIL: mirror is not anonymously readable"; exit 1; }
           echo "visibility proof GREEN: 7clan/medivault-ci-public is public"
       - name: Prove the job GITHUB_TOKEN cannot read the private canonical repo
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           code="$(curl -s -o /dev/null -w '%{http_code}' \
