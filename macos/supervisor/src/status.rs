@@ -13,6 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 pub const STATE_STARTING: &str = "starting";
+pub const STATE_PROVISIONING: &str = "provisioning";
 pub const STATE_HEALTHY: &str = "healthy";
 pub const STATE_DEGRADED: &str = "degraded";
 pub const STATE_STOPPING: &str = "stopping";

@@ -1,0 +1,17 @@
+{
+  "name": "@medivault/provision",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "MediVault macOS provisioner — first-run cluster bootstrap, 4-state classification, application-database provisioning, migrations. Zero runtime dependencies (Node 22 stdlib only); secrets arrive via environment injection from the supervisor (the provisioner never touches the Keychain).",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "typescript": "^5"
+  }
+}

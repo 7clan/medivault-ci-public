@@ -23,6 +23,12 @@ libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# macOS only: Keychain generic-password items (the production secret
+# source). Links Security.framework + CoreFoundation — both /System, so
+# the fail-closed Mach-O dependency gate stays satisfied.
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+
 [profile.release]
 codegen-units = 1
 lto = true

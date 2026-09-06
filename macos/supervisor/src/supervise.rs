@@ -28,8 +28,8 @@ use crate::logging::Logger;
 use crate::proc::{self, ChildHandle};
 use crate::secrets::{self, Secrets};
 use crate::status::{
-    Status, STATE_DEGRADED, STATE_FAILED, STATE_HEALTHY, STATE_STARTING, STATE_STOPPED,
-    STATE_STOPPING,
+    Status, STATE_DEGRADED, STATE_FAILED, STATE_HEALTHY, STATE_PROVISIONING, STATE_STARTING,
+    STATE_STOPPED, STATE_STOPPING,
 };
 
 /// Exit codes — part of the supervisor's stable contract.
@@ -88,17 +88,87 @@ impl Supervisor {
 
     /// The cluster must already be provisioned (initdb + role/database +
     /// migrations are the provisioner's job). We require the canonical
-    /// cluster marker: `PG_VERSION` inside PGDATA.
-    fn require_provisioned_cluster(&self) -> Result<(), String> {
-        let pg_version = self.resolved.pgdata.join("PG_VERSION");
-        if !pg_version.is_file() {
-            return Err(format!(
-                "cluster is not provisioned ({} missing) — run the MediVault provisioner first; \
-                 the supervisor never initializes or re-initializes a cluster",
-                pg_version.display()
-            ));
+    /// cluster marker: `PG_VERSION` inside PGDATA. When provisioner
+    /// delegation is configured, an unprovisioned cluster triggers the
+    /// delegate-and-wait path instead (Keychain/provisioning stage);
+    /// otherwise the frozen stage-1 fail-closed behavior applies.
+    fn cluster_provisioned(&self) -> bool {
+        self.resolved.pgdata.join("PG_VERSION").is_file()
+    }
+
+    /// Delegate first-run provisioning to the Node provisioner:
+    /// `<node> <provisioner_entry> provision --config <same config>` with
+    /// env-injected secrets (names only in logs). Bounded wait; the
+    /// provisioner's own logs land in provision.log (it also mirrors its
+    /// stdout there).
+    fn delegate_provisioning(&mut self) -> Result<bool, String> {
+        let entry = match &self.resolved.provisioner_entry {
+            Some(e) => e.clone(),
+            None => return Ok(false),
+        };
+        self.status.update(&self.resolved.status_file, |s| {
+            s.state = STATE_PROVISIONING.to_string();
+        })?;
+        self.logger
+            .info("cluster not provisioned — delegating to the provisioner (bounded, fail-closed)");
+
+        // The provisioner performs its own file logging (provision.log);
+        // its stdout/stderr inherit ours so the foreground stream shows the
+        // full bootstrap timeline (no double-write into provision.log).
+        let mut cmd = std::process::Command::new(&self.resolved.node_bin);
+        cmd.arg(&entry)
+            .arg("provision")
+            .arg("--config")
+            .arg(&self.resolved.config_path)
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit());
+        // Env: the provisioner's documented secret contract, values never logged.
+        cmd.env("MV_PG_APP_PASSWORD", &self.secrets.pg_app_password);
+        if let Some(super_pw) = &self.secrets.pg_super_password {
+            cmd.env("MV_PG_SUPER_PASSWORD", super_pw);
         }
-        Ok(())
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("cannot spawn provisioner {}: {e}", entry.display()))?;
+        self.logger.info(&format!(
+            "provisioner started (pid {}) with env: MV_PG_APP_PASSWORD{}",
+            child.id(),
+            if self.secrets.pg_super_password.is_some() {
+                ",MV_PG_SUPER_PASSWORD"
+            } else {
+                ""
+            }
+        ));
+
+        let deadline = Instant::now() + Duration::from_secs(self.resolved.provision_timeout_sec);
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    let code = status.code();
+                    self.logger
+                        .info(&format!("provisioner exited (code {code:?})"));
+                    if status.success() && self.cluster_provisioned() {
+                        return Ok(true);
+                    }
+                    return Err(format!(
+                        "provisioner failed (exit {code:?}) — cluster not provisioned; see provision.log"
+                    ));
+                }
+                Ok(None) => {}
+                Err(e) => return Err(format!("provisioner wait failed: {e}")),
+            }
+            if Instant::now() >= deadline {
+                self.logger
+                    .error("provisioner exceeded its bounded timeout — terminating it");
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "provisioner did not finish within {}s — fail closed",
+                    self.resolved.provision_timeout_sec
+                ));
+            }
+            std::thread::sleep(TICK);
+        }
     }
 
     fn spawn_pg(&mut self) -> Result<(), String> {
@@ -247,8 +317,24 @@ impl Supervisor {
         if let Err(e) = self.ensure_dirs() {
             fail_closed!(EXIT_FATAL, e);
         }
-        if let Err(e) = self.require_provisioned_cluster() {
-            fail_closed!(EXIT_CLUSTER_NOT_PROVISIONED, e);
+        if !self.cluster_provisioned() {
+            match self.delegate_provisioning() {
+                Ok(true) => {
+                    self.logger
+                        .info("provisioning delegated and completed — cluster is ready");
+                }
+                Ok(false) => {
+                    fail_closed!(
+                        EXIT_CLUSTER_NOT_PROVISIONED,
+                        format!(
+                            "cluster is not provisioned ({} missing) — run the MediVault provisioner first; \
+                             the supervisor never initializes or re-initializes a cluster",
+                            self.resolved.pgdata.join("PG_VERSION").display()
+                        )
+                    );
+                }
+                Err(e) => fail_closed!(EXIT_FATAL, e),
+            }
         }
 
         // --- PostgreSQL -------------------------------------------------

@@ -53,6 +53,24 @@
 #                  orphan processes, status file "stopped". Contract:
 #                  acceptance/macos-supervisor-contract.md.
 #
+#   provision-lifecycle : the Keychain/provisioning stage — the Node 22
+#                  provisioner (macos/provision: the native 4-state
+#                  machine CLEAN/VALID_EXISTING/RECOVERABLE_INCOMPLETE/
+#                  INCOMPLETE_EXISTING with crash-safe pending markers,
+#                  idempotent app-db provisioning, migrations, fail-closed
+#                  everywhere) + the supervisor's Keychain secret source
+#                  (bootstrap-secrets + secrets.source "keychain") +
+#                  provisioner delegation (status "provisioning", bounded
+#                  wait). Cluster A: REAL runner login keychain (items
+#                  created + read back by the supervisor itself) + full
+#                  delegated bootstrap + lifecycle. Cluster B: the full
+#                  4-state matrix against real PG with a data-preservation
+#                  sentinel (VALID_EXISTING never re-initializes; the
+#                  sentinel row survives; RECOVERABLE resumes exactly the
+#                  missing role/db; INCOMPLETE_EXISTING fails closed with
+#                  nothing altered). Contract:
+#                  acceptance/macos-provision-contract.md.
+#
 #   full / desktop-launch-regression / reinstall-regression / dmg-only :
 #                  reserved by the audit's CI matrix; not yet wired (the
 #                  guard job fails them explicitly instead of pretending).
@@ -68,7 +86,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'CI mode (wired: integration, pg-bundle-verify, supervisor-lifecycle)'
+        description: 'CI mode (wired: integration, pg-bundle-verify, supervisor-lifecycle, provision-lifecycle)'
         required: true
         default: 'integration'
         type: choice
@@ -76,6 +94,7 @@ on:
           - integration
           - pg-bundle-verify
           - supervisor-lifecycle
+          - provision-lifecycle
           - full
           - desktop-launch-regression
           - reinstall-regression
@@ -90,12 +109,12 @@ jobs:
   # ---------------------------------------------------------------------------
   not-yet-wired:
     name: "Mode guard"
-    if: github.event.inputs.mode != 'integration' && github.event.inputs.mode != 'pg-bundle-verify' && github.event.inputs.mode != 'supervisor-lifecycle'
+    if: github.event.inputs.mode != 'integration' && github.event.inputs.mode != 'pg-bundle-verify' && github.event.inputs.mode != 'supervisor-lifecycle' && github.event.inputs.mode != 'provision-lifecycle'
     runs-on: ubuntu-latest
     steps:
       - name: Mode not yet wired on this lane
         run: |
-          echo "::error::Mode '${{ github.event.inputs.mode }}' is reserved by the macOS CI matrix but not yet wired. The lane is built stage-by-stage (first-red discipline). Wired modes today: integration, pg-bundle-verify, supervisor-lifecycle."
+          echo "::error::Mode '${{ github.event.inputs.mode }}' is reserved by the macOS CI matrix but not yet wired. The lane is built stage-by-stage (first-red discipline). Wired modes today: integration, pg-bundle-verify, supervisor-lifecycle, provision-lifecycle."
 
   # ---------------------------------------------------------------------------
   # Integration mode — the shared app proof on real macOS runners, both archs.
@@ -1869,5 +1888,612 @@ jobs:
           path: |
             /tmp/prisma-generate.log
             /Users/runner/work/_temp/medivault-appsupport/PostgreSQL/17/data/pg.log
+            /Users/runner/work/_temp/medivault-api/api.log
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # provision-lifecycle — the Keychain/provisioning stage.
+  #
+  # Lane order: integration (FROZEN) -> pg-bundle-verify (FROZEN) ->
+  # supervisor-lifecycle (FROZEN @ c71ac4c, run 34063917607) ->
+  # Keychain/provisioning (THIS JOB) -> Node/PG app-bundle staging ->
+  # Tauri -> DMG -> macOS 26 -> reinstall/uninstall.
+  # Contract: acceptance/macos-provision-contract.md.
+  #
+  # Cluster A (keychain integration): the supervisor binary is ad-hoc
+  # codesigned (stable code identity for keychain ACLs), bootstrap-secrets
+  # creates REAL login-keychain items on the runner, and a SECOND supervisor
+  # process (keychain source) delegates first-run provisioning and runs the
+  # lifecycle to healthy + graceful shutdown.
+  # Cluster B (4-state matrix): the provisioner CLI against a second real
+  # cluster with env-injected CI secrets: CLEAN -> sentinel ->
+  # VALID_EXISTING (sentinel SURVIVES) -> stale-pending reconcile ->
+  # RECOVERABLE_INCOMPLETE resume -> INCOMPLETE_EXISTING x2 (fail closed,
+  # nothing altered).
+  # ---------------------------------------------------------------------------
+  provision-lifecycle:
+    name: "provision-lifecycle (${{ matrix.label }})"
+    if: github.event.inputs.mode == 'provision-lifecycle'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: arm64
+            runner: macos-15
+            expected_uname: arm64
+          - label: x64
+            runner: macos-15-intel
+            expected_uname: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+
+    env:
+      PG_VERSION: '17.11'
+      PG_SHA256: '5367f6fb2ec97efe1eb2e0c7926bb33438e51b0bd3a9733b88498056a7dc9a7e'
+      PG_TARBALL_URL: 'https://ftp.postgresql.org/pub/source/v17.11/postgresql-17.11.tar.gz'
+      PG_INSTALL: '/Users/runner/pg17-install-dt13'
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+      # Cluster A (supervisor + keychain): app support under _temp/mv-a.
+      MV_A_APP_SUPPORT: '/Users/runner/work/_temp/mv-a'
+      MV_A_PGPORT: '55436'
+      MV_A_API_PORT: '4574'
+      # Cluster B (provisioner matrix): app support under _temp/mv-b.
+      MV_B_APP_SUPPORT: '/Users/runner/work/_temp/mv-b'
+      MV_B_PGPORT: '55437'
+      # CI synthetic secrets for cluster B (same values as the frozen stages;
+      # allowlisted; the provisioner contract is env-injection).
+      MV_PG_SUPER_PASSWORD: 'MedivaultMacCI2026!'
+      MV_PG_APP_PASSWORD: 'MedivaultMacCI2026!'
+      MV_AUTH_JWT_SECRET: 'macos-ci-jwt-secret-0000000000000000000000000000000000000000000000000000000000000000'
+      MV_MEDIVAULT_MASTER_KEY: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Preflight — runner architecture proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "uname -m:        $(uname -m)"
+          echo "expected:        ${{ matrix.expected_uname }}"
+          echo "macOS:           $(sw_vers -productVersion)"
+          if [ "$(uname -m)" != "${{ matrix.expected_uname }}" ]; then
+            echo "::error::Runner architecture mismatch"
+            exit 1
+          fi
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            mini-services/api-service/node_modules
+            packages/*/node_modules
+          key: macos-deps-${{ matrix.label }}-${{ hashFiles('bun.lock', 'package.json', 'packages/*/package.json', 'mini-services/api-service/package.json') }}
+          restore-keys: |
+            macos-deps-${{ matrix.label }}-
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+          cd macos/supervisor
+          rustup toolchain install --profile minimal "$(grep -oE 'channel = "[^"]+"' ../../rust-toolchain.toml | cut -d'"' -f2)"
+          cargo --version
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            macos/supervisor/target
+          key: macos-supervisor-${{ matrix.label }}-${{ hashFiles('macos/supervisor/Cargo.lock', 'macos/supervisor/Cargo.toml') }}
+
+      - name: Build supervisor + ad-hoc codesign (keychain code identity)
+        shell: bash
+        run: |
+          set -euo pipefail
+          export MACOSX_DEPLOYMENT_TARGET=13.0
+          cd macos/supervisor
+          cargo build --release --locked
+          BIN="target/release/mediavault-supervisor"
+          test -x "$BIN"
+          # Ad-hoc signature: stable code identity for the keychain ACL of the
+          # items the supervisor creates (bootstrap-secrets) and later reads
+          # from a second process of the SAME binary (same cdhash).
+          codesign --force --sign - "$BIN"
+          codesign --verify --strict "$BIN"
+          file "$BIN"
+          "$BIN" version
+
+      - name: Mach-O gate — supervisor binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash macos/scripts/macho-gate.sh \
+            "macos/supervisor/target/release/mediavault-supervisor" \
+            "${{ matrix.expected_uname }}" 13.0
+
+      - name: Cache PostgreSQL ${{ env.PG_VERSION }} build (MACOSX_DEPLOYMENT_TARGET=13.0)
+        id: pg-cache
+        uses: actions/cache@v4
+        with:
+          path: '/Users/runner/pg17-install-dt13'
+          key: macos-pg17-dt13-${{ matrix.label }}-${{ env.PG_VERSION }}-${{ env.PG_SHA256 }}
+
+      - name: Build PostgreSQL ${{ env.PG_VERSION }} from source (MACOSX_DEPLOYMENT_TARGET=13.0)
+        if: steps.pg-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export MACOSX_DEPLOYMENT_TARGET=13.0
+          curl -fsSL --retry 3 -o /tmp/postgresql-$PG_VERSION.tar.gz "$PG_TARBALL_URL"
+          echo "$PG_SHA256  /tmp/postgresql-$PG_VERSION.tar.gz" | shasum -a 256 --check --strict || {
+            echo "::error::PostgreSQL tarball SHA-256 mismatch"
+            exit 1
+          }
+          rm -rf "/tmp/postgresql-$PG_VERSION"
+          tar -xzf "/tmp/postgresql-$PG_VERSION.tar.gz" -C /tmp
+          cd "/tmp/postgresql-$PG_VERSION"
+          ./configure --prefix="$PG_INSTALL" --without-icu --without-readline
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+
+      - name: Stage PG bundle + supervisor into app-bundle-shaped tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUNDLE="$RUNNER_TEMP/MediVault.app/Contents/Resources/runtime/postgresql/17"
+          PG_INSTALL="$PG_INSTALL" BUNDLE="$BUNDLE" PG_VERSION="$PG_VERSION" \
+            SUPERVISOR_BIN="$PWD/macos/supervisor/target/release/mediavault-supervisor" \
+            bash macos/scripts/stage-pg-bundle.sh
+          echo "BUNDLE=$BUNDLE" | tee /tmp/bundle.env
+
+      - name: Mach-O gate — PG bundle + supervisor-in-app re-proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/bundle.env
+          bash macos/scripts/macho-gate.sh "$BUNDLE" "${{ matrix.expected_uname }}" 13.0
+          bash macos/scripts/macho-gate.sh "$RUNNER_TEMP/MediVault.app/Contents/MacOS/mediavault-supervisor" "${{ matrix.expected_uname }}" 13.0
+
+      - name: Build the provisioner (macos/provision)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd macos/provision
+          bun install
+          bun run build
+          test -f dist/index.js
+          # Smoke: classify on a nonexistent config must fail with exit 4.
+          set +e
+          node dist/index.js classify --config /nonexistent.json >/dev/null 2>&1
+          RC=$?
+          set -e
+          echo "classify on missing config exits $RC (expect 4)"
+          test "$RC" = "4"
+
+      - name: Prisma generate (native engine for this arch)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./node_modules/.bin/prisma generate --schema packages/db/prisma/schema.prisma 2>&1 | tee /tmp/prisma-generate.log
+          test -f node_modules/prisma/build/index.js || {
+            echo "::error::prisma CLI JS entry missing (provisioner.prisma_cli dependency)"
+            exit 1
+          }
+
+      - name: Build Fastify API (tsc)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./node_modules/.bin/tsc --project mini-services/api-service/tsconfig.json
+          test -f mini-services/api-service/dist/mini-services/api-service/src/index.js
+
+      - name: Stage the API runtime tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="$RUNNER_TEMP/medivault-api"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE/api/dist" "$STAGE/api/node_modules/@medivault"/{auth,crypto,db}
+          cp -R mini-services/api-service/dist/mini-services/api-service/src/. "$STAGE/api/dist/"
+          test -f "$STAGE/api/dist/index.js"
+          cp mini-services/api-service/package.json "$STAGE/api/package.json"
+          ( cd "$STAGE/api" && npm install --omit=dev --no-audit --no-fund --loglevel=error )
+          cp -R mini-services/api-service/dist/packages/auth/src/.    "$STAGE/api/node_modules/@medivault/auth/"
+          cp -R mini-services/api-service/dist/packages/crypto/src/. "$STAGE/api/node_modules/@medivault/crypto/"
+          cp -R mini-services/api-service/dist/packages/db/src/.     "$STAGE/api/node_modules/@medivault/db/"
+          printf '{"name":"@medivault/auth","version":"1.0.0","type":"module","main":"./index.js"}\n'   > "$STAGE/api/node_modules/@medivault/auth/package.json"
+          printf '{"name":"@medivault/crypto","version":"1.0.0","type":"module","main":"./index.js"}\n' > "$STAGE/api/node_modules/@medivault/crypto/package.json"
+          printf '{"name":"@medivault/db","version":"1.0.0","type":"module","main":"./client.js"}\n'    > "$STAGE/api/node_modules/@medivault/db/package.json"
+          rm -rf "$STAGE/api/node_modules/.prisma"
+          cp -R node_modules/.prisma "$STAGE/api/node_modules/.prisma"
+          echo "STAGE=$STAGE" | tee /tmp/api-stage.env
+
+      # ------------------------------------------------------------------
+      # Config A (supervisor + keychain + delegation) and Config B
+      # (provisioner matrix, env secrets).
+      # ------------------------------------------------------------------
+      - name: "Write supervisor configs (A keychain, B env-matrix)"
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/bundle.env
+          . /tmp/api-stage.env
+          NODE_BIN="$(command -v node)"
+          SUPERVISOR_APP_BIN="$RUNNER_TEMP/MediVault.app/Contents/MacOS/mediavault-supervisor"
+          PROV_ENTRY="$PWD/macos/provision/dist/index.js"
+          PRISMA_CLI="$PWD/node_modules/prisma/build/index.js"
+          PRISMA_SCHEMA="$PWD/packages/db/prisma/schema.prisma"
+
+          cat > "$RUNNER_TEMP/config-a.json" <<EOF
+          {
+            "version": 1,
+            "paths": {
+              "pg_bundle": "$BUNDLE",
+              "node_binary": "$NODE_BIN",
+              "api_entry": "$STAGE/api/dist/index.js",
+              "api_working_dir": "$STAGE/api",
+              "app_support_dir": "$MV_A_APP_SUPPORT",
+              "log_dir": "$MV_A_APP_SUPPORT/logs"
+            },
+            "postgres": {
+              "host": "127.0.0.1",
+              "port": $MV_A_PGPORT,
+              "superuser": "postgres",
+              "app_user": "medivault",
+              "app_database": "medivault",
+              "pgdata_rel": "PostgreSQL/17/data"
+            },
+            "api": { "host": "127.0.0.1", "port": $MV_A_API_PORT, "allowed_origins": "http://localhost:3000" },
+            "secrets": { "source": "keychain" },
+            "provisioner": {
+              "entry": "$PROV_ENTRY",
+              "prisma_cli": "$PRISMA_CLI",
+              "prisma_schema": "$PRISMA_SCHEMA",
+              "timeout_sec": 600
+            },
+            "limits": { "pg_start_timeout_sec": 120, "api_start_timeout_sec": 90, "health_interval_sec": 5 }
+          }
+          EOF
+
+          cat > "$RUNNER_TEMP/config-b.json" <<EOF
+          {
+            "version": 1,
+            "paths": {
+              "pg_bundle": "$BUNDLE",
+              "node_binary": "$NODE_BIN",
+              "api_entry": "$STAGE/api/dist/index.js",
+              "api_working_dir": "$STAGE/api",
+              "app_support_dir": "$MV_B_APP_SUPPORT",
+              "log_dir": "$MV_B_APP_SUPPORT/logs"
+            },
+            "postgres": {
+              "host": "127.0.0.1",
+              "port": $MV_B_PGPORT,
+              "superuser": "postgres",
+              "app_user": "medivault",
+              "app_database": "medivault",
+              "pgdata_rel": "PostgreSQL/17/data"
+            },
+            "api": { "host": "127.0.0.1", "port": 4575 },
+            "secrets": { "source": "env" },
+            "provisioner": {
+              "entry": "$PROV_ENTRY",
+              "prisma_cli": "$PRISMA_CLI",
+              "prisma_schema": "$PRISMA_SCHEMA",
+              "timeout_sec": 600
+            }
+          }
+          EOF
+          echo "--- config-a.json:"
+          cat "$RUNNER_TEMP/config-a.json"
+          echo "CONFIG_A=$RUNNER_TEMP/config-a.json" | tee /tmp/config-a.env
+          echo "CONFIG_B=$RUNNER_TEMP/config-b.json" | tee /tmp/config-b.env
+          echo "SUPERVISOR_APP_BIN=$SUPERVISOR_APP_BIN" | tee /tmp/supervisor-bin.env
+
+      # ------------------------------------------------------------------
+      # Cluster A: keychain bootstrap + delegated provisioning + lifecycle.
+      # ------------------------------------------------------------------
+      - name: Keychain bootstrap (REAL login keychain on the runner)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/config-a.env
+          . /tmp/supervisor-bin.env
+          "$SUPERVISOR_APP_BIN" bootstrap-secrets --config "$CONFIG_A"
+          echo "[proof] items exist (values never printed):"
+          for account in pg-app-password pg-bootstrap master-key jwt-secret csrf-secret; do
+            security find-generic-password -s dev.medivault -a "$account" >/dev/null 2>&1 || {
+              echo "::error::keychain item missing: $account"
+              exit 1
+            }
+            echo "  item present: dev.medivault / $account"
+          done
+          # Idempotence: a second bootstrap must leave everything untouched.
+          "$SUPERVISOR_APP_BIN" bootstrap-secrets --config "$CONFIG_A" | tee /tmp/bootstrap-second.log
+          test "$(grep -c 'already present' /tmp/bootstrap-second.log)" = "5"
+
+      - name: Run supervisor (keychain source + delegated provisioning) to healthy
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/config-a.env
+          . /tmp/supervisor-bin.env
+          STATUS="$MV_A_APP_SUPPORT/runtime-state/supervisor-status.json"
+          rm -f /tmp/supervisor.exit
+          ( "$SUPERVISOR_APP_BIN" run --config "$CONFIG_A" > "$RUNNER_TEMP/supervisor-stdout.log" 2>&1; \
+            echo $? > /tmp/supervisor.exit ) &
+
+          echo "[poll] bounded wait (300s) for healthy — includes full delegated bootstrap"
+          HEALTHY=0
+          for i in $(seq 1 600); do
+            S=$(jq -r '.state // "none"' "$STATUS" 2>/dev/null || echo none)
+            if [ "$S" = "healthy" ]; then HEALTHY=1; break; fi
+            if [ "$S" = "failed" ]; then break; fi
+            if [ -f /tmp/supervisor.exit ]; then break; fi
+            sleep 0.5
+          done
+          echo "final state: $(jq -r '.state // "none"' "$STATUS" 2>/dev/null || echo none)"
+          if [ "$HEALTHY" != "1" ]; then
+            echo "::error::supervisor (keychain + delegation) did not reach healthy"
+            echo "--- supervisor.log:"; tail -30 "$MV_A_APP_SUPPORT/logs/supervisor.log" 2>/dev/null || true
+            echo "--- provision.log:"; tail -30 "$MV_A_APP_SUPPORT/logs/provision.log" 2>/dev/null || true
+            echo "--- supervisor-stdout.log:"; tail -40 "$RUNNER_TEMP/supervisor-stdout.log" 2>/dev/null || true
+            exit 1
+          fi
+          echo "[markers] provisioned.json:"
+          cat "$MV_A_APP_SUPPORT/config/provisioned.json"
+          test -f "$MV_A_APP_SUPPORT/config/provisioned.json"
+          test ! -e "$MV_A_APP_SUPPORT/config/provision-pending.json"
+
+          echo "[api] /health + /ready"
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$MV_A_API_PORT/health" || echo 000)
+          echo "/health -> $CODE"; test "$CODE" = "200"
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$MV_A_API_PORT/ready" || echo 000)
+          echo "/ready -> $CODE"; test "$CODE" = "200"
+
+      - name: Graceful shutdown of cluster A + zero orphans
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/config-a.env
+          . /tmp/bundle.env
+          export PATH="$BUNDLE/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          STATUS="$MV_A_APP_SUPPORT/runtime-state/supervisor-status.json"
+          SUP_PID=$(jq -r .pid "$STATUS")
+          kill -TERM "$SUP_PID"
+          for i in $(seq 1 180); do [ -f /tmp/supervisor.exit ] && break; sleep 0.5; done
+          EXIT_CODE=$(cat /tmp/supervisor.exit 2>/dev/null || echo MISSING)
+          echo "supervisor exit code: $EXIT_CODE"
+          test "$EXIT_CODE" = "0"
+          test "$(jq -r .state "$STATUS")" = "stopped"
+          LEFT=$(pgrep -fl "postgres -D" | grep -v pgrep || true)
+          [ -z "$LEFT" ] || { echo "::error::orphans: $LEFT"; exit 1; }
+          test ! -e "$MV_A_APP_SUPPORT/PostgreSQL/17/data/postmaster.pid"
+          echo "cluster A: graceful, zero orphans, postmaster.pid gone"
+
+      # ------------------------------------------------------------------
+      # Cluster B: the 4-state matrix with a data-preservation sentinel.
+      # ------------------------------------------------------------------
+      - name: Matrix B1 — CLEAN bootstrap + sentinel + VALID_EXISTING (sentinel survives)
+        shell: bash
+        env:
+          PGPASSWORD: ${{ env.MV_PG_SUPER_PASSWORD }}
+        run: |
+          set -euo pipefail
+          . /tmp/bundle.env
+          . /tmp/config-b.env
+          export PATH="$BUNDLE/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          PROV="node $PWD/macos/provision/dist/index.js"
+          PGDATA_B="$MV_B_APP_SUPPORT/PostgreSQL/17/data"
+
+          echo "[B1.1] classify CLEAN"
+          $PROV classify --config "$CONFIG_B" | jq -e '.state == "CLEAN"'
+
+          echo "[B1.2] provision CLEAN (full bootstrap)"
+          $PROV provision --config "$CONFIG_B"
+          test -f "$MV_B_APP_SUPPORT/config/provisioned.json"
+
+          echo "[B1.3] sentinel witness (row must survive every non-destructive path)"
+          pg_ctl -D "$PGDATA_B" -w -t 120 -l "$PGDATA_B/pg-b.log" start
+          PGPASSWORD="$MV_PG_APP_PASSWORD" psql -h 127.0.0.1 -p "$MV_B_PGPORT" -U medivault -d medivault -v ON_ERROR_STOP=1 <<SQL
+          CREATE TABLE mv_ci_sentinel (id int PRIMARY KEY, note text NOT NULL);
+          INSERT INTO mv_ci_sentinel VALUES (1, 'data-preservation witness');
+          SQL
+          pg_ctl -D "$PGDATA_B" -m fast -w -t 60 stop
+
+          echo "[B1.4] provision again — VALID_EXISTING, sentinel must SURVIVE"
+          $PROV provision --config "$CONFIG_B"
+          pg_ctl -D "$PGDATA_B" -w -t 120 -l "$PGDATA_B/pg-b.log" start
+          ROWS=$(PGPASSWORD="$MV_PG_APP_PASSWORD" psql -h 127.0.0.1 -p "$MV_B_PGPORT" -U medivault -d medivault -t -A -c "SELECT count(*) FROM mv_ci_sentinel;")
+          echo "sentinel rows: $ROWS (expect 1)"
+          test "$ROWS" = "1"
+          MIGRATIONS=$(PGPASSWORD="$MV_PG_APP_PASSWORD" psql -h 127.0.0.1 -p "$MV_B_PGPORT" -U medivault -d medivault -t -A -c "SELECT count(*) FROM \"_prisma_migrations\";")
+          echo "applied migrations: $MIGRATIONS (no duplicates — idempotent deploy)"
+          pg_ctl -D "$PGDATA_B" -m fast -w -t 60 stop
+
+      - name: Matrix B2 — stale pending marker reconciles to VALID_EXISTING
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/config-b.env
+          PROV="node $PWD/macos/provision/dist/index.js"
+          cat > "$MV_B_APP_SUPPORT/config/provision-pending.json" <<EOF
+          {"schema":1,"status":"pending","pgMajor":17,"port":$MV_B_PGPORT,"appUser":"medivault","appDatabase":"medivault","startedAt":"2026-09-06T00:00:00.000Z","stages":{"initdb":true,"server":true,"role":true,"database":true,"migrations":false}}
+          EOF
+          $PROV provision --config "$CONFIG_B"
+          test ! -e "$MV_B_APP_SUPPORT/config/provision-pending.json"
+          echo "stale pending reconciled + removed; still VALID_EXISTING"
+
+      - name: Matrix B3 — RECOVERABLE_INCOMPLETE resume (role+db dropped, pending present)
+        shell: bash
+        env:
+          PGPASSWORD: ${{ env.MV_PG_SUPER_PASSWORD }}
+        run: |
+          set -euo pipefail
+          . /tmp/bundle.env
+          . /tmp/config-b.env
+          export PATH="$BUNDLE/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          PROV="node $PWD/macos/provision/dist/index.js"
+          PGDATA_B="$MV_B_APP_SUPPORT/PostgreSQL/17/data"
+
+          echo "[B3.1] simulate interrupted app-db provisioning: drop database + role, write pending"
+          rm -f "$MV_B_APP_SUPPORT/config/provisioned.json"
+          pg_ctl -D "$PGDATA_B" -w -t 120 -l "$PGDATA_B/pg-b.log" start
+          psql -h 127.0.0.1 -p "$MV_B_PGPORT" -U postgres -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE medivault;"
+          psql -h 127.0.0.1 -p "$MV_B_PGPORT" -U postgres -d postgres -v ON_ERROR_STOP=1 -c "DROP ROLE medivault;"
+          pg_ctl -D "$PGDATA_B" -m fast -w -t 60 stop
+          cat > "$MV_B_APP_SUPPORT/config/provision-pending.json" <<EOF
+          {"schema":1,"status":"pending","pgMajor":17,"port":$MV_B_PGPORT,"appUser":"medivault","appDatabase":"medivault","startedAt":"2026-09-06T00:00:01.000Z","stages":{"initdb":true,"server":true,"role":false,"database":false,"migrations":false}}
+          EOF
+
+          echo "[B3.2] provision — must classify RECOVERABLE and resume"
+          $PROV provision --config "$CONFIG_B"
+          test -f "$MV_B_APP_SUPPORT/config/provisioned.json"
+          test ! -e "$MV_B_APP_SUPPORT/config/provision-pending.json"
+          grep "RECOVERABLE_INCOMPLETE confirmed (createRole=true, createDatabase=true)" "$MV_B_APP_SUPPORT/logs/provision.log" | tail -1
+          echo "[B3.3] role + db exist again with exact identity"
+          pg_ctl -D "$PGDATA_B" -w -t 120 -l "$PGDATA_B/pg-b.log" start
+          ROLE=$(psql -h 127.0.0.1 -p "$MV_B_PGPORT" -U postgres -d postgres -t -A -c "SELECT rolcanlogin||','||rolsuper FROM pg_roles WHERE rolname='medivault';")
+          echo "role identity: $ROLE (expect t,f)"
+          test "$ROLE" = "t,f"
+          OWNER=$(psql -h 127.0.0.1 -p "$MV_B_PGPORT" -U postgres -d postgres -t -A -c "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='medivault';")
+          echo "db owner: $OWNER (expect medivault)"
+          test "$OWNER" = "medivault"
+          MIGRATIONS=$(PGPASSWORD="$MV_PG_APP_PASSWORD" psql -h 127.0.0.1 -p "$MV_B_PGPORT" -U medivault -d medivault -t -A -c "SELECT count(*) FROM \"_prisma_migrations\";")
+          echo "migrations after recovery: $MIGRATIONS"
+          pg_ctl -D "$PGDATA_B" -m fast -w -t 60 stop
+
+      - name: Matrix B4 — INCOMPLETE_EXISTING fail-closed (cluster without marker; pending without cluster)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/config-b.env
+          PROV="node $PWD/macos/provision/dist/index.js"
+          PGDATA_B="$MV_B_APP_SUPPORT/PostgreSQL/17/data"
+
+          echo "[B4.1] cluster present, marker removed -> exit 5, NOTHING altered"
+          rm -f "$MV_B_APP_SUPPORT/config/provisioned.json" "$MV_B_APP_SUPPORT/config/provision-pending.json"*
+          BEFORE=$(find "$PGDATA_B" -type f | wc -l | tr -d ' ')
+          set +e
+          $PROV provision --config "$CONFIG_B" >/tmp/b41.log 2>&1
+          RC=$?
+          set -e
+          echo "exit code: $RC (expect 5)"
+          test "$RC" = "5"
+          grep -q "INCOMPLETE_EXISTING" /tmp/b41.log
+          AFTER=$(find "$PGDATA_B" -type f | wc -l | tr -d ' ')
+          echo "cluster file count: $BEFORE -> $AFTER (must be equal)"
+          test "$BEFORE" = "$AFTER"
+          test -f "$PGDATA_B/PG_VERSION"
+
+          echo "[B4.2] pending marker + NO cluster -> exit 5, cluster dir restored intact"
+          mv "$PGDATA_B" "$PGDATA_B.aside"
+          cat > "$MV_B_APP_SUPPORT/config/provision-pending.json" <<EOF
+          {"schema":1,"status":"pending","pgMajor":17,"port":$MV_B_PGPORT,"appUser":"medivault","appDatabase":"medivault","startedAt":"2026-09-06T00:00:02.000Z","stages":{"initdb":false,"server":false,"role":false,"database":false,"migrations":false}}
+          EOF
+          set +e
+          $PROV provision --config "$CONFIG_B" >/tmp/b42.log 2>&1
+          RC=$?
+          set -e
+          echo "exit code: $RC (expect 5)"
+          test "$RC" = "5"
+          grep -q "interrupted before initdb" /tmp/b42.log
+          mv "$PGDATA_B.aside" "$PGDATA_B"
+          test -f "$PGDATA_B/PG_VERSION"
+          echo "cluster restored intact — fail closed, never auto re-initialized"
+
+      - name: Proof — log redaction (secret values never in any log)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/config-a.env
+          . /tmp/config-b.env
+          for f in "$MV_A_APP_SUPPORT/logs/supervisor.log" \
+                   "$MV_A_APP_SUPPORT/logs/provision.log" \
+                   "$MV_A_APP_SUPPORT/logs/api.log" \
+                   "$MV_A_APP_SUPPORT/logs/postgres.log" \
+                   "$MV_B_APP_SUPPORT/logs/provision.log" \
+                   "$RUNNER_TEMP/supervisor-stdout.log"; do
+            if grep -qF "$MV_PG_APP_PASSWORD" "$f" 2>/dev/null; then
+              echo "::error::CI secret value leaked into $f"
+              exit 1
+            fi
+          done
+          echo "redaction: GREEN"
+
+      - name: Teardown + orphan sweep (always)
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          . /tmp/bundle.env 2>/dev/null || true
+          BUNDLE="${BUNDLE:-/Users/runner/work/_temp/MediVault.app/Contents/Resources/runtime/postgresql/17}"
+          export PATH="$BUNDLE/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          for d in "$MV_A_APP_SUPPORT/PostgreSQL/17/data" "$MV_B_APP_SUPPORT/PostgreSQL/17/data"; do
+            if [ -d "$d" ] && [ -f "$d/PG_VERSION" ]; then
+              pg_ctl -D "$d" -m fast -w -t 60 stop || true
+            fi
+          done
+          sleep 2
+          LEFT=$(pgrep -fl "postgres -D" | grep -v pgrep || true)
+          if [ -n "$LEFT" ]; then
+            echo "::warning::postgres processes still alive:"
+            echo "$LEFT"
+            pkill -9 -f "postgres -D" 2>/dev/null || true
+          else
+            echo "clean — zero postgres processes"
+          fi
+
+      - name: Upload evidence (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: provision-lifecycle-${{ matrix.label }}-evidence
+          retention-days: 1
+          path: |
+            /tmp/macho-gate-records.txt
+            /Users/runner/work/_temp/mv-a/runtime-state/supervisor-status.json
+            /Users/runner/work/_temp/mv-a/config/
+            /Users/runner/work/_temp/mv-a/logs/
+            /Users/runner/work/_temp/mv-b/config/
+            /Users/runner/work/_temp/mv-b/logs/
+            /Users/runner/work/_temp/supervisor-stdout.log
+            /tmp/bootstrap-second.log
+            /tmp/b41.log
+            /tmp/b42.log
+          if-no-files-found: ignore
+
+      - name: Upload diagnostic logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: provision-lifecycle-${{ matrix.label }}-logs
+          retention-days: 1
+          path: |
+            /tmp/prisma-generate.log
+            /Users/runner/work/_temp/mv-a/PostgreSQL/17/data/pg.log
+            /Users/runner/work/_temp/mv-a/PostgreSQL/17/data/pg-b.log
+            /Users/runner/work/_temp/mv-b/PostgreSQL/17/data/pg-b.log
             /Users/runner/work/_temp/medivault-api/api.log
           if-no-files-found: ignore

@@ -23,8 +23,32 @@ pub struct Config {
     pub postgres: PostgresConfig,
     pub api: ApiConfig,
     pub secrets: SecretsConfig,
+    /// Provisioner delegation (Keychain/provisioning stage): when present,
+    /// the supervisor delegates first-run provisioning to the Node
+    /// provisioner instead of failing closed on an unprovisioned cluster.
+    /// Absent = the frozen stage-1 behavior (fail closed, exit 5).
+    #[serde(default)]
+    pub provisioner: Option<ProvisionerConfig>,
     #[serde(default)]
     pub limits: LimitsConfig,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvisionerConfig {
+    /// Absolute path to the provisioner entry (`provision/dist/index.js`).
+    pub entry: String,
+    /// Absolute path to the prisma CLI JS entry (`prisma/build/index.js`).
+    pub prisma_cli: String,
+    /// Absolute path to `schema.prisma` (migrations live beside it).
+    pub prisma_schema: String,
+    /// Bounded wait for one `provision` run (default 600s).
+    #[serde(default = "default_provision_timeout")]
+    pub timeout_sec: u64,
+}
+
+fn default_provision_timeout() -> u64 {
+    600
 }
 
 #[derive(Debug, Deserialize)]
@@ -81,9 +105,9 @@ pub struct ApiConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SecretsConfig {
-    /// `env` (CI + first stages) | `keychain` (provisioning stage).
-    /// `keychain` fails closed with an explicit not-yet-wired error until
-    /// that stage lands.
+    /// `env` (CI + first stages) | `keychain` (production, macOS).
+    /// `keychain` is implemented by the Keychain/provisioning stage on
+    /// macOS; non-macOS builds fail closed at load with an explicit error.
     pub source: String,
 }
 
@@ -169,6 +193,8 @@ fn default_backoff_cap() -> u64 {
 /// A validated config plus every derived path the supervisor uses.
 #[derive(Debug)]
 pub struct Resolved {
+    /// Path to the config document (re-passed to the provisioner child).
+    pub config_path: PathBuf,
     pub pg_bin: PathBuf,
     pub pg_isready_bin: PathBuf,
     pub psql_bin: PathBuf,
@@ -185,6 +211,10 @@ pub struct Resolved {
     pub log_file: PathBuf,
     pub postgres_log: PathBuf,
     pub api_log: PathBuf,
+    pub provisioner_log: PathBuf,
+
+    /// Provisioner delegation (None = frozen stage-1 fail-closed behavior).
+    pub provisioner_entry: Option<PathBuf>,
 
     pub pg_host: String,
     pub pg_port: u16,
@@ -202,6 +232,8 @@ pub struct Resolved {
 
     pub secrets_source: String,
     pub limits: LimitsConfig,
+    /// Bounded wait for one delegated `provision` run.
+    pub provision_timeout_sec: u64,
 }
 
 /// Expand a leading `~` / `~/…` to `$HOME` (LaunchAgents run with HOME set;
@@ -242,10 +274,9 @@ impl Config {
                 cfg.secrets.source
             ));
         }
-        if cfg.secrets.source == "keychain" {
+        if cfg.secrets.source == "keychain" && !cfg!(target_os = "macos") {
             return Err(
-                "secrets.source \"keychain\" is not wired yet — it arrives with the \
-                 Keychain/provisioning stage; use \"env\" for now"
+                "secrets.source \"keychain\" requires macOS (this build targets another OS)"
                     .to_string(),
             );
         }
@@ -300,7 +331,39 @@ impl Config {
             ));
         }
 
+        let provisioner_entry = match &cfg.provisioner {
+            Some(prov) => {
+                let entry = expand("provisioner.entry", &prov.entry)?;
+                for (what, p) in [
+                    ("provisioner.entry", entry.clone()),
+                    (
+                        "provisioner.prisma_cli",
+                        expand("provisioner.prisma_cli", &prov.prisma_cli)?,
+                    ),
+                    (
+                        "provisioner.prisma_schema",
+                        expand("provisioner.prisma_schema", &prov.prisma_schema)?,
+                    ),
+                ] {
+                    if !p.is_file() {
+                        return Err(format!(
+                            "config error: {what} does not exist: {}",
+                            p.display()
+                        ));
+                    }
+                }
+                Some(entry)
+            }
+            None => None,
+        };
+        let provision_timeout_sec = cfg
+            .provisioner
+            .as_ref()
+            .map(|p| p.timeout_sec)
+            .unwrap_or(600);
+
         Ok(Resolved {
+            config_path: path.to_path_buf(),
             pg_bin,
             pg_isready_bin,
             psql_bin,
@@ -317,6 +380,10 @@ impl Config {
             log_file: log_dir.join("supervisor.log"),
             postgres_log: log_dir.join("postgres.log"),
             api_log: log_dir.join("api.log"),
+            provisioner_log: log_dir.join("provision.log"),
+
+            provisioner_entry,
+            provision_timeout_sec,
 
             pg_host: cfg.postgres.host,
             pg_port: cfg.postgres.port,

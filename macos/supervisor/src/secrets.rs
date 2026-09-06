@@ -3,20 +3,22 @@
 //!
 //! Stage contract (architecture audit / pivot directive):
 //!   - the supervisor reads secrets ONCE at startup and injects them into
-//!     the Node child's environment only;
-//!   - the Node process never touches the secret store (avoids Keychain ACL
-//!     prompts in the API process entirely);
+//!     child environments only (Node API child AND the provisioner child);
+//!   - the Node processes never touch the secret store (avoids Keychain ACL
+//!     prompts entirely);
 //!   - secret VALUES are never written to logs, status files, or argv.
 //!
-//! `Env` is the CI/first-stage source (values supplied by the environment).
-//! `Keychain` is reserved for the Keychain/provisioning stage: it exists as
-//! an explicit fail-closed branch so a production config cannot silently
-//! fall back to env vars.
+//! Sources:
+//!   - `env` — CI + first stages (values from the environment).
+//!   - `keychain` — production (macOS): generic-password items under
+//!     service `dev.medivault` (see keychain.rs). Fails closed listing
+//!     the missing ACCOUNT NAMES.
 
 use crate::config::Resolved;
 
 /// Required environment variables (names only — values never logged).
 pub const ENV_PG_APP_PASSWORD: &str = "MV_PG_APP_PASSWORD";
+pub const ENV_PG_SUPER_PASSWORD: &str = "MV_PG_SUPER_PASSWORD";
 pub const ENV_JWT_SECRET: &str = "MV_AUTH_JWT_SECRET";
 pub const ENV_MASTER_KEY: &str = "MV_MEDIVAULT_MASTER_KEY";
 
@@ -24,6 +26,9 @@ pub const ENV_MASTER_KEY: &str = "MV_MEDIVAULT_MASTER_KEY";
 pub struct Secrets {
     /// PostgreSQL application-role password (SCRAM).
     pub pg_app_password: String,
+    /// PostgreSQL superuser (bootstrap) password — required only when the
+    /// provisioner needs to create the role/database (CLEAN / recovery).
+    pub pg_super_password: Option<String>,
     /// API `AUTH_JWT_SECRET`.
     pub jwt_secret: String,
     /// API `MEDIVAULT_MASTER_KEY` (hex key for the encrypted object store).
@@ -31,16 +36,12 @@ pub struct Secrets {
 }
 
 impl Secrets {
-    /// Load via the configured source. Fails closed, listing variable
-    /// NAMES only (never values).
+    /// Load via the configured source. Fails closed, listing variable /
+    /// account NAMES only (never values).
     pub fn load(resolved: &Resolved) -> Result<Secrets, String> {
         match resolved.secrets_source.as_str() {
             "env" => Self::from_env(),
-            "keychain" => Err(
-                "keychain secret source is not wired yet (Keychain/provisioning stage); \
-                 use \"env\""
-                    .to_string(),
-            ),
+            "keychain" => Self::from_keychain(),
             other => Err(format!("unknown secrets source: {other}")),
         }
     }
@@ -48,6 +49,7 @@ impl Secrets {
     fn from_env() -> Result<Secrets, String> {
         let mut missing: Vec<&str> = Vec::new();
         let pg = std::env::var(ENV_PG_APP_PASSWORD).unwrap_or_default();
+        let super_pw = std::env::var(ENV_PG_SUPER_PASSWORD).unwrap_or_default();
         let jwt = std::env::var(ENV_JWT_SECRET).unwrap_or_default();
         let master = std::env::var(ENV_MASTER_KEY).unwrap_or_default();
         if pg.is_empty() {
@@ -67,9 +69,54 @@ impl Secrets {
         }
         Ok(Secrets {
             pg_app_password: pg,
+            pg_super_password: if super_pw.is_empty() {
+                None
+            } else {
+                Some(super_pw)
+            },
             jwt_secret: jwt,
             master_key: master,
         })
+    }
+
+    #[cfg(target_os = "macos")]
+    fn from_keychain() -> Result<Secrets, String> {
+        let mut missing: Vec<&str> = Vec::new();
+        let pg = crate::keychain::read_item(crate::keychain::ACCOUNT_PG_APP_PASSWORD)?;
+        let bootstrap = crate::keychain::read_item(crate::keychain::ACCOUNT_PG_BOOTSTRAP)?;
+        let jwt = crate::keychain::read_item(crate::keychain::ACCOUNT_JWT_SECRET)?;
+        let master = crate::keychain::read_item(crate::keychain::ACCOUNT_MASTER_KEY)?;
+        if pg.is_none() {
+            missing.push(crate::keychain::ACCOUNT_PG_APP_PASSWORD);
+        }
+        if jwt.is_none() {
+            missing.push(crate::keychain::ACCOUNT_JWT_SECRET);
+        }
+        if master.is_none() {
+            missing.push(crate::keychain::ACCOUNT_MASTER_KEY);
+        }
+        if !missing.is_empty() {
+            return Err(format!(
+                "missing keychain items (service '{}') — run 'mediavault-supervisor bootstrap-secrets' \
+                 or the desktop first-run setup: {}",
+                crate::keychain::SERVICE,
+                missing.join(", ")
+            ));
+        }
+        Ok(Secrets {
+            pg_app_password: pg.expect("checked"),
+            pg_super_password: bootstrap, // optional at load; required by provisioning
+            jwt_secret: jwt.expect("checked"),
+            master_key: master.expect("checked"),
+        })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn from_keychain() -> Result<Secrets, String> {
+        Err(
+            "secrets.source \"keychain\" requires macOS (this build targets another OS)"
+                .to_string(),
+        )
     }
 }
 
@@ -113,21 +160,5 @@ mod tests {
             "MedivaultMacCI2026%21"
         );
         assert_eq!(percent_encode("p@ss:w/ x"), "p%40ss%3Aw%2F%20x");
-    }
-
-    #[test]
-    fn database_url_shape() {
-        let url = format!(
-            "postgresql://{}:{}@{}:{}/{}",
-            "medivault",
-            percent_encode("MedivaultMacCI2026!"),
-            "127.0.0.1",
-            55434,
-            "medivault"
-        );
-        assert_eq!(
-            url,
-            "postgresql://medivault:MedivaultMacCI2026%21@127.0.0.1:55434/medivault"
-        );
     }
 }

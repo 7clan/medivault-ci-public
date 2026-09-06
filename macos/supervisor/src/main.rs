@@ -19,6 +19,8 @@
 
 mod config;
 mod health;
+#[cfg(target_os = "macos")]
+mod keychain;
 mod logging;
 mod proc;
 mod secrets;
@@ -135,6 +137,43 @@ fn main() {
 
     match cmd {
         "version" => unreachable!(),
+        "bootstrap-secrets" => {
+            // Explicit first-run Keychain item creation (never run, never
+            // auto): create each missing item with a random value; existing
+            // items are NEVER overwritten. Account names only in output.
+            #[cfg(target_os = "macos")]
+            {
+                match Config::load_and_resolve(&config_path) {
+                    Ok(_) => {
+                        for account in keychain::ALL_ACCOUNTS {
+                            match keychain::bootstrap_item(account) {
+                                Ok(keychain::BootstrapOutcome::Created) => {
+                                    println!("created keychain item: {account}");
+                                }
+                                Ok(keychain::BootstrapOutcome::AlreadyPresent) => {
+                                    println!("already present (left untouched): {account}");
+                                }
+                                Err(e) => {
+                                    eprintln!("error: {e}");
+                                    std::process::exit(1);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        std::process::exit(4);
+                    }
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                eprintln!(
+                    "error: bootstrap-secrets requires macOS (this build targets another OS)"
+                );
+                std::process::exit(1);
+            }
+        }
         "status" => match Config::load_and_resolve(&config_path) {
             Ok(resolved) => match status::Status::read(&resolved.status_file) {
                 Ok(st) => {
@@ -213,7 +252,7 @@ fn extract_config(args: &[String]) -> Result<std::path::PathBuf, String> {
                 );
                 i += 2;
             }
-            "run" | "status" | "version" => i += 1,
+            "run" | "status" | "version" | "bootstrap-secrets" => i += 1,
             other => return Err(format!("unknown argument: {other}")),
         }
     }
