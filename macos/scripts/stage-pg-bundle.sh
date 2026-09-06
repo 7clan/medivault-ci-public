@@ -130,7 +130,13 @@ done
 # ---------------------------------------------------------------------------
 if [ -n "$SUPERVISOR_BIN" ]; then
   test -x "$SUPERVISOR_BIN" || die "SUPERVISOR_BIN not executable: $SUPERVISOR_BIN"
-  APP_ROOT="$(cd "$(dirname "$BUNDLE")/../.." && pwd)"   # .../MediVault.app
+  # BUNDLE = <APP>/Contents/Resources/runtime/postgresql/17
+  # dirname = .../postgresql; FOUR levels up = the .app root.
+  # (first-red run 34062829878, both arches: two levels up resolved to
+  # Contents/Resources, so the binary landed in Resources/MacOS/ and the
+  # gate failed on the expected Contents/MacOS path.)
+  APP_ROOT="$(cd "$(dirname "$BUNDLE")/../../../.." && pwd)"
+  test -d "$APP_ROOT/Contents" || die "computed app root has no Contents/: $APP_ROOT"
   MACOS_DIR="$APP_ROOT/MacOS"
   mkdir -p "$MACOS_DIR"
   cp "$SUPERVISOR_BIN" "$MACOS_DIR/mediavault-supervisor"
