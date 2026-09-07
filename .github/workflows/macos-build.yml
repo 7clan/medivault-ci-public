@@ -3340,6 +3340,7 @@ jobs:
         run: |
           set -euo pipefail
           . /tmp/app-root.env
+          APP="$APP_ROOT"
           codesign --force --sign - "$APP/Contents/MacOS/MediVault"
           codesign --verify --strict "$APP/Contents/MacOS/MediVault"
           bash macos/scripts/macho-gate.sh "$APP/Contents/MacOS/MediVault" "${{ matrix.expected_uname }}" 13.0
@@ -3357,6 +3358,7 @@ jobs:
         run: |
           set -euo pipefail
           . /tmp/app-root.env
+          APP="$APP_ROOT"
           rm -f /tmp/desktop.exit
           ( "$APP/Contents/MacOS/MediVault" > /tmp/desktop.log 2>&1; echo $? > /tmp/desktop.exit ) &
           DESKTOP_PID=$!
