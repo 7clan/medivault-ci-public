@@ -1,12 +1,33 @@
 # MediVault — macOS Desktop (Tauri) Contract (stage: desktop-build)
 
-Status: **IN PROGRESS — first-red discipline active** (marked FROZEN GREEN
-only when the `desktop-build` CI mode is green on both architectures)
-Lane: `platform/macos`
-Predecessor stages (FROZEN GREEN): `integration` @ `a282f45` (34031521912),
-`pg-bundle-verify` @ `795df26` (34051758040), `supervisor-lifecycle` @
-`c71ac4c` (34063917607), `provision-lifecycle` @ `1a0c48f` (34065567722),
-`bundle-verify` @ `2089913` (34066717890)
+Status: **FROZEN GREEN** (stage: desktop-build — do not reopen unless a
+later first-red directly proves this contract wrong)
+Lane: `platform/macos` · Verified GREEN @ `59e3155`, run `34075676148`
+(both arches, 2026-09-07) · Predecessor stages (FROZEN GREEN):
+`integration` @ `a282f45` (34031521912), `pg-bundle-verify` @ `795df26`
+(34051758040), `supervisor-lifecycle` @ `c71ac4c` (34063917607),
+`provision-lifecycle` @ `1a0c48f` (34065567722), `bundle-verify` @
+`2089913` (34066717890)
+First-red ledger: (1) run `34067065373` — cargo tauri-cli installs the
+executable as `cargo-tauri` (`tauri: command not found`); invoke via
+`cargo tauri`. (2) run `34068656915` — Cargo.toml section ORDER made
+every crate after the `[target.'cfg(windows)'.dependencies]` header
+(tokio, log, uuid, chrono, …) Windows-ONLY, so macOS resolved none:
+un-gated into [dependencies] (Windows graph unchanged, same lock).
+(3) run `34070052883` — three never-compiled non-Windows paths:
+ungated `use std::os::windows::ffi::OsStrExt` in credential/mod.rs; the
+not(windows) backup branch referencing `metadata` vs `_metadata`; the
+not(windows) scanner stub typing `super::WiaScannerInfo` instead of
+`wia::WiaScannerInfo`. (4) run `34071656997` — tauri's bundler needs an
+.icns (frozen set ships PNGs + .ico): icon.icns generated in CI from the
+committed PNGs (sips + iconutil) and listed first. (5) run `34073656327`
+— gate/smoke steps used `$APP` while the env file exports `APP_ROOT`.
+GREEN run 34075676148: frontend export, `cargo tauri build --bundles
+app` (per-arch, deployment target 13.0), backend merge into the SAME
+MediVault.app, ad-hoc codesign + Mach-O gates on desktop + supervisor +
+node + PG (all violations 0 — the WKWebView-linked desktop binary's
+dependencies are all /System), and the launch smoke (starts, alive
+≥15s, SIGTERM terminates).
 
 ## 1. What this stage delivers
 
