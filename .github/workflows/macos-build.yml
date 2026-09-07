@@ -5116,6 +5116,7 @@ jobs:
           . /tmp/r7-lib.sh
           . /tmp/r7-seeds.env
           . /tmp/r7-sentinel.env
+          . /tmp/dmg-b.env
           PGDATA="$MV_APP_SUPPORT/PostgreSQL/17/data"
 
           echo "[3b.0] owned processes already stopped gracefully (end of case 2)"
