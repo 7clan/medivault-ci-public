@@ -697,7 +697,9 @@ use wia::{list_wia_scanners, scan_wia_single};
 
 // Non-Windows stubs.
 #[cfg(not(windows))]
-fn list_wia_scanners() -> Result<Vec<super::WiaScannerInfo>, String> {
+// macOS first-red run 34070052883: `super::WiaScannerInfo` pointed at the
+// crate root — the stub type lives in the cfg-gated local `mod wia` below.
+fn list_wia_scanners() -> Result<Vec<wia::WiaScannerInfo>, String> {
     Ok(Vec::new())
 }
 

@@ -81,7 +81,11 @@ pub async fn get_backup_drive_status() -> Result<BackupDriveStatus, String> {
             let (free, total) = get_volume_info(path);
 
             #[cfg(not(windows))]
-            let (free, total) = (metadata.as_ref().map(|_| 0), metadata.as_ref().map(|_| 0));
+            // macOS first-red run 34070052883: this not(windows) branch was
+            // never compiled before — it referenced `metadata` while the
+            // binding is `_metadata` (the underscore keeps it silent-unused
+            // on the Windows path).
+            let (free, total) = (_metadata.as_ref().map(|_| 0), _metadata.as_ref().map(|_| 0));
 
             Ok(BackupDriveStatus {
                 available: true,

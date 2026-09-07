@@ -19,6 +19,10 @@
 
 use log::{info, warn};
 use std::ffi::OsStr;
+// macOS first-red run 34070052883: this Windows-only import was ungated,
+// so every non-Windows compile failed at the import itself (all uses
+// live inside #[cfg(windows)] blocks below).
+#[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
 use thiserror::Error;
