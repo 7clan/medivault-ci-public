@@ -1,7 +1,10 @@
 # MediVault — macOS DMG Contract (stage: dmg)
 
-Status: **IN PROGRESS — first-red discipline active** (marked FROZEN GREEN
-only when the `dmg` CI mode is green on both architectures)
+Status: **FROZEN GREEN** (stage: dmg — do not reopen unless a later
+first-red directly proves this contract wrong) · Verified GREEN @
+`9623a48`, run `34077839660` (both arches, 2026-09-07) — GREEN on the
+FIRST dispatch (no first-reds this stage): the desktop-build pipeline
+ran clean and the DMG constructed + verified on both architectures
 Lane: `platform/macos`
 Predecessor stages (FROZEN GREEN): `integration` @ `a282f45` (34031521912),
 `pg-bundle-verify` @ `795df26` (34051758040), `supervisor-lifecycle` @
