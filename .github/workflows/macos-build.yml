@@ -102,13 +102,63 @@
 #                  proof per the audit). Contract:
 #                  acceptance/macos-desktop-contract.md.
 #
+#   dmg : the DMG/signing stage — the shippable artifact. The
+#                  complete desktop-build MediVault.app + a
+#                  drag-to-Applications staging folder -> hdiutil UDZO
+#                  (volname MediVault) -> ad-hoc codesign the DMG ->
+#                  fail-closed verification: mount (readonly+nobrowse),
+#                  drag-layout asserts, full mounted-app structure
+#                  asserts, signature checks, detach, SHA-256 sidecar.
+#                  Developer ID + notarization remain the production-only
+#                  phase (user-provided credentials). Contract:
+#                  acceptance/macos-dmg-contract.md.
+#
+#   macos-26-smoke : Stage 6 — COMPATIBILITY validation of the frozen
+#                  product contracts on the NEWEST macOS (Tahoe) on
+#                  NATIVE public runners (labels verified against
+#                  actions/runner-images 2026-09-07): macos-26 (arm64)
+#                  + macos-26-intel (x86_64), no Rosetta. The full dmg
+#                  pipeline re-runs unchanged (frontend export -> tauri
+#                  -> backend merge -> ad-hoc sign + Mach-O gates ->
+#                  DMG -> mount verify) + the app copy/extraction proof
+#                  (install from the mounted DMG, re-sign/Mach-O verify
+#                  the copied tree) + the full supervisor lifecycle FROM
+#                  THE INSTALLED APP (real login-keychain bootstrap,
+#                  delegated CLEAN provisioning, independent pg_isready +
+#                  authenticated SELECT 1, migration count, /health,
+#                  /ready, graceful SIGTERM, zero owned orphans) + the
+#                  desktop launch smoke. NO product changes for newer
+#                  SDKs. Contract: acceptance/macos-26-smoke-contract.md.
+#
+#   reinstall-acceptance : Stage 7 — the reinstall/uninstall matrix on
+#                  macos-26/macos-26-intel, using the ACTUAL .app and
+#                  .dmg artifacts (never target/debug). FRESH INSTALL
+#                  (mount DMG -> install -> first-run provisioning ->
+#                  healthy -> synthetic DB sentinel), APP RESTART
+#                  (sentinel persists), APP REPLACEMENT (stop owned
+#                  processes -> replace with a NEWLY BUILT version
+#                  (CFBundleVersion 0.1.1 vs 0.1.0) -> reconcile ->
+#                  sentinel persists, cluster NEVER re-initialized,
+#                  Application Support + Keychain preserved), the
+#                  recovery classifications (RECOVERABLE_INCOMPLETE
+#                  resume, INCOMPLETE_EXISTING fail-closed with nothing
+#                  altered, stale pending marker reconciliation) driven
+#                  from the INSTALLED app's packaged provisioner, the
+#                  UNINSTALL contract (remove the app -> data + keychain
+#                  PRESERVED, sentinel proven via the reference PG
+#                  runtime), and unrelated-process safety witnesses
+#                  (planted postgres/pg_ctl/node processes must survive
+#                  every stop/restart cycle — owned-process rules only).
+#                  Contract: acceptance/macos-reinstall-contract.md.
+#
 #   full / desktop-launch-regression / reinstall-regression / dmg-only :
 #                  reserved by the audit's CI matrix; not yet wired (the
 #                  guard job fails them explicitly instead of pretending).
 #
-# Runner labels (verified 2026-09-06 against actions/runner-images):
-#   macos-15 = arm64, macos-15-intel = x86_64, macos-26 / macos-26-intel =
-#   newest-OS smoke lanes (wired later per the audit).
+# Runner labels (verified 2026-09-07 against actions/runner-images):
+#   macos-15 = arm64, macos-15-intel = x86_64 (frozen stage lanes);
+#   macos-26 = arm64, macos-26-intel = x86_64 (newest-OS smoke +
+#   reinstall acceptance lanes — native, never Rosetta).
 # ==============================================================================
 
 name: macOS Build
@@ -117,7 +167,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'CI mode (wired: integration, pg-bundle-verify, supervisor-lifecycle, provision-lifecycle, bundle-verify, desktop-build, dmg)'
+        description: 'CI mode (wired: integration, pg-bundle-verify, supervisor-lifecycle, provision-lifecycle, bundle-verify, desktop-build, dmg, macos-26-smoke, reinstall-acceptance)'
         required: true
         default: 'integration'
         type: choice
@@ -129,6 +179,8 @@ on:
           - bundle-verify
           - desktop-build
           - dmg
+          - macos-26-smoke
+          - reinstall-acceptance
           - full
           - desktop-launch-regression
           - reinstall-regression
@@ -143,12 +195,12 @@ jobs:
   # ---------------------------------------------------------------------------
   not-yet-wired:
     name: "Mode guard"
-    if: github.event.inputs.mode != 'integration' && github.event.inputs.mode != 'pg-bundle-verify' && github.event.inputs.mode != 'supervisor-lifecycle' && github.event.inputs.mode != 'provision-lifecycle' && github.event.inputs.mode != 'bundle-verify' && github.event.inputs.mode != 'desktop-build' && github.event.inputs.mode != 'dmg'
+    if: github.event.inputs.mode != 'integration' && github.event.inputs.mode != 'pg-bundle-verify' && github.event.inputs.mode != 'supervisor-lifecycle' && github.event.inputs.mode != 'provision-lifecycle' && github.event.inputs.mode != 'bundle-verify' && github.event.inputs.mode != 'desktop-build' && github.event.inputs.mode != 'dmg' && github.event.inputs.mode != 'macos-26-smoke' && github.event.inputs.mode != 'reinstall-acceptance'
     runs-on: ubuntu-latest
     steps:
       - name: Mode not yet wired on this lane
         run: |
-          echo "::error::Mode '${{ github.event.inputs.mode }}' is reserved by the macOS CI matrix but not yet wired. The lane is built stage-by-stage (first-red discipline). Wired modes today: integration, pg-bundle-verify, supervisor-lifecycle, provision-lifecycle, bundle-verify, desktop-build, dmg."
+          echo "::error::Mode '${{ github.event.inputs.mode }}' is reserved by the macOS CI matrix but not yet wired. The lane is built stage-by-stage (first-red discipline). Wired modes today: integration, pg-bundle-verify, supervisor-lifecycle, provision-lifecycle, bundle-verify, desktop-build, dmg, macos-26-smoke, reinstall-acceptance."
 
   # ---------------------------------------------------------------------------
   # Integration mode — the shared app proof on real macOS runners, both archs.
@@ -3772,4 +3824,1797 @@ jobs:
             /tmp/macho-gate-records.txt
             /tmp/tauri-build.log
             /Users/runner/work/_temp/MediVault-macOS-${{ matrix.label }}.dmg.sha256
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # macos-26-smoke — Stage 6: the frozen product contracts re-run on the
+  # newest macOS (Tahoe) on NATIVE public runners (no Rosetta).
+  #
+  # Lane order: integration (FROZEN) -> pg-bundle-verify (FROZEN) ->
+  # supervisor-lifecycle (FROZEN) -> provision-lifecycle (FROZEN) ->
+  # bundle-verify (FROZEN) -> desktop-build (FROZEN) -> dmg (FROZEN) ->
+  # THIS JOB -> reinstall-acceptance.
+  #
+  # COMPATIBILITY VALIDATION ONLY: the dmg pipeline re-runs UNCHANGED (same
+  # steps, same pinned versions, same dt13 PG cache keys — the frozen
+  # macos-15-built artifacts run on Tahoe), plus the app-copy extraction
+  # proof and the full supervisor lifecycle FROM THE INSTALLED APP. No
+  # product changes for newer SDKs; every Mach-O gate re-validates on
+  # macOS 26 (native arch, minOS <= 13.0, deps /usr/lib+/System only).
+  # Contract: acceptance/macos-26-smoke-contract.md.
+  # ---------------------------------------------------------------------------
+  macos-26-smoke:
+    name: "macos-26-smoke (${{ matrix.label }})"
+    if: github.event.inputs.mode == 'macos-26-smoke'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: arm64
+            runner: macos-26
+            expected_uname: arm64
+            node_arch: arm64
+            node_sha256: '61130f394c1630d211dd50aecc4353d379480f36d3ac913cd85dbba1aed585c6'
+          - label: x64
+            runner: macos-26-intel
+            expected_uname: x86_64
+            node_arch: x64
+            node_sha256: '58e99022c2ff89395576cc7fd4d98cea24bb68081475d5f88b801ee8729fb026'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+
+    env:
+      PG_VERSION: '17.11'
+      PG_SHA256: '5367f6fb2ec97efe1eb2e0c7926bb33438e51b0bd3a9733b88498056a7dc9a7e'
+      PG_TARBALL_URL: 'https://ftp.postgresql.org/pub/source/v17.11/postgresql-17.11.tar.gz'
+      PG_INSTALL: '/Users/runner/pg17-install-dt13'
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+      NODE_VERSION: '22.23.2'
+      NODE_DIST_URL: 'https://nodejs.org/dist'
+      MV_APP_SUPPORT: '/Users/runner/work/_temp/mv-26smoke'
+      MV_PGPORT: '55441'
+      MV_API_PORT: '4583'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Preflight — native runner architecture + macOS 26 proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "uname -m: $(uname -m) (expected ${{ matrix.expected_uname }})"
+          test "$(uname -m)" = "${{ matrix.expected_uname }}"
+          echo "sw_vers: $(sw_vers -productVersion) ($(sw_vers -productName) $(sw_vers -buildVersion))"
+          case "$(sw_vers -productVersion)" in
+            26*) echo "runner OS is macOS 26 (Tahoe)" ;;
+            *) echo "::error::expected macOS 26 on label ${{ matrix.runner }}, got $(sw_vers -productVersion)"; exit 1 ;;
+          esac
+          if [ "${{ matrix.expected_uname }}" = "arm64" ]; then
+            # Native Apple Silicon: 0 = not running under Rosetta.
+            T=$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)
+            echo "sysctl.proc_translated: ${T}"
+            test "$T" = "0"
+          else
+            echo "Intel lane: uname x86_64 is itself the native proof (no Rosetta on Intel)"
+          fi
+          echo "Xcode toolchain: $(xcodebuild -version 2>/dev/null | tr '\n' ' ')"
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            mini-services/api-service/node_modules
+            packages/*/node_modules
+          key: macos-deps-${{ matrix.label }}-${{ hashFiles('bun.lock', 'package.json', 'packages/*/package.json', 'mini-services/api-service/package.json') }}
+          restore-keys: |
+            macos-deps-${{ matrix.label }}-
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+          cd macos/supervisor
+          rustup toolchain install --profile minimal "$(grep -oE 'channel = "[^"]+"' ../../rust-toolchain.toml | cut -d'"' -f2)"
+          cargo --version
+
+      - name: Cache tauri-cli + cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/.crates.toml
+            ~/.cargo/.crates2.json
+          key: macos-tauri-cli-${{ matrix.label }}-tauri2
+
+      - name: Install tauri-cli (v2, cargo, cached)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -x "$HOME/.cargo/bin/cargo-tauri" ]; then
+            cargo tauri --version
+          else
+            cargo install tauri-cli --locked --version '^2.11'
+            cargo tauri --version
+          fi
+
+      - name: Build the frontend (NEXT_OUTPUT=export)
+        shell: bash
+        run: |
+          set -euo pipefail
+          NEXT_OUTPUT=export bunx next build
+          test -f out/index.html || { echo "::error::static export missing out/index.html"; exit 1; }
+          echo "out/ entries: $(find out -type f | wc -l | tr -d ' ')"
+
+      - name: Generate icon.icns (sips + iconutil, from the committed PNGs)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ICONSET="src-tauri/icons/MediVault.iconset"
+          rm -rf "$ICONSET"; mkdir -p "$ICONSET"
+          SRC="src-tauri/icons"
+          sips -z 16 16    "$SRC/32x32.png"     --out "$ICONSET/icon_16x16.png"    >/dev/null
+          sips -z 32 32    "$SRC/32x32.png"     --out "$ICONSET/icon_16x16@2x.png" >/dev/null
+          sips -z 32 32    "$SRC/32x32.png"     --out "$ICONSET/icon_32x32.png"    >/dev/null
+          sips -z 64 64    "$SRC/128x128.png"   --out "$ICONSET/icon_32x32@2x.png" >/dev/null
+          sips -z 128 128  "$SRC/128x128.png"   --out "$ICONSET/icon_128x128.png"  >/dev/null
+          sips -z 256 256  "$SRC/128x128@2x.png" --out "$ICONSET/icon_128x128@2x.png" >/dev/null
+          sips -z 256 256  "$SRC/256x256.png"   --out "$ICONSET/icon_256x256.png"  >/dev/null
+          sips -z 512 512  "$SRC/icon.png"      --out "$ICONSET/icon_256x256@2x.png" >/dev/null
+          sips -z 512 512  "$SRC/icon.png"      --out "$ICONSET/icon_512x512.png"  >/dev/null
+          sips -z 1024 1024 "$SRC/icon.png"    --out "$ICONSET/icon_512x512@2x.png" >/dev/null
+          iconutil -c icns "$ICONSET" -o src-tauri/icons/icon.icns
+          ls -la src-tauri/icons/icon.icns
+
+      - name: Tauri build (app bundle, per-arch)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd src-tauri
+          cargo tauri build --bundles app 2>&1 | tee /tmp/tauri-build.log
+          APP="target/release/bundle/macos/MediVault.app"
+          test -x "$APP/Contents/MacOS/MediVault" || {
+            echo "::error::Tauri desktop binary missing"
+            tail -40 /tmp/tauri-build.log
+            exit 1
+          }
+          echo "APP=$PWD/$APP" | tee /tmp/tauri-app.env
+          file "$APP/Contents/MacOS/MediVault"
+
+      - name: Build the supervisor + provisioner + API runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          export MACOSX_DEPLOYMENT_TARGET=13.0
+          cd macos/supervisor
+          cargo build --release --locked
+          codesign --force --sign - target/release/mediavault-supervisor
+          cd ../provision
+          bun install
+          bun run build
+          test -f dist/index.js
+          cd ../..
+          ./node_modules/.bin/prisma generate --schema packages/db/prisma/schema.prisma 2>&1 | tail -2
+          ./node_modules/.bin/tsc --project mini-services/api-service/tsconfig.json
+          test -f mini-services/api-service/dist/mini-services/api-service/src/index.js
+
+      - name: Stage the API runtime tree + prisma CLI closure + Node runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="$RUNNER_TEMP/medivault-api"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE/api/dist" "$STAGE/api/node_modules/@medivault"/{auth,crypto,db}
+          cp -R mini-services/api-service/dist/mini-services/api-service/src/. "$STAGE/api/dist/"
+          cp mini-services/api-service/package.json "$STAGE/api/package.json"
+          ( cd "$STAGE/api" && npm install --omit=dev --no-audit --no-fund --loglevel=error )
+          cp -R mini-services/api-service/dist/packages/auth/src/.    "$STAGE/api/node_modules/@medivault/auth/"
+          cp -R mini-services/api-service/dist/packages/crypto/src/. "$STAGE/api/node_modules/@medivault/crypto/"
+          cp -R mini-services/api-service/dist/packages/db/src/.     "$STAGE/api/node_modules/@medivault/db/"
+          printf '{"name":"@medivault/auth","version":"1.0.0","type":"module","main":"./index.js"}\n'   > "$STAGE/api/node_modules/@medivault/auth/package.json"
+          printf '{"name":"@medivault/crypto","version":"1.0.0","type":"module","main":"./index.js"}\n' > "$STAGE/api/node_modules/@medivault/crypto/package.json"
+          printf '{"name":"@medivault/db","version":"1.0.0","type":"module","main":"./client.js"}\n'    > "$STAGE/api/node_modules/@medivault/db/package.json"
+          rm -rf "$STAGE/api/node_modules/.prisma"
+          cp -R node_modules/.prisma "$STAGE/api/node_modules/.prisma"
+          echo "STAGE=$STAGE" | tee /tmp/api-stage.env
+
+          PRISMA_STAGE="$RUNNER_TEMP/prisma-cli-stage"
+          rm -rf "$PRISMA_STAGE"
+          mkdir -p "$PRISMA_STAGE"
+          PRISMA_VERSION="$(node -p "require('$PWD/node_modules/prisma/package.json').version")"
+          printf '{"name":"mv-prisma-cli","private":true,"dependencies":{"prisma":"%s"}}\n' "$PRISMA_VERSION" > "$PRISMA_STAGE/package.json"
+          ( cd "$PRISMA_STAGE" && npm install --omit=dev --no-audit --no-fund --loglevel=error )
+          test -d "$PRISMA_STAGE/node_modules/effect"
+          echo "PRISMA_STAGE=$PRISMA_STAGE" | tee /tmp/prisma-stage.env
+
+          TARBALL="node-v$NODE_VERSION-darwin-${{ matrix.node_arch }}.tar.gz"
+          curl -fsSL --retry 3 -o "/tmp/$TARBALL" "$NODE_DIST_URL/v$NODE_VERSION/$TARBALL"
+          echo "${{ matrix.node_sha256 }}  /tmp/$TARBALL" | shasum -a 256 --check --strict
+          echo "NODE_TARBALL=/tmp/$TARBALL" | tee /tmp/node-tarball.env
+
+      - name: Cache PostgreSQL ${{ env.PG_VERSION }} build (MACOSX_DEPLOYMENT_TARGET=13.0)
+        id: pg-cache
+        uses: actions/cache@v4
+        with:
+          path: '/Users/runner/pg17-install-dt13'
+          key: macos-pg17-dt13-${{ matrix.label }}-${{ env.PG_VERSION }}-${{ env.PG_SHA256 }}
+
+      - name: Build PostgreSQL ${{ env.PG_VERSION }} from source (MACOSX_DEPLOYMENT_TARGET=13.0)
+        if: steps.pg-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export MACOSX_DEPLOYMENT_TARGET=13.0
+          curl -fsSL --retry 3 -o /tmp/postgresql-$PG_VERSION.tar.gz "$PG_TARBALL_URL"
+          echo "$PG_SHA256  /tmp/postgresql-$PG_VERSION.tar.gz" | shasum -a 256 --check --strict
+          rm -rf "/tmp/postgresql-$PG_VERSION"
+          tar -xzf "/tmp/postgresql-$PG_VERSION.tar.gz" -C /tmp
+          cd "/tmp/postgresql-$PG_VERSION"
+          ./configure --prefix="$PG_INSTALL" --without-icu --without-readline
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+
+      - name: Merge the backend into the Tauri MediVault.app
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/tauri-app.env
+          . /tmp/node-tarball.env
+          . /tmp/api-stage.env
+          . /tmp/prisma-stage.env
+
+          PG_INSTALL="$PG_INSTALL" BUNDLE="$APP/Contents/Resources/runtime/postgresql/17" PG_VERSION="$PG_VERSION" \
+            SUPERVISOR_BIN="$PWD/macos/supervisor/target/release/mediavault-supervisor" \
+            bash macos/scripts/stage-pg-bundle.sh
+
+          APP_ROOT="$APP" \
+            NODE_TARBALL="$NODE_TARBALL" \
+            API_STAGE="$STAGE" \
+            PROVISION_DIR="$PWD/macos/provision" \
+            PRISMA_MODULES="$PRISMA_STAGE/node_modules" \
+            PRISMA_SCHEMA_DIR="$PWD/packages/db/prisma" \
+            LAUNCHAGENT_SRC="$PWD/macos/launchagent/dev.medivault.supervisor.plist" \
+            bash macos/scripts/stage-app-bundle.sh
+
+          cat > "$APP/Contents/Resources/supervisor-config.json" <<EOF
+          {
+            "version": 1,
+            "paths": {
+              "pg_bundle": "$APP/Contents/Resources/runtime/postgresql/17",
+              "node_binary": "$APP/Contents/Resources/runtime/nodejs/bin/node",
+              "api_entry": "$APP/Contents/Resources/api/dist/index.js",
+              "api_working_dir": "$APP/Contents/Resources/api",
+              "app_support_dir": "$MV_APP_SUPPORT",
+              "log_dir": "$MV_APP_SUPPORT/logs"
+            },
+            "postgres": {
+              "host": "127.0.0.1",
+              "port": $MV_PGPORT,
+              "superuser": "postgres",
+              "app_user": "medivault",
+              "app_database": "medivault",
+              "pgdata_rel": "PostgreSQL/17/data"
+            },
+            "api": { "host": "127.0.0.1", "port": $MV_API_PORT, "allowed_origins": "http://localhost:3000" },
+            "secrets": { "source": "keychain" },
+            "provisioner": {
+              "entry": "$APP/Contents/Resources/provision/dist/index.js",
+              "prisma_cli": "$APP/Contents/Resources/prisma-cli/node_modules/prisma/build/index.js",
+              "prisma_schema": "$APP/Contents/Resources/prisma/schema.prisma",
+              "timeout_sec": 600
+            },
+            "limits": { "pg_start_timeout_sec": 120, "api_start_timeout_sec": 90, "health_interval_sec": 5 }
+          }
+          EOF
+          echo "APP_ROOT=$APP" | tee /tmp/app-root.env
+          echo "bundle size: $(du -sh "$APP" | cut -f1)"
+
+      - name: Ad-hoc codesign + Mach-O gates (desktop, supervisor, node, PG)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/app-root.env
+          APP="$APP_ROOT"
+          codesign --force --sign - "$APP/Contents/MacOS/MediVault"
+          codesign --verify --strict "$APP/Contents/MacOS/MediVault"
+          MACHO_RECORDS=/tmp/macho-gate-26-1.txt bash macos/scripts/macho-gate.sh "$APP/Contents/MacOS/MediVault" "${{ matrix.expected_uname }}" 13.0
+          MACHO_RECORDS=/tmp/macho-gate-26-2.txt bash macos/scripts/macho-gate.sh "$APP/Contents/MacOS/mediavault-supervisor" "${{ matrix.expected_uname }}" 13.0
+          MACHO_RECORDS=/tmp/macho-gate-26-3.txt bash macos/scripts/macho-gate.sh "$APP/Contents/Resources/runtime/nodejs/bin/node" "${{ matrix.expected_uname }}" 13.0
+          MACHO_RECORDS=/tmp/macho-gate-26-4.txt bash macos/scripts/macho-gate.sh "$APP/Contents/Resources/runtime/postgresql/17" "${{ matrix.expected_uname }}" 13.0
+          cat /tmp/macho-gate-26-*.txt > /tmp/macho-gate-records.txt
+
+      - name: Build + verify the DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/app-root.env
+          APP="$APP_ROOT"
+          DMG_OUT="$RUNNER_TEMP/MediVault-macos26-${{ matrix.label }}.dmg"
+          APP_ROOT="$APP" DMG_OUT="$DMG_OUT" bash macos/scripts/build-dmg.sh
+          echo "DMG_OUT=$DMG_OUT" | tee /tmp/dmg.env
+          test -f "$DMG_OUT.sha256"
+
+      # ------------------------------------------------------------------
+      # macOS-26-SPECIFIC PROOFS beyond the frozen dmg mode.
+      # ------------------------------------------------------------------
+
+      - name: Generate CI keychain seed values (values never printed)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # CI-only test credentials, seeded INTO the runner login keychain
+          # by the supervisor's own bootstrap-secrets (proven SecItemAdd
+          # path; shape-validated by the supervisor). Needed so the smoke
+          # can additionally prove an INDEPENDENT authenticated SELECT 1
+          # from the harness. Values are never echoed, never uploaded;
+          # the runner is ephemeral. A doctor machine never sets these.
+          {
+            echo "export MV_KEYCHAIN_SEED_PG_APP_PASSWORD=$(openssl rand -hex 12)"
+            echo "export MV_KEYCHAIN_SEED_PG_BOOTSTRAP=$(openssl rand -hex 12)"
+            echo "export MV_KEYCHAIN_SEED_MASTER_KEY=$(openssl rand -hex 32)"
+            echo "export MV_KEYCHAIN_SEED_JWT_SECRET=$(openssl rand -hex 32)"
+            echo "export MV_KEYCHAIN_SEED_CSRF_SECRET=$(openssl rand -hex 32)"
+          } > /tmp/26-seeds.env
+          chmod 600 /tmp/26-seeds.env
+          echo "seed file written (values never printed): /tmp/26-seeds.env"
+
+      - name: Install the app from the mounted DMG (copy/extraction proof)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/dmg.env
+          MOUNT="$(mktemp -d /tmp/mv-26-mount.XXXXXX)"
+          hdiutil attach "$DMG_OUT" -mountpoint "$MOUNT" -nobrowse -readonly
+          test -x "$MOUNT/MediVault.app/Contents/MacOS/MediVault"
+          INSTALLED="$RUNNER_TEMP/MediVault-installed.app"
+          rm -rf "$INSTALLED"
+          cp -R "$MOUNT/MediVault.app" "$INSTALLED"
+          hdiutil detach "$MOUNT" -force >/dev/null
+          echo "INSTALLED=$INSTALLED" | tee /tmp/26-installed.env
+          echo "installed app size: $(du -sh "$INSTALLED" | cut -f1)"
+          # The copied tree must remain a valid ad-hoc-signed bundle with
+          # native Mach-O on macOS 26 (same gate family as the build tree).
+          codesign --verify --strict "$INSTALLED"
+          codesign --verify --strict "$INSTALLED/Contents/MacOS/MediVault"
+          codesign --verify --strict "$INSTALLED/Contents/MacOS/mediavault-supervisor"
+          MACHO_RECORDS=/tmp/macho-gate-26-5.txt bash macos/scripts/macho-gate.sh "$INSTALLED/Contents/MacOS/MediVault" "${{ matrix.expected_uname }}" 13.0
+          MACHO_RECORDS=/tmp/macho-gate-26-6.txt bash macos/scripts/macho-gate.sh "$INSTALLED/Contents/MacOS/mediavault-supervisor" "${{ matrix.expected_uname }}" 13.0
+          MACHO_RECORDS=/tmp/macho-gate-26-7.txt bash macos/scripts/macho-gate.sh "$INSTALLED/Contents/Resources/runtime/nodejs/bin/node" "${{ matrix.expected_uname }}" 13.0
+          MACHO_RECORDS=/tmp/macho-gate-26-8.txt bash macos/scripts/macho-gate.sh "$INSTALLED/Contents/Resources/runtime/postgresql/17" "${{ matrix.expected_uname }}" 13.0
+          cat /tmp/macho-gate-26-*.txt > /tmp/macho-gate-records.txt
+          echo "app version: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INSTALLED/Contents/Info.plist" 2>/dev/null || echo '?')"
+
+      - name: Re-point the installed app config (smoke app-support)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/26-installed.env
+          python3 - "$INSTALLED/Contents/Resources/supervisor-config.json" "$INSTALLED" <<'PYEOF'
+          import json, sys
+          path, new_root = sys.argv[1], sys.argv[2]
+          cfg = json.load(open(path))
+          cfg["paths"]["pg_bundle"] = f"{new_root}/Contents/Resources/runtime/postgresql/17"
+          cfg["paths"]["node_binary"] = f"{new_root}/Contents/Resources/runtime/nodejs/bin/node"
+          cfg["paths"]["api_entry"] = f"{new_root}/Contents/Resources/api/dist/index.js"
+          cfg["paths"]["api_working_dir"] = f"{new_root}/Contents/Resources/api"
+          cfg["provisioner"]["entry"] = f"{new_root}/Contents/Resources/provision/dist/index.js"
+          cfg["provisioner"]["prisma_cli"] = f"{new_root}/Contents/Resources/prisma-cli/node_modules/prisma/build/index.js"
+          cfg["provisioner"]["prisma_schema"] = f"{new_root}/Contents/Resources/prisma/schema.prisma"
+          json.dump(cfg, open(path, "w"), indent=2)
+          PYEOF
+          echo "CONFIG=$INSTALLED/Contents/Resources/supervisor-config.json" | tee /tmp/26-config.env
+          cat "$CONFIG"
+
+      - name: Keychain bootstrap (seeded CI values, REAL login keychain)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/26-config.env
+          . /tmp/26-installed.env
+          . /tmp/26-seeds.env
+          rm -f /tmp/26-bootstrap-1.log /tmp/26-bootstrap-2.log
+          "$INSTALLED/Contents/MacOS/mediavault-supervisor" bootstrap-secrets --config "$CONFIG" | tee /tmp/26-bootstrap-1.log
+          [ "$(grep -c 'created keychain item' /tmp/26-bootstrap-1.log)" = "5" ] || {
+            echo "::error::expected 5 created items (seeded first bootstrap)"; exit 1
+          }
+          # Idempotence: a second bootstrap must NEVER overwrite (the
+          # no-overwrite contract — KEYCHAIN material stability).
+          "$INSTALLED/Contents/MacOS/mediavault-supervisor" bootstrap-secrets --config "$CONFIG" | tee /tmp/26-bootstrap-2.log
+          [ "$(grep -c 'already present' /tmp/26-bootstrap-2.log)" = "5" ] || {
+            echo "::error::expected 5 already-present items (idempotence)"; exit 1
+          }
+          for account in pg-app-password pg-bootstrap master-key jwt-secret csrf-secret; do
+            security find-generic-password -s dev.medivault -a "$account" >/dev/null 2>&1 || {
+              echo "::error::keychain item missing: $account"; exit 1
+            }
+          done
+          echo "keychain: 5/5 items present on macOS 26 (existence-level proof; values never printed)"
+
+      - name: Supervisor lifecycle from the installed app (CLEAN bootstrap to healthy)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/26-config.env
+          . /tmp/26-installed.env
+          . /tmp/26-seeds.env
+          STATUS="$MV_APP_SUPPORT/runtime-state/supervisor-status.json"
+          rm -rf "$MV_APP_SUPPORT"
+          rm -f /tmp/26-supervisor.exit
+          ( "$INSTALLED/Contents/MacOS/mediavault-supervisor" run --config "$CONFIG" \
+              > "$RUNNER_TEMP/smoke-supervisor-stdout.log" 2>&1; echo $? > /tmp/26-supervisor.exit ) &
+
+          echo "[poll] bounded wait (300s) for healthy on macOS 26"
+          HEALTHY=0
+          for i in $(seq 1 600); do
+            S=$(jq -r '.state // "none"' "$STATUS" 2>/dev/null || echo none)
+            if [ "$S" = "healthy" ]; then HEALTHY=1; break; fi
+            if [ "$S" = "failed" ]; then break; fi
+            if [ -f /tmp/26-supervisor.exit ]; then break; fi
+            sleep 0.5
+          done
+          echo "final state: $(jq -r '.state // "none"' "$STATUS" 2>/dev/null || echo none)"
+          if [ "$HEALTHY" != "1" ]; then
+            echo "::error::installed app did not reach healthy on macOS 26"
+            echo "--- supervisor.log:"; tail -30 "$MV_APP_SUPPORT/logs/supervisor.log" 2>/dev/null || true
+            echo "--- provision.log:"; tail -30 "$MV_APP_SUPPORT/logs/provision.log" 2>/dev/null || true
+            echo "--- supervisor-stdout.log:"; tail -40 "$RUNNER_TEMP/smoke-supervisor-stdout.log" 2>/dev/null || true
+            exit 1
+          fi
+
+          PGBIN="$INSTALLED/Contents/Resources/runtime/postgresql/17/bin"
+          echo "[proof] bundled PG starts + pg_isready (independent probe)"
+          "$PGBIN/pg_isready" -h 127.0.0.1 -p "$MV_PGPORT"
+          echo "[proof] authenticated SELECT 1 as the app role (independent probe, seeded credential)"
+          ONE=$(PGPASSWORD="$MV_KEYCHAIN_SEED_PG_APP_PASSWORD" "$PGBIN/psql" -h 127.0.0.1 -p "$MV_PGPORT" -U medivault -d medivault -t -A -c "SELECT 1")
+          [ "$ONE" = "1" ] || { echo "::error::authenticated SELECT 1 failed on macOS 26"; exit 1; }
+          echo "[proof] existing migrations/schema deployed through the packaged prisma closure"
+          MIG=$(PGPASSWORD="$MV_KEYCHAIN_SEED_PG_APP_PASSWORD" "$PGBIN/psql" -h 127.0.0.1 -p "$MV_PGPORT" -U medivault -d medivault -t -A -c "SELECT count(*) FROM _prisma_migrations WHERE finished_at IS NOT NULL")
+          echo "applied migrations: $MIG (expect 8)"
+          [ "$MIG" = "8" ] || { echo "::error::expected 8 applied migrations on macOS 26"; exit 1; }
+
+          echo "[proof] the API runs on the PACKAGED node binary"
+          pgrep -f "$INSTALLED/Contents/Resources/runtime/nodejs/bin/node" >/dev/null || {
+            echo "::error::the API is not running on the packaged node binary"; exit 1
+          }
+          echo "[api] /health + /ready on macOS 26"
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$MV_API_PORT/health" || echo 000)
+          echo "/health -> $CODE"; test "$CODE" = "200"
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$MV_API_PORT/ready" || echo 000)
+          echo "/ready -> $CODE"; test "$CODE" = "200"
+          test -f "$MV_APP_SUPPORT/config/provisioned.json"
+          echo "provisioned marker present: $(jq -c '{pgMajor, appUser, appDatabase}' "$MV_APP_SUPPORT/config/provisioned.json")"
+
+          echo "[shutdown] graceful SIGTERM ladder + zero owned orphans"
+          kill -TERM "$(jq -r .pid "$STATUS")"
+          for i in $(seq 1 180); do [ -f /tmp/26-supervisor.exit ] && break; sleep 0.5; done
+          EXIT_CODE=$(cat /tmp/26-supervisor.exit 2>/dev/null || echo MISSING)
+          echo "supervisor exit code: $EXIT_CODE"
+          [ "$EXIT_CODE" = "0" ] || { echo "::error::supervisor did not exit 0 on macOS 26"; exit 1; }
+          [ "$(jq -r .state "$STATUS")" = "stopped" ] || { echo "::error::status not stopped"; exit 1; }
+          LEFT=$(pgrep -fl "postgres -D" | grep -v pgrep || true)
+          [ -z "$LEFT" ] || { echo "::error::orphans: $LEFT"; exit 1; }
+          test ! -e "$MV_APP_SUPPORT/PostgreSQL/17/data/postmaster.pid"
+          echo "26-SMOKE-LIFECYCLE-GREEN"
+
+      - name: Launch smoke — the desktop binary from the INSTALLED app
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/26-installed.env
+          rm -f /tmp/26-desktop.exit
+          ( "$INSTALLED/Contents/MacOS/MediVault" > /tmp/26-desktop.log 2>&1; echo $? > /tmp/26-desktop.exit ) &
+          DESKTOP_PID=$!
+          echo "desktop pid: $DESKTOP_PID"
+          sleep 15
+          if ! kill -0 "$DESKTOP_PID" 2>/dev/null; then
+            echo "::error::desktop binary did not stay alive for 15s on macOS 26"
+            echo "--- desktop.log:"; tail -40 /tmp/26-desktop.log 2>/dev/null || true
+            exit 1
+          fi
+          echo "alive after 15s: yes"
+          ps -p "$DESKTOP_PID" -o pid,etime,comm
+          echo "--- desktop.log (first 20 lines):"
+          sed -n '1,20p' /tmp/26-desktop.log 2>/dev/null || true
+          kill -TERM "$DESKTOP_PID"
+          EXITED=0
+          for i in $(seq 1 30); do
+            [ -f /tmp/26-desktop.exit ] && { EXITED=1; break; }
+            sleep 1
+          done
+          if [ "$EXITED" != "1" ]; then
+            echo "::warning::desktop did not exit within 30s of SIGTERM — hard-stopping for the sweep"
+            kill -9 "$DESKTOP_PID" 2>/dev/null || true
+          else
+            echo "desktop exited after SIGTERM (code $(cat /tmp/26-desktop.exit))"
+          fi
+          echo "26-LAUNCH-SMOKE-GREEN (binary starts, stays alive, terminates)"
+
+      - name: Teardown + orphan sweep (always)
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          if [ -f /tmp/26-installed.env ]; then
+            . /tmp/26-installed.env
+            pkill -f "$INSTALLED/Contents/MacOS/MediVault" 2>/dev/null || true
+          fi
+          pkill -f 'MediVault-installed.app/Contents/MacOS/MediVault' 2>/dev/null || true
+          d="/Users/runner/work/_temp/mv-26smoke/PostgreSQL/17/data"
+          if [ -d "$d" ] && [ -f "$d/PG_VERSION" ]; then
+            /Users/runner/work/_temp/MediVault-installed.app/Contents/Resources/runtime/postgresql/17/bin/pg_ctl -D "$d" -m fast -w -t 60 stop 2>/dev/null || true
+          fi
+          sleep 2
+          LEFT=$(pgrep -fl "postgres -D" | grep -v pgrep || true)
+          [ -z "$LEFT" ] && echo "clean — zero postgres processes" || {
+            echo "$LEFT"; pkill -9 -f "postgres -D" 2>/dev/null || true
+          }
+
+      - name: Upload evidence (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-26-smoke-${{ matrix.label }}-evidence
+          retention-days: 1
+          path: |
+            /tmp/macho-gate-records.txt
+            /tmp/tauri-build.log
+            /tmp/26-bootstrap-1.log
+            /tmp/26-bootstrap-2.log
+            /tmp/26-desktop.log
+            /tmp/26-desktop.exit
+            /Users/runner/work/_temp/mv-26smoke/logs/
+            /Users/runner/work/_temp/smoke-supervisor-stdout.log
+            /Users/runner/work/_temp/MediVault-macos26-${{ matrix.label }}.dmg.sha256
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # reinstall-acceptance — Stage 7: the reinstall/uninstall acceptance matrix
+  # on NATIVE macOS 26 runners (both arches), using the ACTUAL .app and .dmg
+  # artifacts (never target/debug binaries).
+  #
+  # Cases (contract: acceptance/macos-reinstall-contract.md):
+  #   1. FRESH INSTALL   — mount DMG A (v0.1.0) -> per-user install ->
+  #      first-run provisioning (keychain bootstrap, CLEAN delegation) ->
+  #      PG healthy + /health + /ready -> synthetic DB sentinel created.
+  #   2. APP RESTART     — VALID_EXISTING; sentinel persists; cluster NOT
+  #      re-initialized (PG_VERSION sha + provisioned createdAt unchanged).
+  #   3. APP REPLACEMENT — graceful stop -> build B (CFBundleVersion 0.1.1,
+  #      newly built) -> replace the app -> reconcile/migrate from the NEW
+  #      app's packaged provisioner -> supervisor healthy -> sentinel
+  #      present; Application Support, Logs and Keychain PRESERVED.
+  #   4. RECOVERY        — RECOVERABLE_INCOMPLETE resumes exactly (sentinel
+  #      + PG_VERSION preserved); INCOMPLETE_EXISTING fails CLOSED with
+  #      nothing altered (two flavors: pending+unexpected state, valid
+  #      cluster without the trust anchor); stale pending marker
+  #      reconciles to VALID. All driven from the INSTALLED app's packaged
+  #      provisioner (the frozen provision-lifecycle pattern, at the app
+  #      level). A valid database is NEVER destroyed as a shortcut.
+  #   5. UNINSTALL       — remove the app only; Application Support, PG
+  #      cluster, logs and keychain items PRESERVED; sentinel row proven
+  #      by starting the preserved cluster with the reference PG runtime.
+  #   +. PROCESS SAFETY  — unrelated postgres/pg_ctl/node processes planted
+  #      up front must survive EVERY stop/restart cycle (owned-process
+  #      rules only; never kill by executable name).
+  # ---------------------------------------------------------------------------
+  reinstall-acceptance:
+    name: "reinstall-acceptance (${{ matrix.label }})"
+    if: github.event.inputs.mode == 'reinstall-acceptance'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: arm64
+            runner: macos-26
+            expected_uname: arm64
+            node_arch: arm64
+            node_sha256: '61130f394c1630d211dd50aecc4353d379480f36d3ac913cd85dbba1aed585c6'
+          - label: x64
+            runner: macos-26-intel
+            expected_uname: x86_64
+            node_arch: x64
+            node_sha256: '58e99022c2ff89395576cc7fd4d98cea24bb68081475d5f88b801ee8729fb026'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+
+    env:
+      PG_VERSION: '17.11'
+      PG_SHA256: '5367f6fb2ec97efe1eb2e0c7926bb33438e51b0bd3a9733b88498056a7dc9a7e'
+      PG_TARBALL_URL: 'https://ftp.postgresql.org/pub/source/v17.11/postgresql-17.11.tar.gz'
+      PG_INSTALL: '/Users/runner/pg17-install-dt13'
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+      NODE_VERSION: '22.23.2'
+      NODE_DIST_URL: 'https://nodejs.org/dist'
+      MV_APP_SUPPORT: '/Users/runner/Library/Application Support/MediVault'
+      MV_LOG_DIR: '/Users/runner/Library/Logs/MediVault'
+      MV_INSTALL_APP: '/Users/runner/Applications/MediVault.app'
+      MV_PGPORT: '55451'
+      MV_API_PORT: '4593'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Preflight — native runner architecture + macOS 26 proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "uname -m: $(uname -m) (expected ${{ matrix.expected_uname }})"
+          test "$(uname -m)" = "${{ matrix.expected_uname }}"
+          echo "sw_vers: $(sw_vers -productVersion) ($(sw_vers -productName) $(sw_vers -buildVersion))"
+          case "$(sw_vers -productVersion)" in
+            26*) echo "runner OS is macOS 26 (Tahoe)" ;;
+            *) echo "::error::expected macOS 26 on label ${{ matrix.runner }}, got $(sw_vers -productVersion)"; exit 1 ;;
+          esac
+          if [ "${{ matrix.expected_uname }}" = "arm64" ]; then
+            T=$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)
+            echo "sysctl.proc_translated: ${T}"
+            test "$T" = "0"
+          fi
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            mini-services/api-service/node_modules
+            packages/*/node_modules
+          key: macos-deps-${{ matrix.label }}-${{ hashFiles('bun.lock', 'package.json', 'packages/*/package.json', 'mini-services/api-service/package.json') }}
+          restore-keys: |
+            macos-deps-${{ matrix.label }}-
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+          cd macos/supervisor
+          rustup toolchain install --profile minimal "$(grep -oE 'channel = "[^"]+"' ../../rust-toolchain.toml | cut -d'"' -f2)"
+          cargo --version
+
+      - name: Cache tauri-cli + cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/.crates.toml
+            ~/.cargo/.crates2.json
+          key: macos-tauri-cli-${{ matrix.label }}-tauri2
+
+      - name: Install tauri-cli (v2, cargo, cached)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -x "$HOME/.cargo/bin/cargo-tauri" ]; then
+            cargo tauri --version
+          else
+            cargo install tauri-cli --locked --version '^2.11'
+            cargo tauri --version
+          fi
+
+      - name: Build the frontend (NEXT_OUTPUT=export)
+        shell: bash
+        run: |
+          set -euo pipefail
+          NEXT_OUTPUT=export bunx next build
+          test -f out/index.html || { echo "::error::static export missing out/index.html"; exit 1; }
+          echo "out/ entries: $(find out -type f | wc -l | tr -d ' ')"
+
+      - name: Generate icon.icns (sips + iconutil, from the committed PNGs)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ICONSET="src-tauri/icons/MediVault.iconset"
+          rm -rf "$ICONSET"; mkdir -p "$ICONSET"
+          SRC="src-tauri/icons"
+          sips -z 16 16    "$SRC/32x32.png"     --out "$ICONSET/icon_16x16.png"    >/dev/null
+          sips -z 32 32    "$SRC/32x32.png"     --out "$ICONSET/icon_16x16@2x.png" >/dev/null
+          sips -z 32 32    "$SRC/32x32.png"     --out "$ICONSET/icon_32x32.png"    >/dev/null
+          sips -z 64 64    "$SRC/128x128.png"   --out "$ICONSET/icon_32x32@2x.png" >/dev/null
+          sips -z 128 128  "$SRC/128x128.png"   --out "$ICONSET/icon_128x128.png"  >/dev/null
+          sips -z 256 256  "$SRC/128x128@2x.png" --out "$ICONSET/icon_128x128@2x.png" >/dev/null
+          sips -z 256 256  "$SRC/256x256.png"   --out "$ICONSET/icon_256x256.png"  >/dev/null
+          sips -z 512 512  "$SRC/icon.png"      --out "$ICONSET/icon_256x256@2x.png" >/dev/null
+          sips -z 512 512  "$SRC/icon.png"      --out "$ICONSET/icon_512x512.png"  >/dev/null
+          sips -z 1024 1024 "$SRC/icon.png"    --out "$ICONSET/icon_512x512@2x.png" >/dev/null
+          iconutil -c icns "$ICONSET" -o src-tauri/icons/icon.icns
+          ls -la src-tauri/icons/icon.icns
+
+      - name: Tauri build A (app bundle v0.1.0, per-arch)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd src-tauri
+          cargo tauri build --bundles app 2>&1 | tee /tmp/tauri-build.log
+          APP="target/release/bundle/macos/MediVault.app"
+          test -x "$APP/Contents/MacOS/MediVault" || {
+            echo "::error::Tauri desktop binary missing"
+            tail -40 /tmp/tauri-build.log
+            exit 1
+          }
+          echo "APP=$PWD/$APP" | tee /tmp/tauri-app.env
+          file "$APP/Contents/MacOS/MediVault"
+
+      - name: Build the supervisor + provisioner + API runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          export MACOSX_DEPLOYMENT_TARGET=13.0
+          cd macos/supervisor
+          cargo build --release --locked
+          codesign --force --sign - target/release/mediavault-supervisor
+          cd ../provision
+          bun install
+          bun run build
+          test -f dist/index.js
+          cd ../..
+          ./node_modules/.bin/prisma generate --schema packages/db/prisma/schema.prisma 2>&1 | tail -2
+          ./node_modules/.bin/tsc --project mini-services/api-service/tsconfig.json
+          test -f mini-services/api-service/dist/mini-services/api-service/src/index.js
+
+      - name: Stage the API runtime tree + prisma CLI closure + Node runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="$RUNNER_TEMP/medivault-api"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE/api/dist" "$STAGE/api/node_modules/@medivault"/{auth,crypto,db}
+          cp -R mini-services/api-service/dist/mini-services/api-service/src/. "$STAGE/api/dist/"
+          cp mini-services/api-service/package.json "$STAGE/api/package.json"
+          ( cd "$STAGE/api" && npm install --omit=dev --no-audit --no-fund --loglevel=error )
+          cp -R mini-services/api-service/dist/packages/auth/src/.    "$STAGE/api/node_modules/@medivault/auth/"
+          cp -R mini-services/api-service/dist/packages/crypto/src/. "$STAGE/api/node_modules/@medivault/crypto/"
+          cp -R mini-services/api-service/dist/packages/db/src/.     "$STAGE/api/node_modules/@medivault/db/"
+          printf '{"name":"@medivault/auth","version":"1.0.0","type":"module","main":"./index.js"}\n'   > "$STAGE/api/node_modules/@medivault/auth/package.json"
+          printf '{"name":"@medivault/crypto","version":"1.0.0","type":"module","main":"./index.js"}\n' > "$STAGE/api/node_modules/@medivault/crypto/package.json"
+          printf '{"name":"@medivault/db","version":"1.0.0","type":"module","main":"./client.js"}\n'    > "$STAGE/api/node_modules/@medivault/db/package.json"
+          rm -rf "$STAGE/api/node_modules/.prisma"
+          cp -R node_modules/.prisma "$STAGE/api/node_modules/.prisma"
+          echo "STAGE=$STAGE" | tee /tmp/api-stage.env
+
+          PRISMA_STAGE="$RUNNER_TEMP/prisma-cli-stage"
+          rm -rf "$PRISMA_STAGE"
+          mkdir -p "$PRISMA_STAGE"
+          PRISMA_VERSION="$(node -p "require('$PWD/node_modules/prisma/package.json').version")"
+          printf '{"name":"mv-prisma-cli","private":true,"dependencies":{"prisma":"%s"}}\n' "$PRISMA_VERSION" > "$PRISMA_STAGE/package.json"
+          ( cd "$PRISMA_STAGE" && npm install --omit=dev --no-audit --no-fund --loglevel=error )
+          test -d "$PRISMA_STAGE/node_modules/effect"
+          echo "PRISMA_STAGE=$PRISMA_STAGE" | tee /tmp/prisma-stage.env
+
+          TARBALL="node-v$NODE_VERSION-darwin-${{ matrix.node_arch }}.tar.gz"
+          curl -fsSL --retry 3 -o "/tmp/$TARBALL" "$NODE_DIST_URL/v$NODE_VERSION/$TARBALL"
+          echo "${{ matrix.node_sha256 }}  /tmp/$TARBALL" | shasum -a 256 --check --strict
+          echo "NODE_TARBALL=/tmp/$TARBALL" | tee /tmp/node-tarball.env
+
+      - name: Cache PostgreSQL ${{ env.PG_VERSION }} build (MACOSX_DEPLOYMENT_TARGET=13.0)
+        id: pg-cache
+        uses: actions/cache@v4
+        with:
+          path: '/Users/runner/pg17-install-dt13'
+          key: macos-pg17-dt13-${{ matrix.label }}-${{ env.PG_VERSION }}-${{ env.PG_SHA256 }}
+
+      - name: Build PostgreSQL ${{ env.PG_VERSION }} from source (MACOSX_DEPLOYMENT_TARGET=13.0)
+        if: steps.pg-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export MACOSX_DEPLOYMENT_TARGET=13.0
+          curl -fsSL --retry 3 -o /tmp/postgresql-$PG_VERSION.tar.gz "$PG_TARBALL_URL"
+          echo "$PG_SHA256  /tmp/postgresql-$PG_VERSION.tar.gz" | shasum -a 256 --check --strict
+          rm -rf "/tmp/postgresql-$PG_VERSION"
+          tar -xzf "/tmp/postgresql-$PG_VERSION.tar.gz" -C /tmp
+          cd "/tmp/postgresql-$PG_VERSION"
+          ./configure --prefix="$PG_INSTALL" --without-icu --without-readline
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+
+      - name: Merge the backend into the Tauri MediVault.app (build A)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/tauri-app.env
+          . /tmp/node-tarball.env
+          . /tmp/api-stage.env
+          . /tmp/prisma-stage.env
+
+          PG_INSTALL="$PG_INSTALL" BUNDLE="$APP/Contents/Resources/runtime/postgresql/17" PG_VERSION="$PG_VERSION" \
+            SUPERVISOR_BIN="$PWD/macos/supervisor/target/release/mediavault-supervisor" \
+            bash macos/scripts/stage-pg-bundle.sh
+
+          APP_ROOT="$APP" \
+            NODE_TARBALL="$NODE_TARBALL" \
+            API_STAGE="$STAGE" \
+            PROVISION_DIR="$PWD/macos/provision" \
+            PRISMA_MODULES="$PRISMA_STAGE/node_modules" \
+            PRISMA_SCHEMA_DIR="$PWD/packages/db/prisma" \
+            LAUNCHAGENT_SRC="$PWD/macos/launchagent/dev.medivault.supervisor.plist" \
+            bash macos/scripts/stage-app-bundle.sh
+
+          cat > "$APP/Contents/Resources/supervisor-config.json" <<EOF
+          {
+            "version": 1,
+            "paths": {
+              "pg_bundle": "$APP/Contents/Resources/runtime/postgresql/17",
+              "node_binary": "$APP/Contents/Resources/runtime/nodejs/bin/node",
+              "api_entry": "$APP/Contents/Resources/api/dist/index.js",
+              "api_working_dir": "$APP/Contents/Resources/api",
+              "app_support_dir": "$MV_APP_SUPPORT",
+              "log_dir": "$MV_LOG_DIR"
+            },
+            "postgres": {
+              "host": "127.0.0.1",
+              "port": $MV_PGPORT,
+              "superuser": "postgres",
+              "app_user": "medivault",
+              "app_database": "medivault",
+              "pgdata_rel": "PostgreSQL/17/data"
+            },
+            "api": { "host": "127.0.0.1", "port": $MV_API_PORT, "allowed_origins": "http://localhost:3000" },
+            "secrets": { "source": "keychain" },
+            "provisioner": {
+              "entry": "$APP/Contents/Resources/provision/dist/index.js",
+              "prisma_cli": "$APP/Contents/Resources/prisma-cli/node_modules/prisma/build/index.js",
+              "prisma_schema": "$APP/Contents/Resources/prisma/schema.prisma",
+              "timeout_sec": 600
+            },
+            "limits": { "pg_start_timeout_sec": 120, "api_start_timeout_sec": 90, "health_interval_sec": 5 }
+          }
+          EOF
+          echo "APP_ROOT=$APP" | tee /tmp/app-root.env
+          echo "bundle size: $(du -sh "$APP" | cut -f1)"
+
+      - name: Ad-hoc codesign + Mach-O gates (build A)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/app-root.env
+          APP="$APP_ROOT"
+          codesign --force --sign - "$APP/Contents/MacOS/MediVault"
+          codesign --verify --strict "$APP/Contents/MacOS/MediVault"
+          MACHO_RECORDS=/tmp/macho-gate-r7-a3.txt bash macos/scripts/macho-gate.sh "$APP/Contents/MacOS/MediVault" "${{ matrix.expected_uname }}" 13.0
+          MACHO_RECORDS=/tmp/macho-gate-r7-a4.txt bash macos/scripts/macho-gate.sh "$APP/Contents/MacOS/mediavault-supervisor" "${{ matrix.expected_uname }}" 13.0
+          MACHO_RECORDS=/tmp/macho-gate-r7-a5.txt bash macos/scripts/macho-gate.sh "$APP/Contents/Resources/runtime/nodejs/bin/node" "${{ matrix.expected_uname }}" 13.0
+          MACHO_RECORDS=/tmp/macho-gate-r7-a6.txt bash macos/scripts/macho-gate.sh "$APP/Contents/Resources/runtime/postgresql/17" "${{ matrix.expected_uname }}" 13.0
+
+      - name: Build + verify DMG A (v0.1.0)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/app-root.env
+          APP="$APP_ROOT"
+          DMG_A="$RUNNER_TEMP/MediVault-A-${{ matrix.label }}.dmg"
+          APP_ROOT="$APP" DMG_OUT="$DMG_A" bash macos/scripts/build-dmg.sh
+          echo "DMG_A=$DMG_A" | tee /tmp/dmg-a.env
+          test -f "$DMG_A.sha256"
+
+      - name: Write the r7 helper library (shared case functions)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/r7-lib.sh <<'LIBEOF'
+          # r7-lib.sh — shared helpers for the reinstall/uninstall acceptance
+          # matrix. No secret VALUES are ever printed by these helpers.
+          r7_status() { jq -r '.state // "none"' "$1" 2>/dev/null || echo none; }
+
+          r7_wait_healthy() { # $1 status file, $2 exit file, $3 max half-seconds (default 900)
+            local STATUS="$1" EXITF="$2" MAX="${3:-900}" I S
+            for I in $(seq 1 "$MAX"); do
+              S=$(r7_status "$STATUS")
+              if [ "$S" = "healthy" ]; then return 0; fi
+              if [ "$S" = "failed" ] || [ -f "$EXITF" ]; then return 1; fi
+              sleep 0.5
+            done
+            return 1
+          }
+
+          r7_run_supervisor() { # $1 config, $2 exit file, $3 log tag
+            local CONFIG="$1" EXITF="$2" TAG="${3:-case}"
+            rm -f "$EXITF"
+            ( "$MV_INSTALL_APP/Contents/MacOS/mediavault-supervisor" run --config "$CONFIG" \
+                > "$RUNNER_TEMP/r7-supervisor-$TAG.log" 2>&1; echo $? > "$EXITF" ) &
+          }
+
+          r7_graceful_stop() { # $1 status file, $2 exit file
+            local STATUS="$1" EXITF="$2" I EXIT_CODE LEFT
+            kill -TERM "$(jq -r .pid "$STATUS")" 2>/dev/null || true
+            for I in $(seq 1 180); do [ -f "$EXITF" ] && break; sleep 0.5; done
+            EXIT_CODE=$(cat "$EXITF" 2>/dev/null || echo MISSING)
+            echo "  supervisor exit code: $EXIT_CODE"
+            [ "$EXIT_CODE" = "0" ] || { echo "::error::supervisor exit $EXIT_CODE (expected 0)"; return 1; }
+            [ "$(r7_status "$STATUS")" = "stopped" ] || { echo "::error::status not stopped"; return 1; }
+            LEFT=$(pgrep -fl "postgres -D" | grep -v pgrep || true)
+            [ -z "$LEFT" ] || { echo "::error::orphan postgres: $LEFT"; return 1; }
+            echo "  graceful stop: exit 0, state stopped, zero orphans"
+            return 0
+          }
+
+          r7_plants_alive() {
+            local BAD=0 f PID
+            for f in /tmp/r7-plant-pg.pid /tmp/r7-plant-ctl.pid /tmp/r7-plant-node.pid; do
+              [ -f "$f" ] || continue
+              PID="$(cat "$f")"
+              if kill -0 "$PID" 2>/dev/null; then
+                echo "  unrelated process alive: $PID ($(ps -p "$PID" -o comm= | tr -d ' '))"
+              else
+                echo "::error::unrelated process $PID ($f) was killed — process-safety violation"
+                BAD=1
+              fi
+            done
+            [ "$BAD" = "0" ]
+          }
+
+          r7_sentinel_count() { # $1 psql bin dir, $2 sentinel id; reads the seeded app password from env
+            PGPASSWORD="$MV_KEYCHAIN_SEED_PG_APP_PASSWORD" "$1/psql" -h 127.0.0.1 -p "$MV_PGPORT" -U medivault -d medivault -t -A \
+              -c "SELECT count(*) FROM ci_reinstall_sentinel WHERE id = '$2'"
+          }
+
+          r7_api_probe() {
+            local CODE
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$MV_API_PORT/health" || echo 000)
+            echo "  /health -> $CODE"; [ "$CODE" = "200" ] || return 1
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$MV_API_PORT/ready" || echo 000)
+            echo "  /ready -> $CODE"; [ "$CODE" = "200" ] || return 1
+            return 0
+          }
+
+          r7_summary() { echo "$*" | tee -a /tmp/r7-summary.txt; }
+          LIBEOF
+          bash -n /tmp/r7-lib.sh
+          echo "r7-lib.sh written + syntax-checked"
+
+      - name: Plant unrelated control processes (naive-kill witnesses)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Unrelated processes whose NAMES match our managed executables.
+          # If any flow in this job ever killed by executable NAME (naive
+          # pkill postgres / pkill node / pkill pg_ctl), these would die and
+          # r7_plants_alive would fail the job. Our contract: only
+          # MediVault-owned PIDs/process trees/canonical paths are stopped.
+          mkdir -p /tmp/r7-unrelated
+          cp /bin/sleep /tmp/r7-unrelated/postgres
+          cp /bin/sleep /tmp/r7-unrelated/pg_ctl
+          /tmp/r7-unrelated/postgres 4321 &
+          echo $! > /tmp/r7-plant-pg.pid
+          /tmp/r7-unrelated/pg_ctl 4322 &
+          echo $! > /tmp/r7-plant-ctl.pid
+          node -e 'setInterval(function(){}, 60000)' &
+          echo $! > /tmp/r7-plant-node.pid
+          sleep 1
+          ps -p "$(cat /tmp/r7-plant-pg.pid)" -p "$(cat /tmp/r7-plant-ctl.pid)" -p "$(cat /tmp/r7-plant-node.pid)" -o pid,comm
+          echo "plants recorded (pids in /tmp/r7-plant-*.pid)"
+
+      - name: Generate CI keychain seed values (values never printed)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # CI-only test credentials, seeded INTO the runner login keychain by
+          # the supervisor's own bootstrap-secrets (proven SecItemAdd path,
+          # shape-validated). They let the harness create/verify the DB
+          # sentinel and drive the provisioner directly. Never echoed, never
+          # uploaded; the runner is ephemeral; doctor machines never set them.
+          {
+            echo "export MV_KEYCHAIN_SEED_PG_APP_PASSWORD=$(openssl rand -hex 12)"
+            echo "export MV_KEYCHAIN_SEED_PG_BOOTSTRAP=$(openssl rand -hex 12)"
+            echo "export MV_KEYCHAIN_SEED_MASTER_KEY=$(openssl rand -hex 32)"
+            echo "export MV_KEYCHAIN_SEED_JWT_SECRET=$(openssl rand -hex 32)"
+            echo "export MV_KEYCHAIN_SEED_CSRF_SECRET=$(openssl rand -hex 32)"
+          } > /tmp/r7-seeds.env
+          chmod 600 /tmp/r7-seeds.env
+          echo "seed file written (values never printed): /tmp/r7-seeds.env"
+          rm -f /tmp/r7-summary.txt
+          touch /tmp/r7-summary.txt
+
+      - name: "CASE 1 — FRESH INSTALL: mount DMG A, install, first-run provisioning, sentinel"
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/r7-lib.sh
+          . /tmp/r7-seeds.env
+          . /tmp/dmg-a.env
+          SENTINEL_ID="CI_REINSTALL_SENTINEL_${GITHUB_RUN_ID}_${{ matrix.label }}_$(date +%s)"
+          echo "SENTINEL_ID=$SENTINEL_ID" > /tmp/r7-sentinel.env
+          r7_summary "SENTINEL ID: $SENTINEL_ID"
+
+          echo "[1.1] mount DMG A and install to ~/Applications (per-user install)"
+          rm -rf "$MV_INSTALL_APP"
+          mkdir -p "$(dirname "$MV_INSTALL_APP")"
+          MOUNT="$(mktemp -d /tmp/mv-r7-mount-a.XXXXXX)"
+          hdiutil attach "$DMG_A" -mountpoint "$MOUNT" -nobrowse -readonly
+          test -x "$MOUNT/MediVault.app/Contents/MacOS/MediVault"
+          cp -R "$MOUNT/MediVault.app" "$MV_INSTALL_APP"
+          hdiutil detach "$MOUNT" -force >/dev/null
+          rmdir "$MOUNT" 2>/dev/null || true
+          codesign --verify --strict "$MV_INSTALL_APP"
+          codesign --verify --strict "$MV_INSTALL_APP/Contents/MacOS/MediVault"
+          codesign --verify --strict "$MV_INSTALL_APP/Contents/MacOS/mediavault-supervisor"
+          VER_A="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$MV_INSTALL_APP/Contents/Info.plist")"
+          echo "installed version: $VER_A (expect 0.1.0)"
+          [ "$VER_A" = "0.1.0" ] || { echo "::error::unexpected version $VER_A"; exit 1; }
+          PGBIN="$MV_INSTALL_APP/Contents/Resources/runtime/postgresql/17/bin"
+          MACHO_RECORDS=/tmp/macho-gate-r7-b1.txt bash macos/scripts/macho-gate.sh "$MV_INSTALL_APP/Contents/MacOS/MediVault" "${{ matrix.expected_uname }}" 13.0
+          MACHO_RECORDS=/tmp/macho-gate-r7-b2.txt bash macos/scripts/macho-gate.sh "$MV_INSTALL_APP/Contents/MacOS/mediavault-supervisor" "${{ matrix.expected_uname }}" 13.0
+          r7_summary "FRESH INSTALL: GREEN (v0.1.0 from DMG A, ad-hoc signature + Mach-O gates pass)"
+
+          echo "[1.2] re-point the installed config to the REAL user data paths"
+          CONFIG="$MV_INSTALL_APP/Contents/Resources/supervisor-config.json"
+          python3 - "$CONFIG" "$MV_INSTALL_APP" <<'PYEOF'
+          import json, sys
+          path, new_root = sys.argv[1], sys.argv[2]
+          cfg = json.load(open(path))
+          cfg["paths"]["pg_bundle"] = f"{new_root}/Contents/Resources/runtime/postgresql/17"
+          cfg["paths"]["node_binary"] = f"{new_root}/Contents/Resources/runtime/nodejs/bin/node"
+          cfg["paths"]["api_entry"] = f"{new_root}/Contents/Resources/api/dist/index.js"
+          cfg["paths"]["api_working_dir"] = f"{new_root}/Contents/Resources/api"
+          cfg["provisioner"]["entry"] = f"{new_root}/Contents/Resources/provision/dist/index.js"
+          cfg["provisioner"]["prisma_cli"] = f"{new_root}/Contents/Resources/prisma-cli/node_modules/prisma/build/index.js"
+          cfg["provisioner"]["prisma_schema"] = f"{new_root}/Contents/Resources/prisma/schema.prisma"
+          json.dump(cfg, open(path, "w"), indent=2)
+          PYEOF
+          echo "CONFIG=$CONFIG" | tee /tmp/r7-config.env
+          cat "$CONFIG"
+
+          echo "[1.3] fresh simulated user state (no Application Support, no logs)"
+          rm -rf "$MV_APP_SUPPORT" "$MV_LOG_DIR"
+          test ! -e "$MV_APP_SUPPORT"
+
+          echo "[1.4] keychain bootstrap (seeded CI values, REAL login keychain)"
+          "$MV_INSTALL_APP/Contents/MacOS/mediavault-supervisor" bootstrap-secrets --config "$CONFIG" | tee /tmp/r7-bootstrap-1.log
+          [ "$(grep -c 'created keychain item' /tmp/r7-bootstrap-1.log)" = "5" ] || {
+            echo "::error::expected 5 created items"; exit 1
+          }
+          "$MV_INSTALL_APP/Contents/MacOS/mediavault-supervisor" bootstrap-secrets --config "$CONFIG" | tee /tmp/r7-bootstrap-2.log
+          [ "$(grep -c 'already present' /tmp/r7-bootstrap-2.log)" = "5" ] || {
+            echo "::error::expected 5 already-present items (no-overwrite)"; exit 1
+          }
+          for account in pg-app-password pg-bootstrap master-key jwt-secret csrf-secret; do
+            security find-generic-password -s dev.medivault -a "$account" >/dev/null 2>&1 || {
+              echo "::error::keychain item missing: $account"; exit 1
+            }
+          done
+          r7_summary "KEYCHAIN BOOTSTRAP: GREEN (5 created; no-overwrite idempotence 5/5)"
+
+          echo "[1.5] first-run provisioning through the supervisor (CLEAN delegation)"
+          STATUS="$MV_APP_SUPPORT/runtime-state/supervisor-status.json"
+          EXITF=/tmp/r7-case1.exit
+          r7_run_supervisor "$CONFIG" "$EXITF" case1
+          if ! r7_wait_healthy "$STATUS" "$EXITF" 900; then
+            echo "::error::CASE 1: first-run provisioning did not reach healthy"
+            echo "--- supervisor.log:"; tail -30 "$MV_LOG_DIR/supervisor.log" 2>/dev/null || true
+            echo "--- provision.log:"; tail -30 "$MV_LOG_DIR/provision.log" 2>/dev/null || true
+            echo "--- stdout:"; tail -40 "$RUNNER_TEMP/r7-supervisor-case1.log" 2>/dev/null || true
+            exit 1
+          fi
+          echo "  state: $(r7_status "$STATUS")"
+          r7_summary "FIRST-RUN PROVISIONING: GREEN (delegated CLEAN bootstrap to healthy)"
+
+          echo "[1.6] PG + API probes"
+          "$PGBIN/pg_isready" -h 127.0.0.1 -p "$MV_PGPORT"
+          ONE=$(PGPASSWORD="$MV_KEYCHAIN_SEED_PG_APP_PASSWORD" "$PGBIN/psql" -h 127.0.0.1 -p "$MV_PGPORT" -U medivault -d medivault -t -A -c "SELECT 1")
+          [ "$ONE" = "1" ] || { echo "::error::authenticated SELECT 1 failed"; exit 1; }
+          pgrep -f "$MV_INSTALL_APP/Contents/Resources/runtime/nodejs/bin/node" >/dev/null || {
+            echo "::error::API not running on the packaged node"; exit 1
+          }
+          r7_api_probe
+          r7_summary "PG HEALTHY: GREEN" "API /health + /ready: GREEN"
+
+          echo "[1.7] create the synthetic DB sentinel"
+          PGPASSWORD="$MV_KEYCHAIN_SEED_PG_APP_PASSWORD" "$PGBIN/psql" -h 127.0.0.1 -p "$MV_PGPORT" -U medivault -d medivault -v ON_ERROR_STOP=1 <<SQL
+          CREATE TABLE ci_reinstall_sentinel (id TEXT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT now());
+          INSERT INTO ci_reinstall_sentinel (id) VALUES ('$SENTINEL_ID');
+          SQL
+          CNT=$(r7_sentinel_count "$PGBIN" "$SENTINEL_ID")
+          echo "  sentinel rows: $CNT (expect 1)"
+          [ "$CNT" = "1" ] || { echo "::error::sentinel not created"; exit 1; }
+          r7_summary "SENTINEL CREATED: YES"
+
+          echo "[1.8] capture preservation witnesses"
+          PGDATA="$MV_APP_SUPPORT/PostgreSQL/17/data"
+          shasum -a 256 "$PGDATA/PG_VERSION" | awk '{print $1}' | tee /tmp/r7-pgversion.sha
+          jq -r .createdAt "$MV_APP_SUPPORT/config/provisioned.json" | tee /tmp/r7-provisioned-created.txt
+          echo "  initdb occurrences in provision.log so far: $(grep -c 'initdb' "$MV_LOG_DIR/provision.log" 2>/dev/null || echo 0)"
+          (grep -c 'initdb' "$MV_LOG_DIR/provision.log" 2>/dev/null || echo 0) > /tmp/r7-initdb-count.txt
+
+          echo "[1.9] close/stop the app (graceful ladder)"
+          r7_graceful_stop "$STATUS" "$EXITF"
+          test ! -e "$PGDATA/postmaster.pid"
+          r7_plants_alive
+          r7_summary "APP STOP: GREEN (graceful exit 0, zero orphans)"
+
+      - name: "CASE 2 — APP RESTART: VALID_EXISTING, sentinel persists"
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/r7-lib.sh
+          . /tmp/r7-seeds.env
+          . /tmp/r7-sentinel.env
+          . /tmp/r7-config.env
+          PGBIN="$MV_INSTALL_APP/Contents/Resources/runtime/postgresql/17/bin"
+          PGDATA="$MV_APP_SUPPORT/PostgreSQL/17/data"
+
+          echo "[2.1] restart the app/backend (VALID_EXISTING path)"
+          STATUS="$MV_APP_SUPPORT/runtime-state/supervisor-status.json"
+          EXITF=/tmp/r7-case2.exit
+          r7_run_supervisor "$CONFIG" "$EXITF" case2
+          if ! r7_wait_healthy "$STATUS" "$EXITF" 600; then
+            echo "::error::CASE 2: restart did not reach healthy"
+            tail -30 "$MV_LOG_DIR/supervisor.log" 2>/dev/null || true
+            tail -30 "$MV_LOG_DIR/provision.log" 2>/dev/null || true
+            exit 1
+          fi
+          r7_api_probe
+          r7_summary "APP RESTART: GREEN (VALID_EXISTING to healthy)"
+
+          echo "[2.2] sentinel must persist"
+          CNT=$(r7_sentinel_count "$PGBIN" "$SENTINEL_ID")
+          echo "  sentinel rows: $CNT (expect 1)"
+          [ "$CNT" = "1" ] || { echo "::error::sentinel lost after restart"; exit 1; }
+          r7_summary "SENTINEL AFTER RESTART: PRESENT"
+
+          echo "[2.3] cluster NOT re-initialized"
+          PGV_NOW=$(shasum -a 256 "$PGDATA/PG_VERSION" | awk '{print $1}')
+          PGV_WAS=$(cat /tmp/r7-pgversion.sha)
+          [ "$PGV_NOW" = "$PGV_WAS" ] || { echo "::error::PG_VERSION changed ($PGV_WAS -> $PGV_NOW)"; exit 1; }
+          CREATED_NOW=$(jq -r .createdAt "$MV_APP_SUPPORT/config/provisioned.json")
+          CREATED_WAS=$(cat /tmp/r7-provisioned-created.txt)
+          [ "$CREATED_NOW" = "$CREATED_WAS" ] || { echo "::error::provisioned.json createdAt changed"; exit 1; }
+          grep -q "VALID_EXISTING" "$MV_LOG_DIR/provision.log" || {
+            echo "::error::no VALID_EXISTING classification logged after restart"; exit 1
+          }
+          INITDBS=$(grep -c 'initdb' "$MV_LOG_DIR/provision.log" 2>/dev/null || echo 0)
+          INITDBS_BASE=$(cat /tmp/r7-initdb-count.txt 2>/dev/null || echo 0)
+          echo "  initdb occurrences in provision.log: $INITDBS (baseline $INITDBS_BASE — must not grow)"
+          [ "$INITDBS" -le "$INITDBS_BASE" ] || { echo "::error::cluster was re-initialized during restart"; exit 1; }
+          r7_summary "PG CLUSTER REINITIALIZED (restart): NO"
+
+          echo "[2.4] graceful stop + plants"
+          r7_graceful_stop "$STATUS" "$EXITF"
+          r7_plants_alive
+
+      - name: "CASE 3a — BUILD B: the newly built version (CFBundleVersion 0.1.1)"
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/node-tarball.env
+          . /tmp/api-stage.env
+          . /tmp/prisma-stage.env
+          # The app is STOPPED (case 2 ended gracefully) — its data tree is idle.
+
+          echo "[3a.1] bump the bundle version for the replacement build"
+          python3 - <<'PYEOF'
+          import json
+          p = "src-tauri/tauri.conf.json"
+          cfg = json.load(open(p))
+          assert cfg["version"] == "0.1.0", f"unexpected base version {cfg['version']!r}"
+          cfg["version"] = "0.1.1"
+          json.dump(cfg, open(p, "w"), indent=2)
+          print("version bumped for build B: 0.1.0 -> 0.1.1")
+          PYEOF
+
+          echo "[3a.2] tauri rebuild (freshly built replacement)"
+          cd src-tauri
+          cargo tauri build --bundles app 2>&1 | tee /tmp/tauri-build-b.log
+          APP="target/release/bundle/macos/MediVault.app"
+          test -x "$APP/Contents/MacOS/MediVault" || {
+            echo "::error::build B desktop binary missing"
+            tail -40 /tmp/tauri-build-b.log
+            exit 1
+          }
+          cd ..
+          VER_B="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PWD/src-tauri/target/release/bundle/macos/MediVault.app/Contents/Info.plist")"
+          echo "build B version: $VER_B (expect 0.1.1)"
+          [ "$VER_B" = "0.1.1" ] || { echo "::error::build B version is $VER_B"; exit 1; }
+          echo "APP_B=$PWD/src-tauri/target/release/bundle/macos/MediVault.app" | tee /tmp/tauri-app-b.env
+
+          echo "[3a.3] merge the backend into build B (same frozen staging contracts)"
+          . /tmp/tauri-app-b.env
+          PG_INSTALL="$PG_INSTALL" BUNDLE="$APP_B/Contents/Resources/runtime/postgresql/17" PG_VERSION="$PG_VERSION" \
+            SUPERVISOR_BIN="$PWD/macos/supervisor/target/release/mediavault-supervisor" \
+            bash macos/scripts/stage-pg-bundle.sh
+          APP_ROOT="$APP_B" \
+            NODE_TARBALL="$NODE_TARBALL" \
+            API_STAGE="$STAGE" \
+            PROVISION_DIR="$PWD/macos/provision" \
+            PRISMA_MODULES="$PRISMA_STAGE/node_modules" \
+            PRISMA_SCHEMA_DIR="$PWD/packages/db/prisma" \
+            LAUNCHAGENT_SRC="$PWD/macos/launchagent/dev.medivault.supervisor.plist" \
+            bash macos/scripts/stage-app-bundle.sh
+          cat > "$APP_B/Contents/Resources/supervisor-config.json" <<EOF
+          {
+            "version": 1,
+            "paths": {
+              "pg_bundle": "$APP_B/Contents/Resources/runtime/postgresql/17",
+              "node_binary": "$APP_B/Contents/Resources/runtime/nodejs/bin/node",
+              "api_entry": "$APP_B/Contents/Resources/api/dist/index.js",
+              "api_working_dir": "$APP_B/Contents/Resources/api",
+              "app_support_dir": "$MV_APP_SUPPORT",
+              "log_dir": "$MV_LOG_DIR"
+            },
+            "postgres": {
+              "host": "127.0.0.1",
+              "port": $MV_PGPORT,
+              "superuser": "postgres",
+              "app_user": "medivault",
+              "app_database": "medivault",
+              "pgdata_rel": "PostgreSQL/17/data"
+            },
+            "api": { "host": "127.0.0.1", "port": $MV_API_PORT, "allowed_origins": "http://localhost:3000" },
+            "secrets": { "source": "keychain" },
+            "provisioner": {
+              "entry": "$APP_B/Contents/Resources/provision/dist/index.js",
+              "prisma_cli": "$APP_B/Contents/Resources/prisma-cli/node_modules/prisma/build/index.js",
+              "prisma_schema": "$APP_B/Contents/Resources/prisma/schema.prisma",
+              "timeout_sec": 600
+            },
+            "limits": { "pg_start_timeout_sec": 120, "api_start_timeout_sec": 90, "health_interval_sec": 5 }
+          }
+          EOF
+
+          echo "[3a.4] codesign + Mach-O gates (build B)"
+          codesign --force --sign - "$APP_B/Contents/MacOS/MediVault"
+          codesign --verify --strict "$APP_B/Contents/MacOS/MediVault"
+          MACHO_RECORDS=/tmp/macho-gate-r7-c1.txt bash macos/scripts/macho-gate.sh "$APP_B/Contents/MacOS/MediVault" "${{ matrix.expected_uname }}" 13.0
+          MACHO_RECORDS=/tmp/macho-gate-r7-c2.txt bash macos/scripts/macho-gate.sh "$APP_B/Contents/MacOS/mediavault-supervisor" "${{ matrix.expected_uname }}" 13.0
+          MACHO_RECORDS=/tmp/macho-gate-r7-c3.txt bash macos/scripts/macho-gate.sh "$APP_B/Contents/Resources/runtime/nodejs/bin/node" "${{ matrix.expected_uname }}" 13.0
+          MACHO_RECORDS=/tmp/macho-gate-r7-c4.txt bash macos/scripts/macho-gate.sh "$APP_B/Contents/Resources/runtime/postgresql/17" "${{ matrix.expected_uname }}" 13.0
+
+          echo "[3a.5] build + verify DMG B (v0.1.1)"
+          DMG_B="$RUNNER_TEMP/MediVault-B-${{ matrix.label }}.dmg"
+          APP_ROOT="$APP_B" DMG_OUT="$DMG_B" bash macos/scripts/build-dmg.sh
+          echo "DMG_B=$DMG_B" | tee /tmp/dmg-b.env
+          test -f "$DMG_B.sha256"
+
+      - name: "CASE 3b — APP REPLACEMENT: preserve data, reconcile, sentinel"
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/r7-lib.sh
+          . /tmp/r7-seeds.env
+          . /tmp/r7-sentinel.env
+          PGDATA="$MV_APP_SUPPORT/PostgreSQL/17/data"
+
+          echo "[3b.0] owned processes already stopped gracefully (end of case 2)"
+          test ! -e "$PGDATA/postmaster.pid" || { echo "::error::cluster still running before replacement"; exit 1; }
+          r7_plants_alive
+
+          echo "[3b.1] replace MediVault.app with the newly built version"
+          rm -rf "$MV_INSTALL_APP"
+          MOUNT="$(mktemp -d /tmp/mv-r7-mount-b.XXXXXX)"
+          hdiutil attach "$DMG_B" -mountpoint "$MOUNT" -nobrowse -readonly
+          test -x "$MOUNT/MediVault.app/Contents/MacOS/MediVault"
+          cp -R "$MOUNT/MediVault.app" "$MV_INSTALL_APP"
+          hdiutil detach "$MOUNT" -force >/dev/null
+          rmdir "$MOUNT" 2>/dev/null || true
+          codesign --verify --strict "$MV_INSTALL_APP"
+          VER_B="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$MV_INSTALL_APP/Contents/Info.plist")"
+          echo "installed version after replacement: $VER_B (expect 0.1.1)"
+          [ "$VER_B" = "0.1.1" ] || { echo "::error::unexpected version $VER_B"; exit 1; }
+          PGBIN="$MV_INSTALL_APP/Contents/Resources/runtime/postgresql/17/bin"
+          r7_summary "APP REPLACEMENT: GREEN (v0.1.0 -> newly built v0.1.1)"
+
+          echo "[3b.2] reconcile/migrate from the NEW app's packaged provisioner (VALID_EXISTING)"
+          CONFIG="$MV_INSTALL_APP/Contents/Resources/supervisor-config.json"
+          python3 - "$CONFIG" "$MV_INSTALL_APP" <<'PYEOF'
+          import json, sys
+          path, new_root = sys.argv[1], sys.argv[2]
+          cfg = json.load(open(path))
+          cfg["paths"]["pg_bundle"] = f"{new_root}/Contents/Resources/runtime/postgresql/17"
+          cfg["paths"]["node_binary"] = f"{new_root}/Contents/Resources/runtime/nodejs/bin/node"
+          cfg["paths"]["api_entry"] = f"{new_root}/Contents/Resources/api/dist/index.js"
+          cfg["paths"]["api_working_dir"] = f"{new_root}/Contents/Resources/api"
+          cfg["provisioner"]["entry"] = f"{new_root}/Contents/Resources/provision/dist/index.js"
+          cfg["provisioner"]["prisma_cli"] = f"{new_root}/Contents/Resources/prisma-cli/node_modules/prisma/build/index.js"
+          cfg["provisioner"]["prisma_schema"] = f"{new_root}/Contents/Resources/prisma/schema.prisma"
+          json.dump(cfg, open(path, "w"), indent=2)
+          PYEOF
+          echo "CONFIG=$CONFIG" | tee /tmp/r7-config.env
+          set +e
+          MV_PG_APP_PASSWORD="$MV_KEYCHAIN_SEED_PG_APP_PASSWORD" \
+          MV_PG_SUPER_PASSWORD="$MV_KEYCHAIN_SEED_PG_BOOTSTRAP" \
+            "$MV_INSTALL_APP/Contents/Resources/runtime/nodejs/bin/node" \
+            "$MV_INSTALL_APP/Contents/Resources/provision/dist/index.js" provision --config "$CONFIG"
+          RC=$?
+          set -e
+          echo "provisioner exit: $RC (expect 0 — VALID_EXISTING + idempotent migrations)"
+          [ "$RC" = "0" ] || { echo "::error::reconciliation from the new app failed"; exit 1; }
+          grep -q "VALID_EXISTING" "$MV_LOG_DIR/provision.log" || {
+            echo "::error::no VALID_EXISTING classification logged during reconciliation"; exit 1
+          }
+
+          echo "[3b.3] Application Support + Logs preserved"
+          test -d "$MV_APP_SUPPORT"
+          test -f "$PGDATA/PG_VERSION"
+          test -f "$MV_APP_SUPPORT/config/provisioned.json"
+          test -s "$MV_LOG_DIR/provision.log"
+          r7_summary "APPLICATION SUPPORT PRESERVED: YES (tree + provisioned.json + logs)"
+
+          echo "[3b.4] Keychain material preserved (never overwritten; values still authenticate)"
+          "$MV_INSTALL_APP/Contents/MacOS/mediavault-supervisor" bootstrap-secrets --config "$CONFIG" | tee /tmp/r7-bootstrap-3.log
+          [ "$(grep -c 'already present' /tmp/r7-bootstrap-3.log)" = "5" ] || {
+            echo "::error::expected 5 already-present items after replacement"; exit 1
+          }
+          for account in pg-app-password pg-bootstrap master-key jwt-secret csrf-secret; do
+            security find-generic-password -s dev.medivault -a "$account" >/dev/null 2>&1 || {
+              echo "::error::keychain item missing after replacement: $account"; exit 1
+            }
+          done
+          r7_summary "KEYCHAIN PRESERVED: YES (no-overwrite 5/5; credentials still valid)"
+
+          echo "[3b.5] start the replaced app (supervisor) to healthy"
+          STATUS="$MV_APP_SUPPORT/runtime-state/supervisor-status.json"
+          EXITF=/tmp/r7-case3.exit
+          r7_run_supervisor "$CONFIG" "$EXITF" case3
+          if ! r7_wait_healthy "$STATUS" "$EXITF" 600; then
+            echo "::error::CASE 3: replaced app did not reach healthy"
+            tail -30 "$MV_LOG_DIR/supervisor.log" 2>/dev/null || true
+            tail -30 "$MV_LOG_DIR/provision.log" 2>/dev/null || true
+            exit 1
+          fi
+          r7_api_probe
+
+          echo "[3b.6] sentinel + cluster-preservation proofs"
+          CNT=$(r7_sentinel_count "$PGBIN" "$SENTINEL_ID")
+          echo "  sentinel rows: $CNT (expect 1)"
+          [ "$CNT" = "1" ] || { echo "::error::sentinel lost after reinstall"; exit 1; }
+          r7_summary "SENTINEL AFTER REINSTALL: PRESENT"
+          PGV_NOW=$(shasum -a 256 "$PGDATA/PG_VERSION" | awk '{print $1}')
+          PGV_WAS=$(cat /tmp/r7-pgversion.sha)
+          [ "$PGV_NOW" = "$PGV_WAS" ] || { echo "::error::PG_VERSION changed during reinstall ($PGV_WAS -> $PGV_NOW)"; exit 1; }
+          CREATED_NOW=$(jq -r .createdAt "$MV_APP_SUPPORT/config/provisioned.json")
+          CREATED_WAS=$(cat /tmp/r7-provisioned-created.txt)
+          [ "$CREATED_NOW" = "$CREATED_WAS" ] || { echo "::error::provisioned.json createdAt changed during reinstall"; exit 1; }
+          INITDBS=$(grep -c 'initdb' "$MV_LOG_DIR/provision.log" 2>/dev/null || echo 0)
+          INITDBS_BASE=$(cat /tmp/r7-initdb-count.txt 2>/dev/null || echo 0)
+          echo "  initdb occurrences in provision.log: $INITDBS (baseline $INITDBS_BASE — must not grow)"
+          [ "$INITDBS" -le "$INITDBS_BASE" ] || { echo "::error::cluster was re-initialized during reinstall"; exit 1; }
+          r7_summary "PG CLUSTER REINITIALIZED (reinstall): MUST BE NO -> NO"
+
+          echo "[3b.7] graceful stop + plants"
+          r7_graceful_stop "$STATUS" "$EXITF"
+          r7_plants_alive
+
+      - name: "CASE 4a — RECOVERABLE_INCOMPLETE: interrupted provisioning resumes exactly"
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/r7-lib.sh
+          . /tmp/r7-seeds.env
+          . /tmp/r7-config.env
+          ISO="$RUNNER_TEMP/mv-r7-recoverable"
+          PGBIN="$MV_INSTALL_APP/Contents/Resources/runtime/postgresql/17/bin"
+          PGDATA="$ISO/PostgreSQL/17/data"
+          ISO_SENTINEL="CI_REINSTALL_ISO_A_${GITHUB_RUN_ID}_${{ matrix.label }}"
+
+          echo "[4a.1] construct the interrupted state: cluster + role + db done, migrations NOT (app replaced before provisioning completed)"
+          rm -rf "$ISO"
+          mkdir -p "$(dirname "$PGDATA")"
+          PWF="$(mktemp)"
+          chmod 600 "$PWF"
+          printf '%s\n' "$MV_KEYCHAIN_SEED_PG_BOOTSTRAP" > "$PWF"
+          "$PGBIN/initdb" -D "$PGDATA" --username=postgres --pwfile="$PWF" --auth-local=scram-sha-256 --auth-host=scram-sha-256 --encoding=UTF8 --no-instructions
+          rm -f "$PWF"
+          cat >> "$PGDATA/postgresql.conf" <<CONFEOF
+
+          port = $MV_PGPORT
+          listen_addresses = '127.0.0.1'
+          CONFEOF
+          "$PGBIN/pg_ctl" -D "$PGDATA" -w -t 120 -l "$ISO/pg-iso.log" start
+          PGPASSWORD="$MV_KEYCHAIN_SEED_PG_BOOTSTRAP" "$PGBIN/psql" -h 127.0.0.1 -p "$MV_PGPORT" -U postgres -d postgres -v ON_ERROR_STOP=1 <<SQL
+          CREATE ROLE medivault LOGIN PASSWORD '${MV_KEYCHAIN_SEED_PG_APP_PASSWORD}';
+          CREATE DATABASE medivault OWNER medivault;
+          SQL
+          PGPASSWORD="$MV_KEYCHAIN_SEED_PG_APP_PASSWORD" "$PGBIN/psql" -h 127.0.0.1 -p "$MV_PGPORT" -U medivault -d medivault -v ON_ERROR_STOP=1 <<SQL
+          CREATE TABLE ci_reinstall_sentinel (id TEXT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT now());
+          INSERT INTO ci_reinstall_sentinel (id) VALUES ('$ISO_SENTINEL');
+          SQL
+          "$PGBIN/pg_ctl" -D "$PGDATA" -m fast -w -t 60 stop
+          PGV_SHA_ISO=$(shasum -a 256 "$PGDATA/PG_VERSION" | awk '{print $1}')
+          echo "  iso PG_VERSION sha: $PGV_SHA_ISO"
+
+          echo "[4a.2] write the pending (interrupted) marker"
+          mkdir -p "$ISO/config"
+          MV_PGPORT="$MV_PGPORT" python3 - "$ISO/config/provision-pending.json" <<'PYEOF'
+          import json, sys, os, datetime
+          cfg = {
+            "schema": 1,
+            "status": "pending",
+            "pgMajor": 17,
+            "port": int(os.environ.get("MV_PGPORT", "55451")),
+            "appUser": "medivault",
+            "appDatabase": "medivault",
+            "startedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "stages": {"initdb": True, "server": True, "role": True, "database": True, "migrations": False},
+          }
+          json.dump(cfg, open(sys.argv[1], "w"), indent=2)
+          PYEOF
+
+          echo "[4a.3] isolated config (installed app runtimes, iso app-support)"
+          ISO_CONFIG="$ISO/config/iso-config.json"
+          python3 - "$CONFIG" "$ISO_CONFIG" "$ISO" <<'PYEOF'
+          import json, sys
+          src, dst, iso = sys.argv[1], sys.argv[2], sys.argv[3]
+          cfg = json.load(open(src))
+          cfg["paths"]["app_support_dir"] = iso
+          cfg["paths"]["log_dir"] = iso + "/logs"
+          json.dump(cfg, open(dst, "w"), indent=2)
+          PYEOF
+
+          echo "[4a.4] resume through the INSTALLED app's packaged provisioner (RECOVERABLE)"
+          set +e
+          MV_PG_APP_PASSWORD="$MV_KEYCHAIN_SEED_PG_APP_PASSWORD" \
+          MV_PG_SUPER_PASSWORD="$MV_KEYCHAIN_SEED_PG_BOOTSTRAP" \
+            "$MV_INSTALL_APP/Contents/Resources/runtime/nodejs/bin/node" \
+            "$MV_INSTALL_APP/Contents/Resources/provision/dist/index.js" provision --config "$ISO_CONFIG"
+          RC=$?
+          set -e
+          echo "provisioner exit: $RC (expect 0 — RECOVERABLE_INCOMPLETE resume)"
+          [ "$RC" = "0" ] || { echo "::error::RECOVERABLE resume failed"; exit 1; }
+          test -f "$ISO/config/provisioned.json"
+          test ! -e "$ISO/config/provision-pending.json"
+          PGV_SHA_NOW=$(shasum -a 256 "$PGDATA/PG_VERSION" | awk '{print $1}')
+          [ "$PGV_SHA_NOW" = "$PGV_SHA_ISO" ] || { echo "::error::iso cluster was re-initialized"; exit 1; }
+
+          echo "[4a.5] the recovered state is supervisor-usable + sentinel survived"
+          STATUS2="$ISO/runtime-state/supervisor-status.json"
+          EXITF2=/tmp/r7-iso-a.exit
+          rm -f "$EXITF2"
+          ( "$MV_INSTALL_APP/Contents/MacOS/mediavault-supervisor" run --config "$ISO_CONFIG" \
+              > "$RUNNER_TEMP/r7-supervisor-iso-a.log" 2>&1; echo $? > "$EXITF2" ) &
+          if ! r7_wait_healthy "$STATUS2" "$EXITF2" 600; then
+            echo "::error::recovered iso state did not reach healthy"
+            tail -30 "$ISO/logs/supervisor.log" 2>/dev/null || true
+            tail -30 "$ISO/logs/provision.log" 2>/dev/null || true
+            exit 1
+          fi
+          r7_api_probe
+          CNT=$(r7_sentinel_count "$PGBIN" "$ISO_SENTINEL")
+          echo "  iso sentinel rows: $CNT (expect 1)"
+          [ "$CNT" = "1" ] || { echo "::error::iso sentinel lost during recovery"; exit 1; }
+          r7_graceful_stop "$STATUS2" "$EXITF2"
+          r7_plants_alive
+          r7_summary "RECOVERABLE INCOMPLETE: GREEN (resumed exactly, migrations applied, sentinel + cluster preserved)"
+
+      - name: "CASE 4b — FAIL-CLOSED: pending marker + unexpected state (nothing altered)"
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/r7-lib.sh
+          . /tmp/r7-seeds.env
+          . /tmp/r7-config.env
+          ISO="$RUNNER_TEMP/mv-r7-fc1"
+          PGBIN="$MV_INSTALL_APP/Contents/Resources/runtime/postgresql/17/bin"
+          PGDATA="$ISO/PostgreSQL/17/data"
+
+          echo "[4b.1] construct: pending marker + an UNEXPECTED non-template database"
+          rm -rf "$ISO"
+          mkdir -p "$(dirname "$PGDATA")"
+          PWF="$(mktemp)"
+          chmod 600 "$PWF"
+          printf '%s\n' "$MV_KEYCHAIN_SEED_PG_BOOTSTRAP" > "$PWF"
+          "$PGBIN/initdb" -D "$PGDATA" --username=postgres --pwfile="$PWF" --auth-local=scram-sha-256 --auth-host=scram-sha-256 --encoding=UTF8 --no-instructions
+          rm -f "$PWF"
+          cat >> "$PGDATA/postgresql.conf" <<CONFEOF
+
+          port = $MV_PGPORT
+          listen_addresses = '127.0.0.1'
+          CONFEOF
+          "$PGBIN/pg_ctl" -D "$PGDATA" -w -t 120 -l "$ISO/pg-iso.log" start
+          PGPASSWORD="$MV_KEYCHAIN_SEED_PG_BOOTSTRAP" "$PGBIN/psql" -h 127.0.0.1 -p "$MV_PGPORT" -U postgres -d postgres -v ON_ERROR_STOP=1 <<SQL
+          CREATE DATABASE unrelated_extra;
+          SQL
+          "$PGBIN/pg_ctl" -D "$PGDATA" -m fast -w -t 60 stop
+          FCOUNT_BEFORE=$(find "$PGDATA" -type f | wc -l | tr -d ' ')
+          PGV_SHA_ISO=$(shasum -a 256 "$PGDATA/PG_VERSION" | awk '{print $1}')
+          mkdir -p "$ISO/config"
+          MV_PGPORT="$MV_PGPORT" python3 - "$ISO/config/provision-pending.json" <<'PYEOF'
+          import json, sys, os, datetime
+          cfg = {
+            "schema": 1,
+            "status": "pending",
+            "pgMajor": 17,
+            "port": int(os.environ.get("MV_PGPORT", "55451")),
+            "appUser": "medivault",
+            "appDatabase": "medivault",
+            "startedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "stages": {"initdb": True, "server": True, "role": False, "database": False, "migrations": False},
+          }
+          json.dump(cfg, open(sys.argv[1], "w"), indent=2)
+          PYEOF
+          ISO_CONFIG="$ISO/config/iso-config.json"
+          python3 - "$CONFIG" "$ISO_CONFIG" "$ISO" <<'PYEOF'
+          import json, sys
+          src, dst, iso = sys.argv[1], sys.argv[2], sys.argv[3]
+          cfg = json.load(open(src))
+          cfg["paths"]["app_support_dir"] = iso
+          cfg["paths"]["log_dir"] = iso + "/logs"
+          json.dump(cfg, open(dst, "w"), indent=2)
+          PYEOF
+
+          echo "[4b.2] provisioner must FAIL CLOSED (exit 5) and alter NOTHING"
+          set +e
+          MV_PG_APP_PASSWORD="$MV_KEYCHAIN_SEED_PG_APP_PASSWORD" \
+          MV_PG_SUPER_PASSWORD="$MV_KEYCHAIN_SEED_PG_BOOTSTRAP" \
+            "$MV_INSTALL_APP/Contents/Resources/runtime/nodejs/bin/node" \
+            "$MV_INSTALL_APP/Contents/Resources/provision/dist/index.js" provision --config "$ISO_CONFIG"
+          RC=$?
+          set -e
+          echo "provisioner exit: $RC (expect 5 — INCOMPLETE_EXISTING)"
+          [ "$RC" = "5" ] || { echo "::error::expected exit 5, got $RC"; exit 1; }
+          FCOUNT_AFTER=$(find "$PGDATA" -type f | wc -l | tr -d ' ')
+          echo "  cluster files: before=$FCOUNT_BEFORE after=$FCOUNT_AFTER (must be equal)"
+          [ "$FCOUNT_AFTER" = "$FCOUNT_BEFORE" ] || { echo "::error::cluster state was altered"; exit 1; }
+          PGV_SHA_NOW=$(shasum -a 256 "$PGDATA/PG_VERSION" | awk '{print $1}')
+          [ "$PGV_SHA_NOW" = "$PGV_SHA_ISO" ] || { echo "::error::PG_VERSION altered"; exit 1; }
+          test ! -f "$ISO/config/provisioned.json" || { echo "::error::provisioned.json must NOT exist"; exit 1; }
+          test -f "$ISO/config/provision-pending.json" || { echo "::error::pending marker must remain"; exit 1; }
+          test ! -e "$PGDATA/postmaster.pid" || { echo "::error::server left running"; exit 1; }
+          r7_plants_alive
+          r7_summary "FAIL-CLOSED INCOMPLETE (pending + unexpected state): GREEN (exit 5, nothing altered)"
+
+      - name: "CASE 4c — FAIL-CLOSED: valid cluster without the trust anchor (nothing altered)"
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/r7-lib.sh
+          . /tmp/r7-seeds.env
+          . /tmp/r7-config.env
+          ISO="$RUNNER_TEMP/mv-r7-fc2"
+          PGBIN="$MV_INSTALL_APP/Contents/Resources/runtime/postgresql/17/bin"
+          PGDATA="$ISO/PostgreSQL/17/data"
+
+          echo "[4c.1] construct: fully valid app-db cluster, NO markers at all (missing/partial runtime state)"
+          rm -rf "$ISO"
+          mkdir -p "$(dirname "$PGDATA")"
+          PWF="$(mktemp)"
+          chmod 600 "$PWF"
+          printf '%s\n' "$MV_KEYCHAIN_SEED_PG_BOOTSTRAP" > "$PWF"
+          "$PGBIN/initdb" -D "$PGDATA" --username=postgres --pwfile="$PWF" --auth-local=scram-sha-256 --auth-host=scram-sha-256 --encoding=UTF8 --no-instructions
+          rm -f "$PWF"
+          cat >> "$PGDATA/postgresql.conf" <<CONFEOF
+
+          port = $MV_PGPORT
+          listen_addresses = '127.0.0.1'
+          CONFEOF
+          "$PGBIN/pg_ctl" -D "$PGDATA" -w -t 120 -l "$ISO/pg-iso.log" start
+          PGPASSWORD="$MV_KEYCHAIN_SEED_PG_BOOTSTRAP" "$PGBIN/psql" -h 127.0.0.1 -p "$MV_PGPORT" -U postgres -d postgres -v ON_ERROR_STOP=1 <<SQL
+          CREATE ROLE medivault LOGIN PASSWORD '${MV_KEYCHAIN_SEED_PG_APP_PASSWORD}';
+          CREATE DATABASE medivault OWNER medivault;
+          SQL
+          "$PGBIN/pg_ctl" -D "$PGDATA" -m fast -w -t 60 stop
+          FCOUNT_BEFORE=$(find "$PGDATA" -type f | wc -l | tr -d ' ')
+          PGV_SHA_ISO=$(shasum -a 256 "$PGDATA/PG_VERSION" | awk '{print $1}')
+          # deliberately NO provisioned.json and NO provision-pending.json
+          ISO_CONFIG="$ISO/config/iso-config.json"
+          mkdir -p "$(dirname "$ISO_CONFIG")"
+          python3 - "$CONFIG" "$ISO_CONFIG" "$ISO" <<'PYEOF'
+          import json, sys
+          src, dst, iso = sys.argv[1], sys.argv[2], sys.argv[3]
+          cfg = json.load(open(src))
+          cfg["paths"]["app_support_dir"] = iso
+          cfg["paths"]["log_dir"] = iso + "/logs"
+          json.dump(cfg, open(dst, "w"), indent=2)
+          PYEOF
+
+          echo "[4c.2] provisioner must FAIL CLOSED (exit 5) and alter NOTHING (never auto re-init)"
+          set +e
+          MV_PG_APP_PASSWORD="$MV_KEYCHAIN_SEED_PG_APP_PASSWORD" \
+          MV_PG_SUPER_PASSWORD="$MV_KEYCHAIN_SEED_PG_BOOTSTRAP" \
+            "$MV_INSTALL_APP/Contents/Resources/runtime/nodejs/bin/node" \
+            "$MV_INSTALL_APP/Contents/Resources/provision/dist/index.js" provision --config "$ISO_CONFIG"
+          RC=$?
+          set -e
+          echo "provisioner exit: $RC (expect 5 — INCOMPLETE_EXISTING)"
+          [ "$RC" = "5" ] || { echo "::error::expected exit 5, got $RC"; exit 1; }
+          FCOUNT_AFTER=$(find "$PGDATA" -type f | wc -l | tr -d ' ')
+          echo "  cluster files: before=$FCOUNT_BEFORE after=$FCOUNT_AFTER (must be equal)"
+          [ "$FCOUNT_AFTER" = "$FCOUNT_BEFORE" ] || { echo "::error::cluster state was altered"; exit 1; }
+          PGV_SHA_NOW=$(shasum -a 256 "$PGDATA/PG_VERSION" | awk '{print $1}')
+          [ "$PGV_SHA_NOW" = "$PGV_SHA_ISO" ] || { echo "::error::PG_VERSION altered"; exit 1; }
+          test ! -f "$ISO/config/provisioned.json" || { echo "::error::provisioned.json must NOT be created"; exit 1; }
+          test ! -f "$ISO/config/provision-pending.json" || { echo "::error::pending marker must NOT be created"; exit 1; }
+          test ! -e "$PGDATA/postmaster.pid" || { echo "::error::server left running"; exit 1; }
+          r7_plants_alive
+          r7_summary "FAIL-CLOSED INCOMPLETE (valid cluster, missing trust anchor): GREEN (exit 5, nothing altered, never auto re-init)"
+
+      - name: "CASE 4d — STALE PENDING MARKER: reconciles to VALID (sentinel survives)"
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/r7-lib.sh
+          . /tmp/r7-seeds.env
+          . /tmp/r7-sentinel.env
+          . /tmp/r7-config.env
+          PGBIN="$MV_INSTALL_APP/Contents/Resources/runtime/postgresql/17/bin"
+          PGDATA="$MV_APP_SUPPORT/PostgreSQL/17/data"
+          CONFIGDIR="$MV_APP_SUPPORT/config"
+
+          echo "[4d.1] simulate a crash AFTER completion that left a stale pending marker"
+          test -f "$CONFIGDIR/provisioned.json"
+          MV_PGPORT="$MV_PGPORT" python3 - "$CONFIGDIR/provision-pending.json" <<'PYEOF'
+          import json, sys, os, datetime
+          cfg = {
+            "schema": 1,
+            "status": "pending",
+            "pgMajor": 17,
+            "port": int(os.environ.get("MV_PGPORT", "55451")),
+            "appUser": "medivault",
+            "appDatabase": "medivault",
+            "startedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "stages": {"initdb": True, "server": True, "role": True, "database": True, "migrations": True},
+          }
+          json.dump(cfg, open(sys.argv[1], "w"), indent=2)
+          PYEOF
+
+          echo "[4d.2] provisioner reconciles (stale pending over complete install -> VALID verify)"
+          set +e
+          MV_PG_APP_PASSWORD="$MV_KEYCHAIN_SEED_PG_APP_PASSWORD" \
+          MV_PG_SUPER_PASSWORD="$MV_KEYCHAIN_SEED_PG_BOOTSTRAP" \
+            "$MV_INSTALL_APP/Contents/Resources/runtime/nodejs/bin/node" \
+            "$MV_INSTALL_APP/Contents/Resources/provision/dist/index.js" provision --config "$CONFIG"
+          RC=$?
+          set -e
+          echo "provisioner exit: $RC (expect 0 — stale reconcile)"
+          [ "$RC" = "0" ] || { echo "::error::stale-pending reconciliation failed"; exit 1; }
+          test ! -e "$CONFIGDIR/provision-pending.json" || { echo "::error::stale pending marker not removed"; exit 1; }
+          test -f "$CONFIGDIR/provisioned.json"
+
+          echo "[4d.3] sentinel survived + supervisor healthy + graceful stop"
+          STATUS="$MV_APP_SUPPORT/runtime-state/supervisor-status.json"
+          EXITF=/tmp/r7-case4d.exit
+          r7_run_supervisor "$CONFIG" "$EXITF" case4d
+          r7_wait_healthy "$STATUS" "$EXITF" 600 || { echo "::error::post-reconcile supervisor not healthy"; exit 1; }
+          r7_api_probe
+          CNT=$(r7_sentinel_count "$PGBIN" "$SENTINEL_ID")
+          [ "$CNT" = "1" ] || { echo "::error::sentinel lost during stale reconcile"; exit 1; }
+          PGV_NOW=$(shasum -a 256 "$PGDATA/PG_VERSION" | awk '{print $1}')
+          [ "$PGV_NOW" = "$(cat /tmp/r7-pgversion.sha)" ] || { echo "::error::cluster re-initialized during stale reconcile"; exit 1; }
+          r7_graceful_stop "$STATUS" "$EXITF"
+          r7_plants_alive
+          r7_summary "STALE PENDING RECONCILE: GREEN (marker removed, sentinel + cluster preserved)"
+
+      - name: "CASE 5 — UNINSTALL: remove the app, data + keychain PRESERVED"
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/r7-lib.sh
+          . /tmp/r7-seeds.env
+          . /tmp/r7-sentinel.env
+          PGDATA="$MV_APP_SUPPORT/PostgreSQL/17/data"
+          PGBIN_REF="$PG_INSTALL/bin"
+
+          echo "[5.1] uninstall: remove the application only"
+          test -d "$MV_INSTALL_APP"
+          rm -rf "$MV_INSTALL_APP"
+          test ! -e "$MV_INSTALL_APP"
+          r7_summary "UNINSTALL APP: GREEN (application removed)"
+
+          echo "[5.2] data preserved under Application Support + Logs"
+          test -d "$MV_APP_SUPPORT"
+          test -f "$PGDATA/PG_VERSION"
+          PGV_NOW=$(shasum -a 256 "$PGDATA/PG_VERSION" | awk '{print $1}')
+          [ "$PGV_NOW" = "$(cat /tmp/r7-pgversion.sha)" ] || { echo "::error::cluster altered by uninstall"; exit 1; }
+          test -f "$MV_APP_SUPPORT/config/provisioned.json"
+          test -s "$MV_LOG_DIR/provision.log"
+          test -s "$MV_LOG_DIR/supervisor.log" || true
+          echo "  Application Support tree: $(find "$MV_APP_SUPPORT" -type f | wc -l | tr -d ' ') files"
+          echo "  Logs: $(ls "$MV_LOG_DIR" 2>/dev/null | tr '\n' ' ')"
+
+          echo "[5.3] keychain entries preserved"
+          for account in pg-app-password pg-bootstrap master-key jwt-secret csrf-secret; do
+            security find-generic-password -s dev.medivault -a "$account" >/dev/null 2>&1 || {
+              echo "::error::keychain item missing after uninstall: $account"; exit 1
+            }
+          done
+          r7_summary "KEYCHAIN ENTRIES AFTER UNINSTALL: PRESERVED (5/5)"
+
+          echo "[5.4] prove the preserved cluster still holds the sentinel (reference PG runtime)"
+          "$PGBIN_REF/pg_ctl" -D "$PGDATA" -w -t 120 -l /tmp/r7-ref-pg.log start
+          CNT=$(PGPASSWORD="$MV_KEYCHAIN_SEED_PG_BOOTSTRAP" "$PGBIN_REF/psql" -h 127.0.0.1 -p "$MV_PGPORT" -U postgres -d medivault -t -A -c "SELECT count(*) FROM ci_reinstall_sentinel WHERE id = '$SENTINEL_ID'")
+          echo "  sentinel rows (superuser, reference runtime): $CNT (expect 1)"
+          [ "$CNT" = "1" ] || { echo "::error::sentinel lost after uninstall"; exit 1; }
+          "$PGBIN_REF/pg_ctl" -D "$PGDATA" -m fast -w -t 60 stop
+          test ! -e "$PGDATA/postmaster.pid"
+          LEFT=$(pgrep -fl "postgres -D" | grep -v pgrep || true)
+          [ -z "$LEFT" ] || { echo "::error::orphans after uninstall proof: $LEFT"; exit 1; }
+          r7_summary "DATA AFTER APP REMOVAL: PRESERVED (sentinel row queried from the preserved cluster)"
+
+          echo "[5.5] final unrelated-process safety assertion"
+          r7_plants_alive
+          r7_summary "UNRELATED PROCESS SAFETY: GREEN (planted postgres/pg_ctl/node survived every cycle)"
+          r7_summary "OVERALL (${{ matrix.label }}): GREEN"
+
+          echo "=== CASE MATRIX SUMMARY ==="
+          cat /tmp/r7-summary.txt
+
+      - name: Teardown + orphan sweep (always)
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          # Only MediVault-owned canonical paths are ever swept here.
+          pkill -f 'Applications/MediVault.app/Contents/MacOS/MediVault' 2>/dev/null || true
+          pkill -f 'Applications/MediVault.app/Contents/MacOS/mediavault-supervisor' 2>/dev/null || true
+          d="/Users/runner/Library/Application Support/MediVault/PostgreSQL/17/data"
+          if [ -d "$d" ] && [ -f "$d/PG_VERSION" ]; then
+            /Users/runner/pg17-install-dt13/bin/pg_ctl -D "$d" -m fast -w -t 60 stop 2>/dev/null || true
+          fi
+          for iso in /Users/runner/work/_temp/mv-r7-recoverable /Users/runner/work/_temp/mv-r7-fc1 /Users/runner/work/_temp/mv-r7-fc2; do
+            di="$iso/PostgreSQL/17/data"
+            if [ -d "$di" ] && [ -f "$di/PG_VERSION" ]; then
+              /Users/runner/pg17-install-dt13/bin/pg_ctl -D "$di" -m fast -w -t 60 stop 2>/dev/null || true
+            fi
+          done
+          sleep 2
+          LEFT=$(pgrep -fl "postgres -D" | grep -v pgrep || true)
+          [ -z "$LEFT" ] && echo "clean — zero postgres processes" || {
+            echo "$LEFT"; pkill -9 -f "postgres -D" 2>/dev/null || true
+          }
+          # Kill the planted witnesses explicitly (they are ours; unrelated to MediVault).
+          for f in /tmp/r7-plant-pg.pid /tmp/r7-plant-ctl.pid /tmp/r7-plant-node.pid; do
+            [ -f "$f" ] && kill "$(cat "$f")" 2>/dev/null || true
+          done
+          # Best-effort cleanup of runner-local test state (ephemeral runner anyway).
+          rm -rf "/Users/runner/Applications/MediVault.app" \
+                 "/Users/runner/Library/Application Support/MediVault" \
+                 "/Users/runner/Library/Logs/MediVault" 2>/dev/null || true
+          for account in pg-app-password pg-bootstrap master-key jwt-secret csrf-secret; do
+            security delete-generic-password -s dev.medivault -a "$account" >/dev/null 2>&1 || true
+          done
+
+      - name: Upload evidence (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reinstall-acceptance-${{ matrix.label }}-evidence
+          retention-days: 1
+          path: |
+            /tmp/r7-summary.txt
+            /tmp/macho-gate-records.txt
+            /tmp/macho-gate-r7-*.txt
+            /tmp/tauri-build.log
+            /tmp/tauri-build-b.log
+            /tmp/r7-bootstrap-*.log
+            /tmp/r7-pgversion.sha
+            /tmp/r7-provisioned-created.txt
+            /tmp/r7-ref-pg.log
+            /Users/runner/Library/Application Support/MediVault/config/
+            /Users/runner/Library/Logs/MediVault/
+            /Users/runner/work/_temp/r7-supervisor-*.log
+            /Users/runner/work/_temp/MediVault-A-${{ matrix.label }}.dmg.sha256
+            /Users/runner/work/_temp/MediVault-B-${{ matrix.label }}.dmg.sha256
           if-no-files-found: ignore

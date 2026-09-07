@@ -11,6 +11,16 @@
 //!   - bootstrap NEVER overwrites an existing item;
 //!   - values are never logged.
 //!
+//! CI harness seeding (reinstall/26-smoke stages): when an optional
+//! `MV_KEYCHAIN_SEED_<ACCOUNT>` env var is set, `bootstrap-secrets` CREATES
+//! the (still absent) item with that value instead of a generated one, so
+//! hosted CI can prove end-to-end flows that need the SAME credentials in
+//! the keychain AND in the harness (e.g. the reinstall sentinel SQL).
+//! Seeded values must match the generated-value SHAPE for the account
+//! (fail closed otherwise — the API requires the 64-hex master-key shape);
+//! a doctor machine never sets these vars, so production behavior is
+//! byte-identical (random generation).
+//!
 //! macOS-only: compiled out elsewhere (the seam reports "requires macOS").
 
 #![cfg(target_os = "macos")]
@@ -74,17 +84,59 @@ fn generate_for(account: &str) -> Result<String, String> {
     }
 }
 
+/// Optional CI-harness seed env var for an account (name only — never the
+/// value). None for unknown accounts (generate_for already fails those).
+fn seed_env_name(account: &str) -> Option<&'static str> {
+    match account {
+        ACCOUNT_PG_APP_PASSWORD => Some("MV_KEYCHAIN_SEED_PG_APP_PASSWORD"),
+        ACCOUNT_PG_BOOTSTRAP => Some("MV_KEYCHAIN_SEED_PG_BOOTSTRAP"),
+        ACCOUNT_MASTER_KEY => Some("MV_KEYCHAIN_SEED_MASTER_KEY"),
+        ACCOUNT_JWT_SECRET => Some("MV_KEYCHAIN_SEED_JWT_SECRET"),
+        ACCOUNT_CSRF_SECRET => Some("MV_KEYCHAIN_SEED_CSRF_SECRET"),
+        _ => None,
+    }
+}
+
+/// Validate a seeded value against the account's value SHAPE (same shapes
+/// as `generate_for` — the API depends on the 64-hex master key; PG
+/// passwords must be URL/shell-safe). Account name only in errors.
+fn seed_value_valid(account: &str, value: &str) -> bool {
+    let hex = |v: &str| !v.is_empty() && v.chars().all(|c| c.is_ascii_hexdigit());
+    match account {
+        ACCOUNT_PG_APP_PASSWORD | ACCOUNT_PG_BOOTSTRAP => {
+            value.len() == 24 && hex(value)
+        }
+        ACCOUNT_MASTER_KEY | ACCOUNT_JWT_SECRET | ACCOUNT_CSRF_SECRET => {
+            value.len() == 64 && hex(value)
+        }
+        _ => false,
+    }
+}
+
 pub enum BootstrapOutcome {
     Created,
     AlreadyPresent,
 }
 
-/// Create the item if (and only if) absent; never overwrite.
+/// Create the item if (and only if) absent; never overwrite. When the
+/// CI-harness seed env var is set (and the item is absent), the item is
+/// created with the seeded value — shape-validated, never logged.
 pub fn bootstrap_item(account: &str) -> Result<BootstrapOutcome, String> {
     if read_item(account)?.is_some() {
         return Ok(BootstrapOutcome::AlreadyPresent);
     }
-    let value = generate_for(account)?;
+    let value = match seed_env_name(account).and_then(|n| std::env::var(n).ok()) {
+        Some(v) => {
+            if !seed_value_valid(account, &v) {
+                return Err(format!(
+                    "keychain seed for account '{account}' has the wrong value shape \
+                     (expected the generated-value shape for this account)"
+                ));
+            }
+            v
+        }
+        None => generate_for(account)?,
+    };
     write_item(account, &value)?;
     Ok(BootstrapOutcome::Created)
 }
