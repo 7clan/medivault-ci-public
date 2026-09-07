@@ -34,6 +34,12 @@
 // BUILD (CI)
 //   swiftc -O macos/smappservice/medivault-launchagent.swift \
 //     -target <lane-arch>-apple-macos13.0 -o mediavault-launchagent
+//   NOTE: swiftc emits LC_RPATH /usr/lib/swift (outside the bundle). The
+//   frozen Mach-O gate rejects out-of-bundle rpaths, so the CI build
+//   deletes it (install_name_tool -delete_rpath /usr/lib/swift) and
+//   re-signs — the Swift runtime dylibs resolve via their absolute
+//   /usr/lib install names (system-provided), which the gate's deps
+//   rule allows.
 //   (then macho-gate.sh: single lane arch, minOS <= 13.0, /usr/lib +
 //    /System deps only — the same fail-closed gate as every shipped Mach-O)
 //

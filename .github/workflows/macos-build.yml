@@ -5924,6 +5924,14 @@ jobs:
             -target ${{ matrix.expected_uname }}-apple-macos13.0 \
             -o "$HELPER_OUT"
           file "$HELPER_OUT"
+          # swiftc adds LC_RPATH /usr/lib/swift (OUTSIDE the bundle — the
+          # frozen Mach-O gate rejects out-of-bundle rpaths). The Swift
+          # runtime dylibs resolve via their absolute /usr/lib install
+          # names (system-provided, allowed as /usr/lib deps); the rpath
+          # itself is redundant — delete it and re-sign after the edit.
+          if otool -l "$HELPER_OUT" | grep -q 'path /usr/lib/swift'; then
+            install_name_tool -delete_rpath /usr/lib/swift "$HELPER_OUT"
+          fi
           codesign --force --sign - "$HELPER_OUT"
           MACHO_RECORDS=/tmp/macho-gate-helper.txt \
             bash macos/scripts/macho-gate.sh "$HELPER_OUT" "${{ matrix.expected_uname }}" 13.0
