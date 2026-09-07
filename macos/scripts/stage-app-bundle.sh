@@ -13,10 +13,16 @@
 #   Contents/Resources/prisma-cli/node_modules/{prisma,@prisma/engines}
 #   Contents/Resources/prisma/                   (schema.prisma + migrations/)
 #   Contents/Library/LaunchAgents/dev.medivault.supervisor.plist
+#   Contents/MacOS/medivault-launchagent          (SMAppService control helper,
+#                                                  production-readiness phase)
+#   Contents/Resources/supervisor-config.json    (RELOCATABLE production default)
 #
-# The supervisor config JSON is NOT written here (it is environment-specific:
-# CI points at the staged tree, production at /Applications) — the caller
-# writes it to Contents/Resources/supervisor-config.json.
+# The shipped supervisor-config.json is now the RELOCATABLE PRODUCTION
+# DEFAULT (every bundle path Contents/ — relative, per-user dirs ABSENT:
+# the supervisor applies ~/Library defaults at load). CI jobs that need
+# environment-specific values OVERWRITE it afterwards (the frozen harness
+# steps already do exactly that) — the DMG that ships to users contains no
+# build-machine or CI-runner path anywhere.
 #
 # Usage (env):
 #   APP_ROOT=/path/MediVault.app \
@@ -26,6 +32,7 @@
 #   PRISMA_MODULES=node_modules \
 #   PRISMA_SCHEMA_DIR=packages/db/prisma \
 #   LAUNCHAGENT_SRC=macos/launchagent/dev.medivault.supervisor.plist \
+#   SMAPPSERVICE_BIN=/path/mediavault-launchagent \
 #   bash macos/scripts/stage-app-bundle.sh
 # =============================================================================
 set -euo pipefail
@@ -37,6 +44,13 @@ PROVISION_DIR="${PROVISION_DIR:?PROVISION_DIR (macos/provision) is required}"
 PRISMA_MODULES="${PRISMA_MODULES:?PRISMA_MODULES (repo node_modules) is required}"
 PRISMA_SCHEMA_DIR="${PRISMA_SCHEMA_DIR:?PRISMA_SCHEMA_DIR (packages/db/prisma) is required}"
 LAUNCHAGENT_SRC="${LAUNCHAGENT_SRC:?LAUNCHAGENT_SRC (plist source) is required}"
+# OPTIONAL: the compiled SMAppService helper. The production-readiness
+# shape passes SMAPPSERVICE_BIN=… (helper staged at Contents/MacOS/
+# medivault-launchagent + the RELOCATABLE production supervisor-config.json
+# + the BundleProgram plist contract asserts). Frozen historical modes
+# leave it unset → byte-identical legacy staging (they write their own
+# CI config afterwards, exactly as their frozen contracts prescribe).
+SMAPPSERVICE_BIN="${SMAPPSERVICE_BIN:-}"
 
 die() { echo "::error::stage-app-bundle: $*" >&2; exit 1; }
 
@@ -95,6 +109,101 @@ echo "  migrations packaged: $MIGRATIONS"
 echo "[launchagent] copying the plist"
 mkdir -p "$APP_ROOT/Contents/Library/LaunchAgents"
 cp "$LAUNCHAGENT_SRC" "$APP_ROOT/Contents/Library/LaunchAgents/dev.medivault.supervisor.plist"
+
+if [ -n "$SMAPPSERVICE_BIN" ]; then
+  # ---------------------------------------------------------------------
+  # PRODUCTION-READINESS SHAPE: the plist MUST use the SMAppService
+  # bundle-relative contract — BundleProgram (launchd.plist(5): "only
+  # supported for plists that are installed using SMAppService"),
+  # NEVER an absolute Program path (which breaks per-user ~/Applications
+  # installs and embeds a machine-location assumption).
+  # ---------------------------------------------------------------------
+  plutil -lint "$APP_ROOT/Contents/Library/LaunchAgents/dev.medivault.supervisor.plist" >/dev/null
+  /usr/libexec/PlistBuddy -c 'Print :BundleProgram' \
+    "$APP_ROOT/Contents/Library/LaunchAgents/dev.medivault.supervisor.plist" \
+    | grep -qx 'Contents/MacOS/mediavault-supervisor' \
+    || die "plist BundleProgram must be the bundle-relative supervisor path"
+  if /usr/libexec/PlistBuddy -c 'Print :Program' \
+    "$APP_ROOT/Contents/Library/LaunchAgents/dev.medivault.supervisor.plist" >/dev/null 2>&1; then
+    die "plist must NOT contain an absolute Program key (SMAppService uses BundleProgram)"
+  fi
+
+  echo "[smappservice] staging the SMAppService control helper"
+  [ -x "$SMAPPSERVICE_BIN" ] || die "SMAPPSERVICE_BIN is not executable: $SMAPPSERVICE_BIN"
+  cp "$SMAPPSERVICE_BIN" "$APP_ROOT/Contents/MacOS/mediavault-launchagent"
+  chmod 755 "$APP_ROOT/Contents/MacOS/mediavault-launchagent"
+  # Ad-hoc re-sign after the copy (arm64 requires a valid signature
+  # post-edit; production Developer-ID signing re-signs everything
+  # inside-out later).
+  codesign --force --sign - "$APP_ROOT/Contents/MacOS/mediavault-launchagent" >/dev/null 2>&1 || true
+
+  echo "[config] writing the RELOCATABLE production supervisor-config.json"
+  # Production defaults (macos/supervisor/config.production.example.json):
+  # PG 127.0.0.1:55432, API 127.0.0.1:3001, keychain secrets. Every bundle
+  # path is Contents/ — relative; app_support/log dirs are ABSENT (the
+  # supervisor applies the per-user ~/Library defaults at load). The
+  # desktop webview origin is tauri://localhost (Tauri 2 macOS custom
+  # scheme); http://localhost:3000 stays allowed for the static-export
+  # dev shape.
+  cat > "$APP_ROOT/Contents/Resources/supervisor-config.json" <<'EOF'
+{
+  "version": 1,
+  "paths": {
+    "pg_bundle": "Contents/Resources/runtime/postgresql/17",
+    "node_binary": "Contents/Resources/runtime/nodejs/bin/node",
+    "api_entry": "Contents/Resources/api/dist/index.js",
+    "api_working_dir": "Contents/Resources/api"
+  },
+  "postgres": {
+    "host": "127.0.0.1",
+    "port": 55432,
+    "superuser": "postgres",
+    "app_user": "medivault",
+    "app_database": "medivault",
+    "pgdata_rel": "PostgreSQL/17/data"
+  },
+  "api": {
+    "host": "127.0.0.1",
+    "port": 3001,
+    "allowed_origins": "tauri://localhost,http://localhost:3000"
+  },
+  "secrets": { "source": "keychain" },
+  "provisioner": {
+    "entry": "Contents/Resources/provision/dist/index.js",
+    "prisma_cli": "Contents/Resources/prisma-cli/node_modules/prisma/build/index.js",
+    "prisma_schema": "Contents/Resources/prisma/schema.prisma",
+    "timeout_sec": 600
+  },
+  "limits": {
+    "pg_start_timeout_sec": 120,
+    "api_start_timeout_sec": 90,
+    "pg_stop_timeout_sec": 60,
+    "api_stop_timeout_sec": 30,
+    "health_interval_sec": 5,
+    "health_fail_threshold": 3,
+    "max_restarts_per_child": 5,
+    "restart_backoff_base_ms": 500,
+    "restart_backoff_cap_ms": 8000
+  }
+}
+EOF
+  python3 - "$APP_ROOT/Contents/Resources/supervisor-config.json" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    cfg = json.load(f)
+paths = cfg["paths"]
+for key in ("pg_bundle", "node_binary", "api_entry"):
+    assert paths[key].startswith("Contents/"), f"{key} must be bundle-relative"
+assert "app_support_dir" not in paths and "log_dir" not in paths, \
+    "shipped config must not embed user identity"
+blob = open(sys.argv[1]).read()
+for bad in ("/Applications/", "/Users/", "/private/var", "/tmp/", "RUNNER_TEMP"):
+    assert bad not in blob, f"shipped config must not contain {bad!r}"
+print("SHIPPED-CONFIG-RELOCATABLE-OK")
+PYEOF
+else
+  echo "[smappservice] SMAPPSERVICE_BIN not set — legacy frozen staging shape (no helper, no shipped config; the caller writes its own supervisor-config.json)"
+fi
 
 echo "[done] full bundle layout:"
 # sed reads to EOF (no SIGPIPE under set -o pipefail, unlike `head`).

@@ -42,6 +42,7 @@ import type {
   DatabaseStatus,
   ConnectionResult,
   CertTrustStatus,
+  BackgroundServiceStatus,
 } from './types'
 
 // ---------- invoke helper ----------
@@ -444,6 +445,42 @@ export async function getDeviceRegistrationStatus(): Promise<DeviceStatus> {
 
 export async function getLogContents(lines = 100): Promise<string> {
   return invokeFn<string>('get_log_contents', { lines })
+}
+
+// ====================================================================
+// BACKGROUND SERVICE COMMANDS (SMAppService — macOS 13+)
+// ====================================================================
+
+/**
+ * Current SMAppService status of the supervisor LaunchAgent
+ * (exactly: notRegistered | enabled | requiresApproval | notFound).
+ */
+export async function getBackgroundServiceStatus(): Promise<BackgroundServiceStatus> {
+  return invokeFn<BackgroundServiceStatus>('background_service_status')
+}
+
+/**
+ * Register the background service (SMAppService.register). On macOS 13+
+ * the user may still need to approve the Login Item (status becomes
+ * requiresApproval) — poll getBackgroundServiceStatus afterwards.
+ */
+export async function registerBackgroundService(): Promise<void> {
+  await invokeFn<void>('background_service_register')
+}
+
+/**
+ * Unregister the background service (SMAppService.unregister).
+ */
+export async function unregisterBackgroundService(): Promise<void> {
+  await invokeFn<void>('background_service_unregister')
+}
+
+/**
+ * Open System Settings → Login Items — Apple's required action for the
+ * requiresApproval state (the user grants approval, never the app).
+ */
+export async function openLoginItemsSettings(): Promise<void> {
+  await invokeFn<void>('background_service_open_login_items_settings')
 }
 
 // ====================================================================

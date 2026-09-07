@@ -167,7 +167,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'CI mode (wired: integration, pg-bundle-verify, supervisor-lifecycle, provision-lifecycle, bundle-verify, desktop-build, dmg, macos-26-smoke, reinstall-acceptance)'
+        description: 'CI mode (wired: integration, pg-bundle-verify, supervisor-lifecycle, provision-lifecycle, bundle-verify, desktop-build, dmg, macos-26-smoke, reinstall-acceptance, production-readiness)'
         required: true
         default: 'integration'
         type: choice
@@ -181,6 +181,7 @@ on:
           - dmg
           - macos-26-smoke
           - reinstall-acceptance
+          - production-readiness
           - full
           - desktop-launch-regression
           - reinstall-regression
@@ -195,12 +196,12 @@ jobs:
   # ---------------------------------------------------------------------------
   not-yet-wired:
     name: "Mode guard"
-    if: github.event.inputs.mode != 'integration' && github.event.inputs.mode != 'pg-bundle-verify' && github.event.inputs.mode != 'supervisor-lifecycle' && github.event.inputs.mode != 'provision-lifecycle' && github.event.inputs.mode != 'bundle-verify' && github.event.inputs.mode != 'desktop-build' && github.event.inputs.mode != 'dmg' && github.event.inputs.mode != 'macos-26-smoke' && github.event.inputs.mode != 'reinstall-acceptance'
+    if: github.event.inputs.mode != 'integration' && github.event.inputs.mode != 'pg-bundle-verify' && github.event.inputs.mode != 'supervisor-lifecycle' && github.event.inputs.mode != 'provision-lifecycle' && github.event.inputs.mode != 'bundle-verify' && github.event.inputs.mode != 'desktop-build' && github.event.inputs.mode != 'dmg' && github.event.inputs.mode != 'macos-26-smoke' && github.event.inputs.mode != 'reinstall-acceptance' && github.event.inputs.mode != 'production-readiness'
     runs-on: ubuntu-latest
     steps:
       - name: Mode not yet wired on this lane
         run: |
-          echo "::error::Mode '${{ github.event.inputs.mode }}' is reserved by the macOS CI matrix but not yet wired. The lane is built stage-by-stage (first-red discipline). Wired modes today: integration, pg-bundle-verify, supervisor-lifecycle, provision-lifecycle, bundle-verify, desktop-build, dmg, macos-26-smoke, reinstall-acceptance."
+          echo "::error::Mode '${{ github.event.inputs.mode }}' is reserved by the macOS CI matrix but not yet wired. The lane is built stage-by-stage (first-red discipline). Wired modes today: integration, pg-bundle-verify, supervisor-lifecycle, provision-lifecycle, bundle-verify, desktop-build, dmg, macos-26-smoke, reinstall-acceptance, production-readiness."
 
   # ---------------------------------------------------------------------------
   # Integration mode — the shared app proof on real macOS runners, both archs.
@@ -5637,4 +5638,687 @@ jobs:
             /Users/runner/work/_temp/r7-supervisor-*.log
             /Users/runner/work/_temp/MediVault-A-${{ matrix.label }}.dmg.sha256
             /Users/runner/work/_temp/MediVault-B-${{ matrix.label }}.dmg.sha256
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # production-readiness — the production hardening / distribution
+  # preparation stage (SMAppService + relocatable install model +
+  # Hardened Runtime structural proof + Node JIT entitlement decision +
+  # hardened lifecycle from an arbitrary install location).
+  #
+  # Contract: acceptance/macos-production-readiness-contract.md.
+  #
+  # HONESTY MODEL:
+  #   * The signing here is STRUCTURAL AD-HOC (MV_ADHOC_STRUCTURAL=1):
+  #     identical inside-out order, entitlements, --options runtime —
+  #     explicitly NOT production signing; Gatekeeper GREEN is never
+  #     claimed from ad-hoc artifacts (verify-signatures.sh enforces the
+  #     honesty rule).
+  #   * SMAppService registration/approval itself is interactive (Login
+  #     Items UI) — this mode proves the helper, the plist contract, the
+  #     status model, the state mapping, and NO legacy registration path.
+  #   * The shipped supervisor-config.json is the RELOCATABLE production
+  #     default (Contents/-relative; per-user ~/Library defaults). The
+  #     hardened lifecycle runs FROM THE INSTALLED DMG COPY at an ODD
+  #     location with NO --config (defaults only).
+  # ---------------------------------------------------------------------------
+  production-readiness:
+    name: "production-readiness (${{ matrix.label }})"
+    if: github.event.inputs.mode == 'production-readiness'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: arm64
+            runner: macos-26
+            expected_uname: arm64
+            node_arch: arm64
+            node_sha256: '61130f394c1630d211dd50aecc4353d379480f36d3ac913cd85dbba1aed585c6'
+          - label: x64
+            runner: macos-26-intel
+            expected_uname: x86_64
+            node_arch: x64
+            node_sha256: '58e99022c2ff89395576cc7fd4d98cea24bb68081475d5f88b801ee8729fb026'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+
+    env:
+      PG_VERSION: '17.11'
+      PG_SHA256: '5367f6fb2ec97efe1eb2e0c7926bb33438e51b0bd3a9733b88498056a7dc9a7e'
+      PG_TARBALL_URL: 'https://ftp.postgresql.org/pub/source/v17.11/postgresql-17.11.tar.gz'
+      PG_INSTALL: '/Users/runner/pg17-install-dt13'
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+      NODE_VERSION: '22.23.2'
+      NODE_DIST_URL: 'https://nodejs.org/dist'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Preflight — native arch + macOS 26 + Swift toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "uname -m: $(uname -m) (expected ${{ matrix.expected_uname }})"
+          test "$(uname -m)" = "${{ matrix.expected_uname }}"
+          echo "sw_vers: $(sw_vers -productVersion)"
+          case "$(sw_vers -productVersion)" in
+            26*) echo "runner OS is macOS 26 (Tahoe)" ;;
+            *) echo "::error::expected macOS 26 on label ${{ matrix.runner }}, got $(sw_vers -productVersion)"; exit 1 ;;
+          esac
+          if [ "${{ matrix.expected_uname }}" = "arm64" ]; then
+            T=$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)
+            echo "sysctl.proc_translated: ${T}"
+            test "$T" = "0"
+          fi
+          command -v swiftc >/dev/null 2>&1 || { echo "::error::swiftc missing (Xcode toolchain)"; exit 1; }
+          swiftc --version | sed -n '1p'
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            mini-services/api-service/node_modules
+            packages/*/node_modules
+          key: macos-deps-${{ matrix.label }}-${{ hashFiles('bun.lock', 'package.json', 'packages/*/package.json', 'mini-services/api-service/package.json') }}
+          restore-keys: |
+            macos-deps-${{ matrix.label }}-
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+          cd macos/supervisor
+          rustup toolchain install --profile minimal "$(grep -oE 'channel = "[^"]+"' ../../rust-toolchain.toml | cut -d'"' -f2)"
+          cargo --version
+
+      - name: Cache tauri-cli + cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/.crates.toml
+            ~/.cargo/.crates2.json
+          key: macos-tauri-cli-${{ matrix.label }}-tauri2
+
+      - name: Install tauri-cli (v2, cargo, cached)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -x "$HOME/.cargo/bin/cargo-tauri" ]; then
+            cargo tauri --version
+          else
+            cargo install tauri-cli --locked --version '^2.11'
+            cargo tauri --version
+          fi
+
+      # ------------------------------------------------------------------
+      # Unit tests FIRST (fail fast): the supervisor's relocatable-config
+      # resolution and the desktop's SMAppService status mapping.
+      # ------------------------------------------------------------------
+      - name: Supervisor unit tests (relocatable config resolution)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd macos/supervisor
+          cargo test --locked 2>&1 | tee /tmp/supervisor-tests.log
+          test "$(grep -c 'test result: ok' /tmp/supervisor-tests.log)" -ge 1
+          grep -q 'full_relocatable_resolution_against_a_temp_bundle' /tmp/supervisor-tests.log
+
+      - name: Build the frontend (NEXT_OUTPUT=export)
+        shell: bash
+        run: |
+          set -euo pipefail
+          NEXT_OUTPUT=export bunx next build
+          test -f out/index.html || { echo "::error::static export missing out/index.html"; exit 1; }
+          echo "out/ entries: $(find out -type f | wc -l | tr -d ' ')"
+
+      - name: Generate icon.icns (sips + iconutil, from the committed PNGs)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ICONSET="src-tauri/icons/MediVault.iconset"
+          rm -rf "$ICONSET"; mkdir -p "$ICONSET"
+          SRC="src-tauri/icons"
+          sips -z 16 16    "$SRC/32x32.png"     --out "$ICONSET/icon_16x16.png"    >/dev/null
+          sips -z 32 32    "$SRC/32x32.png"     --out "$ICONSET/icon_16x16@2x.png" >/dev/null
+          sips -z 32 32    "$SRC/32x32.png"     --out "$ICONSET/icon_32x32.png"    >/dev/null
+          sips -z 64 64    "$SRC/128x128.png"   --out "$ICONSET/icon_32x32@2x.png" >/dev/null
+          sips -z 128 128  "$SRC/128x128.png"   --out "$ICONSET/icon_128x128.png"  >/dev/null
+          sips -z 256 256  "$SRC/128x128@2x.png" --out "$ICONSET/icon_128x128@2x.png" >/dev/null
+          sips -z 256 256  "$SRC/256x256.png"   --out "$ICONSET/icon_256x256.png"  >/dev/null
+          sips -z 512 512  "$SRC/icon.png"      --out "$ICONSET/icon_256x256@2x.png" >/dev/null
+          sips -z 512 512  "$SRC/icon.png"      --out "$ICONSET/icon_512x512.png"  >/dev/null
+          sips -z 1024 1024 "$SRC/icon.png"    --out "$ICONSET/icon_512x512@2x.png" >/dev/null
+          iconutil -c icns "$ICONSET" -o src-tauri/icons/icon.icns
+          ls -la src-tauri/icons/icon.icns
+
+      - name: Tauri build (app bundle, per-arch — compiles the SMAppService commands)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd src-tauri
+          cargo tauri build --bundles app 2>&1 | tee /tmp/tauri-build.log
+          APP="target/release/bundle/macos/MediVault.app"
+          test -x "$APP/Contents/MacOS/MediVault" || {
+            echo "::error::Tauri desktop binary missing"
+            tail -40 /tmp/tauri-build.log
+            exit 1
+          }
+          echo "APP=$PWD/$APP" | tee /tmp/tauri-app.env
+          file "$APP/Contents/MacOS/MediVault"
+
+      - name: Desktop unit tests (SMAppService status mapping, fail-closed parsing)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd src-tauri
+          cargo test --bins --locked 2>&1 | tee /tmp/desktop-tests.log
+          test "$(grep -c 'test result: ok' /tmp/desktop-tests.log)" -ge 1
+          grep -q 'rejects_any_invented_or_future_status_fail_closed' /tmp/desktop-tests.log
+
+      - name: Build the supervisor + provisioner + API runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          export MACOSX_DEPLOYMENT_TARGET=13.0
+          cd macos/supervisor
+          cargo build --release --locked
+          codesign --force --sign - target/release/mediavault-supervisor
+          cd ../provision
+          bun install
+          bun run build
+          test -f dist/index.js
+          cd ../..
+          ./node_modules/.bin/prisma generate --schema packages/db/prisma/schema.prisma 2>&1 | tail -2
+          ./node_modules/.bin/tsc --project mini-services/api-service/tsconfig.json
+          test -f mini-services/api-service/dist/mini-services/api-service/src/index.js
+
+      - name: Stage the API runtime tree + prisma CLI closure + Node runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="$RUNNER_TEMP/medivault-api"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE/api/dist" "$STAGE/api/node_modules/@medivault"/{auth,crypto,db}
+          cp -R mini-services/api-service/dist/mini-services/api-service/src/. "$STAGE/api/dist/"
+          cp mini-services/api-service/package.json "$STAGE/api/package.json"
+          ( cd "$STAGE/api" && npm install --omit=dev --no-audit --no-fund --loglevel=error )
+          cp -R mini-services/api-service/dist/packages/auth/src/.    "$STAGE/api/node_modules/@medivault/auth/"
+          cp -R mini-services/api-service/dist/packages/crypto/src/. "$STAGE/api/node_modules/@medivault/crypto/"
+          cp -R mini-services/api-service/dist/packages/db/src/.     "$STAGE/api/node_modules/@medivault/db/"
+          printf '{"name":"@medivault/auth","version":"1.0.0","type":"module","main":"./index.js"}\n'   > "$STAGE/api/node_modules/@medivault/auth/package.json"
+          printf '{"name":"@medivault/crypto","version":"1.0.0","type":"module","main":"./index.js"}\n' > "$STAGE/api/node_modules/@medivault/crypto/package.json"
+          printf '{"name":"@medivault/db","version":"1.0.0","type":"module","main":"./client.js"}\n'    > "$STAGE/api/node_modules/@medivault/db/package.json"
+          rm -rf "$STAGE/api/node_modules/.prisma"
+          cp -R node_modules/.prisma "$STAGE/api/node_modules/.prisma"
+          echo "STAGE=$STAGE" | tee /tmp/api-stage.env
+
+          PRISMA_STAGE="$RUNNER_TEMP/prisma-cli-stage"
+          rm -rf "$PRISMA_STAGE"
+          mkdir -p "$PRISMA_STAGE"
+          PRISMA_VERSION="$(node -p "require('$PWD/node_modules/prisma/package.json').version")"
+          printf '{"name":"mv-prisma-cli","private":true,"dependencies":{"prisma":"%s"}}\n' "$PRISMA_VERSION" > "$PRISMA_STAGE/package.json"
+          ( cd "$PRISMA_STAGE" && npm install --omit=dev --no-audit --no-fund --loglevel=error )
+          test -d "$PRISMA_STAGE/node_modules/effect"
+          echo "PRISMA_STAGE=$PRISMA_STAGE" | tee /tmp/prisma-stage.env
+
+          TARBALL="node-v$NODE_VERSION-darwin-${{ matrix.node_arch }}.tar.gz"
+          curl -fsSL --retry 3 -o "/tmp/$TARBALL" "$NODE_DIST_URL/v$NODE_VERSION/$TARBALL"
+          echo "${{ matrix.node_sha256 }}  /tmp/$TARBALL" | shasum -a 256 --check --strict
+          echo "NODE_TARBALL=/tmp/$TARBALL" | tee /tmp/node-tarball.env
+
+      - name: Cache PostgreSQL ${{ env.PG_VERSION }} build (MACOSX_DEPLOYMENT_TARGET=13.0)
+        id: pg-cache
+        uses: actions/cache@v4
+        with:
+          path: '/Users/runner/pg17-install-dt13'
+          key: macos-pg17-dt13-${{ matrix.label }}-${{ env.PG_VERSION }}-${{ env.PG_SHA256 }}
+
+      - name: Build PostgreSQL ${{ env.PG_VERSION }} from source (MACOSX_DEPLOYMENT_TARGET=13.0)
+        if: steps.pg-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export MACOSX_DEPLOYMENT_TARGET=13.0
+          curl -fsSL --retry 3 -o /tmp/postgresql-$PG_VERSION.tar.gz "$PG_TARBALL_URL"
+          echo "$PG_SHA256  /tmp/postgresql-$PG_VERSION.tar.gz" | shasum -a 256 --check --strict
+          rm -rf "/tmp/postgresql-$PG_VERSION"
+          tar -xzf "/tmp/postgresql-$PG_VERSION.tar.gz" -C /tmp
+          cd "/tmp/postgresql-$PG_VERSION"
+          ./configure --prefix="$PG_INSTALL" --without-icu --without-readline
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+
+      # ------------------------------------------------------------------
+      # NEW: the SMAppService control helper (Swift, ServiceManagement).
+      # Compiled for the lane arch with minOS 13.0 and Mach-O gated like
+      # every other shipped binary.
+      # ------------------------------------------------------------------
+      - name: Compile the SMAppService helper (swiftc, minOS 13.0)
+        shell: bash
+        run: |
+          set -euo pipefail
+          export MACOSX_DEPLOYMENT_TARGET=13.0
+          HELPER_OUT="$RUNNER_TEMP/mediavault-launchagent"
+          swiftc -O macos/smappservice/medivault-launchagent.swift \
+            -target ${{ matrix.expected_uname }}-apple-macos13.0 \
+            -o "$HELPER_OUT"
+          file "$HELPER_OUT"
+          codesign --force --sign - "$HELPER_OUT"
+          MACHO_RECORDS=/tmp/macho-gate-helper.txt \
+            bash macos/scripts/macho-gate.sh "$HELPER_OUT" "${{ matrix.expected_uname }}" 13.0
+          echo "HELPER_OUT=$HELPER_OUT" | tee /tmp/smappservice-bin.env
+
+      # ------------------------------------------------------------------
+      # Merge the backend into the Tauri app. stage-app-bundle.sh now ALSO
+      # stages the helper and writes the SHIPPED RELOCATABLE production
+      # supervisor-config.json (Contents/-relative paths, no user
+      # identity, production ports 55432/3001, keychain source). This
+      # job does NOT overwrite it — the shipped shape IS the test object.
+      # ------------------------------------------------------------------
+      - name: Merge the backend into the Tauri MediVault.app (relocatable shape)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/tauri-app.env
+          . /tmp/node-tarball.env
+          . /tmp/api-stage.env
+          . /tmp/prisma-stage.env
+          . /tmp/smappservice-bin.env
+
+          PG_INSTALL="$PG_INSTALL" BUNDLE="$APP/Contents/Resources/runtime/postgresql/17" PG_VERSION="$PG_VERSION" \
+            SUPERVISOR_BIN="$PWD/macos/supervisor/target/release/mediavault-supervisor" \
+            bash macos/scripts/stage-pg-bundle.sh
+
+          APP_ROOT="$APP" \
+            NODE_TARBALL="$NODE_TARBALL" \
+            API_STAGE="$STAGE" \
+            PROVISION_DIR="$PWD/macos/provision" \
+            PRISMA_MODULES="$PRISMA_STAGE/node_modules" \
+            PRISMA_SCHEMA_DIR="$PWD/packages/db/prisma" \
+            LAUNCHAGENT_SRC="$PWD/macos/launchagent/dev.medivault.supervisor.plist" \
+            SMAPPSERVICE_BIN="$HELPER_OUT" \
+            bash macos/scripts/stage-app-bundle.sh
+
+          echo "APP_ROOT=$APP" | tee /tmp/app-root.env
+          echo "--- shipped supervisor-config.json (RELOCATABLE, production ports):"
+          cat "$APP/Contents/Resources/supervisor-config.json"
+          echo "--- bundle top level:"
+          find "$APP" -maxdepth 3 -not -path "*/runtime/postgresql/17/*" | sed "s|$APP|<APP>|" | sort | sed -n '1,40p'
+
+      - name: Mach-O gates on the merged bundle (all binaries incl. the helper)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/app-root.env
+          APP="$APP_ROOT"
+          MACHO_RECORDS=/tmp/macho-gate-pr-1.txt bash macos/scripts/macho-gate.sh "$APP/Contents/MacOS/MediVault" "${{ matrix.expected_uname }}" 13.0
+          MACHO_RECORDS=/tmp/macho-gate-pr-2.txt bash macos/scripts/macho-gate.sh "$APP/Contents/MacOS/mediavault-supervisor" "${{ matrix.expected_uname }}" 13.0
+          MACHO_RECORDS=/tmp/macho-gate-pr-3.txt bash macos/scripts/macho-gate.sh "$APP/Contents/MacOS/mediavault-launchagent" "${{ matrix.expected_uname }}" 13.0
+          MACHO_RECORDS=/tmp/macho-gate-pr-4.txt bash macos/scripts/macho-gate.sh "$APP/Contents/Resources/runtime/nodejs/bin/node" "${{ matrix.expected_uname }}" 13.0
+          MACHO_RECORDS=/tmp/macho-gate-pr-5.txt bash macos/scripts/macho-gate.sh "$APP/Contents/Resources/runtime/postgresql/17" "${{ matrix.expected_uname }}" 13.0
+
+      # ------------------------------------------------------------------
+      # HARDENED RUNTIME — structural inside-out signing (STRICTFIRST:
+      # zero entitlements), then the empirical Node JIT decision.
+      # ------------------------------------------------------------------
+      - name: Structural hardened signing (strictest-first, ZERO entitlements)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/app-root.env
+          APP_ROOT="$APP_ROOT" MV_ADHOC_STRUCTURAL=1 MV_SIGN_IDENTITY=- MV_NODE_ALLOW_JIT=0 \
+            bash macos/scripts/sign-production.sh 2>&1 | tee /tmp/sign-strictfirst.log
+          grep -q 'SIGN-STRUCTURAL-ADHOC-GREEN' /tmp/sign-strictfirst.log
+
+      - name: Node JIT proof (strictest-first, hardened Node, NO entitlements)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/app-root.env
+          NODE="$APP_ROOT/Contents/Resources/runtime/nodejs/bin/node"
+          # JIT-tiering workload: hot function optimized by TurboFan;
+          # %OptimizeFunctionOnNextCall requires --allow-natives-syntax,
+          # so drive tier-up by iteration count alone.
+          cat > /tmp/jit-proof.js <<'EOF'
+          // Hot loop forces V8 JIT tier-up (interpreter -> Sparkplug -> Maglev/TurboFan).
+          function hot(n) {
+            let acc = 0;
+            for (let i = 0; i < n; i++) {
+              acc += (i ^ 0x5f) * 31 + (i >>> 3);
+            }
+            return acc;
+          }
+          let total = 0;
+          for (let round = 0; round < 3000; round++) total += hot(20000);
+          if (!Number.isFinite(total) || total === 0) throw new Error('bad result');
+          console.log('JIT-WORKLOAD-OK ' + total);
+          EOF
+          set +e
+          "$NODE" /tmp/jit-proof.js > /tmp/jit-strict.out 2>&1
+          STRICT_RC=$?
+          set -e
+          echo "strict (no entitlement) exit: $STRICT_RC"
+          cat /tmp/jit-strict.out || true
+          if [ "$STRICT_RC" -eq 0 ] && grep -q 'JIT-WORKLOAD-OK' /tmp/jit-strict.out; then
+            echo "NODE_ALLOW_JIT=not-needed" | tee /tmp/node-allowjit.env
+            echo "V8 executed the JIT-tiering workload under Hardened Runtime WITHOUT any entitlement — zero entitlements ship."
+          else
+            echo "NODE_ALLOW_JIT=needed" | tee /tmp/node-allowjit.env
+            echo "Strict configuration FAILED (exit $STRICT_RC) — Hardened Runtime blocked V8 JIT execution. Evidence:"
+            cat /tmp/jit-strict.out || true
+            echo "Re-signing Node with com.apple.security.cs.allow-jit (the ONLY entitlement, Node only) and re-proving:"
+            APP_ROOT="$APP_ROOT" MV_ADHOC_STRUCTURAL=1 MV_SIGN_IDENTITY=- MV_NODE_ALLOW_JIT=1 \
+              bash macos/scripts/sign-production.sh 2>&1 | tee /tmp/sign-allowjit.log
+            grep -q 'SIGN-STRUCTURAL-ADHOC-GREEN' /tmp/sign-allowjit.log
+            set +e
+            "$NODE" /tmp/jit-proof.js > /tmp/jit-allowjit.out 2>&1
+            AJ_RC=$?
+            set -e
+            echo "allow-jit exit: $AJ_RC"
+            cat /tmp/jit-allowjit.out || true
+            [ "$AJ_RC" -eq 0 ] && grep -q 'JIT-WORKLOAD-OK' /tmp/jit-allowjit.out || {
+              echo "::error::Node failed EVEN WITH allow-jit — not an entitlement issue; investigate"
+              exit 1
+            }
+          fi
+          cat /tmp/node-allowjit.env
+
+      - name: Recursive signature verification (fail-closed, final state)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/app-root.env
+          . /tmp/node-allowjit.env
+          FINAL_ALLOW_JIT=0
+          [ "$NODE_ALLOW_JIT" = "needed" ] && FINAL_ALLOW_JIT=1
+          APP_ROOT="$APP_ROOT" EXPECTED_ARCH="${{ matrix.expected_uname }}" \
+            MV_NODE_ALLOW_JIT="$FINAL_ALLOW_JIT" \
+            bash macos/scripts/verify-signatures.sh 2>&1 | tee /tmp/verify-signatures.log
+          grep -q 'VERIFY-SIGNATURES-GREEN' /tmp/verify-signatures.log
+
+      # ------------------------------------------------------------------
+      # SMAPPSERVICE PROOFS (what hosted CI can honestly prove).
+      # ------------------------------------------------------------------
+      - name: SMAppService helper proofs (bundle identity, plist, status model)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/app-root.env
+          APP="$APP_ROOT"
+          echo "--- helper self-test from inside the built .app"
+          "$APP/Contents/MacOS/mediavault-launchagent" self-test | tee /tmp/smappservice-selftest.log
+          grep -q 'plist-found=YES' /tmp/smappservice-selftest.log
+          echo "--- status query must return one of the FOUR documented values"
+          ST="$("$APP/Contents/MacOS/mediavault-launchagent" status)"
+          echo "status: $ST"
+          case "$ST" in
+            notRegistered|enabled|requiresApproval|notFound)
+              echo "status is a documented SMAppService value" ;;
+            *)
+              echo "::error::status '$ST' is not one of the four documented SMAppService values"; exit 1 ;;
+          esac
+          echo "--- plist contract (plutil + BundleProgram + no absolute Program)"
+          plutil -lint "$APP/Contents/Library/LaunchAgents/dev.medivault.supervisor.plist"
+          BP="$(/usr/libexec/PlistBuddy -c 'Print :BundleProgram' "$APP/Contents/Library/LaunchAgents/dev.medivault.supervisor.plist")"
+          [ "$BP" = "Contents/MacOS/mediavault-supervisor" ] || { echo "::error::BundleProgram wrong: $BP"; exit 1; }
+          if /usr/libexec/PlistBuddy -c 'Print :Program' "$APP/Contents/Library/LaunchAgents/dev.medivault.supervisor.plist" >/dev/null 2>&1; then
+            echo "::error::plist must not contain an absolute Program key"; exit 1
+          fi
+          echo "SMAPPSERVICE-HELPER-PROOFS-GREEN"
+
+      - name: No legacy registration path (fail-closed source scan)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "--- production tree must contain no legacy ServiceManagement/launchd registration"
+          # Sources that define production behavior:
+          HITS=$(grep -rn -E 'launchctl (load|unload)|SMLoginItemSetEnabled|SMJobBless' \
+            macos/ src-tauri/src/ 2>/dev/null | grep -v -E '\.(md|log):' || true)
+          if [ -n "$HITS" ]; then
+            echo "::error::legacy registration path found:"
+            echo "$HITS"
+            exit 1
+          fi
+          echo "NO-LEGACY-REGISTRATION-GREEN"
+          echo "--- the notarization pipeline must use notarytool (never altool)"
+          if grep -rn 'altool' macos/scripts/ 2>/dev/null | grep -v -E '\.(md):|never|NOT|deprecated' ; then
+            echo "::error::altool reference found in the pipeline scripts"; exit 1
+          fi
+          echo "NO-ALTOOL-GREEN"
+
+      - name: Build + verify the DMG (frozen contract)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/app-root.env
+          APP="$APP_ROOT"
+          DMG_OUT="$RUNNER_TEMP/MediVault-macOS-${{ matrix.label }}.dmg"
+          APP_ROOT="$APP" DMG_OUT="$DMG_OUT" bash macos/scripts/build-dmg.sh
+          echo "DMG_OUT=$DMG_OUT" | tee /tmp/dmg.env
+          test -f "$DMG_OUT.sha256"
+
+      # ------------------------------------------------------------------
+      # THE RELOCATABILITY + HARDENED LIFECYCLE PROOF: install the DMG
+      # content at an ODD location and run the supervisor with NO
+      # --config (the LaunchAgent shape: BundleProgram + defaults). The
+      # shipped config's production ports (PG 55432, API 3001) and the
+      # per-user ~/Library defaults apply. Keychain seeds use the frozen
+      # proven bootstrap pattern (values never printed).
+      # ------------------------------------------------------------------
+      - name: Generate CI keychain seed values (values never printed)
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "export MV_KEYCHAIN_SEED_PG_APP_PASSWORD=$(openssl rand -hex 12)"
+            echo "export MV_KEYCHAIN_SEED_PG_BOOTSTRAP=$(openssl rand -hex 12)"
+            echo "export MV_KEYCHAIN_SEED_MASTER_KEY=$(openssl rand -hex 32)"
+            echo "export MV_KEYCHAIN_SEED_JWT_SECRET=$(openssl rand -hex 32)"
+            echo "export MV_KEYCHAIN_SEED_CSRF_SECRET=$(openssl rand -hex 32)"
+          } > /tmp/pr-seeds.env
+          chmod 600 /tmp/pr-seeds.env
+          echo "seed file written (values never printed): /tmp/pr-seeds.env"
+
+      - name: Install the app at an ODD location from the mounted DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/dmg.env
+          MOUNT="$(mktemp -d /tmp/mv-pr-mount.XXXXXX)"
+          hdiutil attach "$DMG_OUT" -mountpoint "$MOUNT" -nobrowse -readonly
+          test -x "$MOUNT/MediVault.app/Contents/MacOS/MediVault"
+          INSTALLED="$RUNNER_TEMP/OddPlaces/deep/MediVault.app"
+          rm -rf "$RUNNER_TEMP/OddPlaces"
+          mkdir -p "$RUNNER_TEMP/OddPlaces/deep"
+          cp -R "$MOUNT/MediVault.app" "$INSTALLED"
+          hdiutil detach "$MOUNT" -force >/dev/null
+          echo "INSTALLED=$INSTALLED" | tee /tmp/pr-installed.env
+          echo "odd install location: $INSTALLED"
+          codesign --verify --strict "$INSTALLED"
+          codesign --verify --strict "$INSTALLED/Contents/MacOS/mediavault-launchagent"
+
+      - name: Default-config resolution proof (NO --config, odd location)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/pr-installed.env
+          # `status` with NO arguments: must load the exe-relative shipped
+          # config successfully. Exit 2 = config fine + no status file yet
+          # (the supervisor's documented contract). Exit 4 = config error.
+          set +e
+          "$INSTALLED/Contents/MacOS/mediavault-supervisor" status > /tmp/pr-status.out 2>&1
+          RC=$?
+          set -e
+          echo "status (no --config) exit: $RC"
+          cat /tmp/pr-status.out || true
+          [ "$RC" -eq 2 ] || {
+            echo "::error::default-config resolution failed (expected exit 2 = valid config, no status yet; got $RC)"
+            exit 1
+          }
+          echo "DEFAULT-CONFIG-RESOLUTION-GREEN (relocatable, install-location independent)"
+
+      - name: Hardened lifecycle from the odd install (shipped config, CLEAN provisioning)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/pr-installed.env
+          . /tmp/pr-seeds.env
+          # The per-user defaults resolve to $HOME/Library/… on the runner.
+          SUP="$HOME/Library/Application Support/MediVault"
+          STATUS="$SUP/runtime-state/supervisor-status.json"
+          rm -rf "$SUP" "$HOME/Library/Logs/MediVault"
+          rm -f /tmp/pr-supervisor.exit
+
+          echo "[bootstrap] keychain seeding via the shipped supervisor (NO --config — defaults)"
+          ( "$INSTALLED/Contents/MacOS/mediavault-supervisor" bootstrap-secrets \
+              > /tmp/pr-bootstrap.log 2>&1 ) || { cat /tmp/pr-bootstrap.log; exit 1; }
+          [ "$(grep -c 'created keychain item' /tmp/pr-bootstrap.log)" = "5" ] || {
+            echo "::error::expected 5 created keychain items"; cat /tmp/pr-bootstrap.log; exit 1
+          }
+
+          echo "[run] supervisor with NO arguments (LaunchAgent shape) — hardened binaries"
+          ( "$INSTALLED/Contents/MacOS/mediavault-supervisor" \
+              > "$RUNNER_TEMP/pr-supervisor-stdout.log" 2>&1; echo $? > /tmp/pr-supervisor.exit ) &
+
+          echo "[poll] bounded wait (300s) for healthy"
+          HEALTHY=0
+          for i in $(seq 1 600); do
+            S=$(jq -r '.state // "none"' "$STATUS" 2>/dev/null || echo none)
+            if [ "$S" = "healthy" ]; then HEALTHY=1; break; fi
+            if [ "$S" = "failed" ]; then break; fi
+            if [ -f /tmp/pr-supervisor.exit ]; then break; fi
+            sleep 0.5
+          done
+          echo "final state: $(jq -r '.state // "none"' "$STATUS" 2>/dev/null || echo none)"
+          if [ "$HEALTHY" != "1" ]; then
+            echo "::error::hardened supervisor did not reach healthy from the odd install location"
+            echo "--- supervisor.log:"; tail -30 "$HOME/Library/Logs/MediVault/supervisor.log" 2>/dev/null || true
+            echo "--- provision.log:"; tail -30 "$HOME/Library/Logs/MediVault/provision.log" 2>/dev/null || true
+            echo "--- stdout:"; tail -40 "$RUNNER_TEMP/pr-supervisor-stdout.log" 2>/dev/null || true
+            exit 1
+          fi
+
+          PGBIN="$INSTALLED/Contents/Resources/runtime/postgresql/17/bin"
+          echo "[proof] PG healthy on the SHIPPED production port (55432)"
+          "$PGBIN/pg_isready" -h 127.0.0.1 -p 55432
+          echo "[proof] authenticated SELECT 1 as the app role (seeded credential)"
+          ONE=$(PGPASSWORD="$MV_KEYCHAIN_SEED_PG_APP_PASSWORD" "$PGBIN/psql" -h 127.0.0.1 -p 55432 -U medivault -d medivault -t -A -c "SELECT 1")
+          [ "$ONE" = "1" ] || { echo "::error::authenticated SELECT 1 failed"; exit 1; }
+          MIG=$(PGPASSWORD="$MV_KEYCHAIN_SEED_PG_APP_PASSWORD" "$PGBIN/psql" -h 127.0.0.1 -p 55432 -U medivault -d medivault -t -A -c "SELECT count(*) FROM _prisma_migrations WHERE finished_at IS NOT NULL")
+          echo "applied migrations: $MIG (expect 8)"
+          [ "$MIG" = "8" ] || { echo "::error::expected 8 applied migrations"; exit 1; }
+
+          echo "[proof] the API runs on the PACKAGED hardened node binary"
+          pgrep -f "$INSTALLED/Contents/Resources/runtime/nodejs/bin/node" >/dev/null || {
+            echo "::error::the API is not running on the packaged node binary"; exit 1
+          }
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:3001/health" || echo 000)
+          echo "/health -> $CODE"; test "$CODE" = "200"
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:3001/ready" || echo 000)
+          echo "/ready -> $CODE"; test "$CODE" = "200"
+          test -f "$SUP/config/provisioned.json"
+          echo "HARDENED-LIFECYCLE-GREEN (odd location + shipped relocatable config + hardened runtime)"
+
+          echo "[shutdown] graceful SIGTERM + zero owned orphans"
+          kill -TERM "$(jq -r .pid "$STATUS")"
+          for i in $(seq 1 180); do [ -f /tmp/pr-supervisor.exit ] && break; sleep 0.5; done
+          EXIT_CODE=$(cat /tmp/pr-supervisor.exit 2>/dev/null || echo MISSING)
+          echo "supervisor exit code: $EXIT_CODE (expect 0)"
+          [ "$EXIT_CODE" = "0" ] || { echo "::error::supervisor did not exit 0"; exit 1; }
+          sleep 2
+          LEFT=$(pgrep -fl "postgres -D" | grep -v pgrep || true)
+          [ -z "$LEFT" ] && echo "zero postgres orphans" || { echo "$LEFT"; exit 1; }
+          [ ! -f "$SUP/PostgreSQL/17/data/postmaster.pid" ] || {
+            echo "::error::postmaster.pid still present"; exit 1
+          }
+
+      - name: Production-readiness summary (machine-readable)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/node-allowjit.env
+          . /tmp/pr-installed.env
+          {
+            echo "PR-ARCH: ${{ matrix.expected_uname }}"
+            echo "PR-OS: macOS 26 (native)"
+            echo "PR-NODE-ALLOW-JIT: $NODE_ALLOW_JIT"
+            echo "PR-INSTALL-LOCATION: $INSTALLED"
+            echo "PR-DEFAULT-CONFIG: relocatable GREEN"
+            echo "PR-HARDENED-LIFECYCLE: GREEN"
+            echo "PR-SIGNING-MODE: structural ad-hoc (production identity pending credentials)"
+            echo "PR-SMAPPSERVICE: helper + plist + status model + no-legacy GREEN"
+          } | tee /tmp/pr-summary.txt
+
+      - name: Teardown + orphan sweep (always)
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          pkill -f 'OddPlaces/deep/MediVault.app/Contents/MacOS/mediavault-supervisor' 2>/dev/null || true
+          pkill -f 'MediVault.app/Contents/MacOS/MediVault' 2>/dev/null || true
+          d="$HOME/Library/Application Support/MediVault/PostgreSQL/17/data"
+          if [ -d "$d" ] && [ -f "$d/PG_VERSION" ]; then
+            PGRT=""
+            for cand in "$RUNNER_TEMP/OddPlaces/deep/MediVault.app/Contents/Resources/runtime/postgresql/17/bin" \
+                        "/Users/runner/work/_temp/MediVault-installed.app/Contents/Resources/runtime/postgresql/17/bin"; do
+              [ -x "$cand/pg_ctl" ] && PGRT="$cand" && break
+            done
+            [ -n "$PGRT" ] && "$PGRT/pg_ctl" -D "$d" -m fast -w -t 60 stop 2>/dev/null || true
+          fi
+          sleep 2
+          LEFT=$(pgrep -fl "postgres -D" | grep -v pgrep || true)
+          [ -z "$LEFT" ] && echo "clean — zero postgres processes" || {
+            echo "$LEFT"; pkill -9 -f "postgres -D" 2>/dev/null || true
+          }
+          rm -rf "/Users/runner/Applications/MediVault.app" \
+                 "$HOME/Library/Application Support/MediVault" \
+                 "$HOME/Library/Logs/MediVault" 2>/dev/null || true
+          for account in pg-app-password pg-bootstrap master-key jwt-secret csrf-secret; do
+            security delete-generic-password -s dev.medivault -a "$account" >/dev/null 2>&1 || true
+          done
+
+      - name: Upload evidence (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-readiness-${{ matrix.label }}-evidence
+          retention-days: 1
+          path: |
+            /tmp/pr-summary.txt
+            /tmp/node-allowjit.env
+            /tmp/sign-strictfirst.log
+            /tmp/sign-allowjit.log
+            /tmp/jit-strict.out
+            /tmp/jit-allowjit.out
+            /tmp/verify-signatures.log
+            /tmp/smappservice-selftest.log
+            /tmp/supervisor-tests.log
+            /tmp/desktop-tests.log
+            /tmp/macho-gate-pr-*.txt
+            /tmp/macho-gate-helper.txt
+            /tmp/tauri-build.log
+            /tmp/pr-bootstrap.log
+            /tmp/pr-status.out
+            /Users/runner/work/_temp/MediVault-macOS-${{ matrix.label }}.dmg.sha256
           if-no-files-found: ignore

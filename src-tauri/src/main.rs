@@ -90,6 +90,11 @@ fn main() {
             commands::device::revoke_device,
             commands::device::sign_challenge,
             commands::device::list_devices,
+            // Background Service (SMAppService — production registration path)
+            commands::background_service::background_service_status,
+            commands::background_service::background_service_register,
+            commands::background_service::background_service_unregister,
+            commands::background_service::background_service_open_login_items_settings,
             // Scanner
             scanner::list_scanners,
             scanner::scan_single_page,

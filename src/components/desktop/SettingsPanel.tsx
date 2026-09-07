@@ -14,6 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
   Server,
+  Power,
   HardDrive,
   ScanLine,
   Shield,
@@ -47,6 +48,7 @@ import {
 } from '@/lib/desktop/api'
 import { useDesktopStore } from '@/lib/desktop/store'
 import type { AppSettings, ServiceStatus, DatabaseStatus, DeviceStatus, CertTrustStatus, ScannerDevice, RegisteredDevice } from '@/lib/desktop/types'
+import { BackgroundServicePanel } from './BackgroundServicePanel'
 
 // =================== MASKED INPUT ===================
 
@@ -239,10 +241,14 @@ export function SettingsPanel() {
       )}
 
       <Tabs defaultValue="server" className="w-full">
-        <TabsList className="grid w-full grid-cols-5">
+        <TabsList className="grid w-full grid-cols-6">
           <TabsTrigger value="server" className="gap-1.5">
             <Server className="h-3.5 w-3.5" />
             <span className="hidden lg:inline">Server</span>
+          </TabsTrigger>
+          <TabsTrigger value="service" className="gap-1.5">
+            <Power className="h-3.5 w-3.5" />
+            <span className="hidden lg:inline">Background</span>
           </TabsTrigger>
           <TabsTrigger value="storage" className="gap-1.5">
             <HardDrive className="h-3.5 w-3.5" />
@@ -338,6 +344,33 @@ export function SettingsPanel() {
               </div>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* ========== BACKGROUND SERVICE TAB (SMAppService) ========== */}
+        <TabsContent value="service" className="mt-4">
+          <div className="space-y-4">
+            <BackgroundServicePanel />
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">What the background service does</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2 text-sm text-muted-foreground">
+                <p>
+                  The background service is a user-scoped macOS Login Item
+                  (never an administrator-level daemon). It starts the
+                  MediVault supervisor when you log in, which in turn starts
+                  and watches the local PostgreSQL database and the MediVault
+                  API — all restricted to this computer (
+                  <code className="rounded bg-muted px-1">127.0.0.1</code>).
+                </p>
+                <p>
+                  Your clinical data stays in your home folder and is never
+                  removed by the app itself: uninstalling MediVault.app leaves
+                  the database and documents untouched.
+                </p>
+              </CardContent>
+            </Card>
+          </div>
         </TabsContent>
 
         {/* ========== STORAGE TAB ========== */}

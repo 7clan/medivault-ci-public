@@ -376,6 +376,20 @@ export interface CertTrustStatus {
 }
 
 // ---------------------------------------------------------------------------
+// Background service (SMAppService) — macOS production registration path
+// ---------------------------------------------------------------------------
+
+/**
+ * The Apple SMAppService status model, exactly the four documented values
+ * (never invented): notRegistered | enabled | requiresApproval | notFound.
+ */
+export type BackgroundServiceStatus =
+  | 'notRegistered'
+  | 'enabled'
+  | 'requiresApproval'
+  | 'notFound'
+
+// ---------------------------------------------------------------------------
 // Desktop UI navigation
 // ---------------------------------------------------------------------------
 

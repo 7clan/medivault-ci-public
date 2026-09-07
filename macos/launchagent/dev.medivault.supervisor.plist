@@ -5,17 +5,32 @@
 
   This plist ships INSIDE the app bundle at
   MediVault.app/Contents/Library/LaunchAgents/dev.medivault.supervisor.plist
-  and is registered from the desktop app at first-run setup via
-  SMAppService.agent.register() (ServiceManagement.framework, macOS 13+).
-  It is the USER-scoped agent: the backend runs while the doctor is logged
-  in, independent of the desktop window.
+  and is registered from the desktop app via SMAppService.agent.register()
+  (ServiceManagement.framework, macOS 13+). It is the USER-scoped agent:
+  the backend runs while the doctor is logged in, independent of the
+  desktop window. NO root, NO LaunchDaemon.
 
-  Fields (acceptance/macos-architecture-audit.md, SMAPPSERVICE DESIGN):
-    Label          dev.medivault.supervisor
-    Program        the supervisor binary at its app-bundle location
+  PATH MODEL (production hardening):
+    BundleProgram  is the app-bundle RELATIVE path to the supervisor
+                   (launchd.plist(5): "an app-bundle relative path to the
+                   executable for the job. This key is only supported for
+                   plists that are installed using SMAppService"). The
+                   previous absolute /Applications/… Program key is GONE —
+                   it broke per-user installs (~/Applications) and embedded
+                   a machine-location assumption.
+    No arguments:  the supervisor defaults to the `run` subcommand and
+                   resolves its config exe-relatively at
+                   ../Resources/supervisor-config.json, whose bundle paths
+                   are themselves Contents/-relative. The whole chain is
+                   install-location independent.
+
+  Other fields (acceptance/macos-architecture-audit.md, SMAPPSERVICE DESIGN):
     RunAtLoad      true  — starts at login
     KeepAlive      true  — launchd restarts the supervisor itself on crash
     ProcessType    Background — App Nap / scheduling class for a daemon-like agent
+    ExitTimeOut    90    — seconds before launchd SIGKILLs on shutdown;
+                           the supervisor's own graceful window is bounded
+                           inside this budget
     Disabled       false
 
   NOTES
@@ -28,26 +43,17 @@
     - The supervisor's own crash resilience is redundant by design with
       KeepAlive (launchd = outer ring, supervisor restart backoff = inner
       ring for the CHILDREN).
-    - Registration/UX (Login Items approval pane) is an interactive-cloud-Mac
-      proof, NOT a CI proof; CI proves the foreground lifecycle contract of
-      the same binary. SMAppService registration lands with the app-bundle
-      stage.
+    - Registration/UX (Login Items approval pane) is an interactive-Mac
+      proof, NOT a CI proof; CI proves the helper's status model, the
+      plist contract, and the foreground lifecycle of the same binary.
 -->
 <plist version="1.0">
 <dict>
     <key>Label</key>
     <string>dev.medivault.supervisor</string>
 
-    <key>Program</key>
-    <string>/Applications/MediVault.app/Contents/MacOS/mediavault-supervisor</string>
-
-    <key>ProgramArguments</key>
-    <array>
-        <string>/Applications/MediVault.app/Contents/MacOS/mediavault-supervisor</string>
-        <string>run</string>
-        <string>--config</string>
-        <string>/Applications/MediVault.app/Contents/Resources/supervisor-config.json</string>
-    </array>
+    <key>BundleProgram</key>
+    <string>Contents/MacOS/mediavault-supervisor</string>
 
     <key>RunAtLoad</key>
     <true/>

@@ -4,6 +4,7 @@
 //! as `commands::auth::login`, `commands::patients::search_patients`, etc.
 
 pub mod auth;
+pub mod background_service;
 pub mod backup;
 pub mod device;
 pub mod documents;

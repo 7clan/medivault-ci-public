@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  THE ONLY entitlement MediVault ships, and it applies ONLY to the Node
+  runtime binary (Contents/Resources/runtime/nodejs/bin/node) — never to
+  PostgreSQL, the supervisor, the SMAppService helper, the Prisma engines,
+  the Tauri executable, or the app bundle.
+
+  com.apple.security.cs.allow-jit  ("Allow Execution of JIT-compiled code",
+  https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.cs.allow-jit)
+  permits the use of the MAP_JIT flag for writable+executable memory.
+  Node's V8 engine JIT-compiles JavaScript; under the Hardened Runtime,
+  without this entitlement a JIT-tier-up workload CRASHES (the CI proof in
+  the production-readiness mode reproduces and records this). Apple's
+  document describes this exact case: "code using JIT compilation may
+  crash or behave in unexpected ways" without it.
+
+  DELIBERATELY NOT GRANTED anywhere in MediVault:
+    com.apple.security.cs.disable-library-validation        — not needed:
+      every bundled Mach-O is OUR OWN code (or Apple-system-linked);
+      library validation stays ENFORCED.
+    com.apple.security.cs.allow-unsigned-executable-memory  — NOT needed:
+      Node uses MAP_JIT (allow-jit is the narrow exception; this is the
+      broad one). Never granted.
+    com.apple.security.cs.disable-executable-page-protection — never.
+    com.apple.security.get-task-allow                       — debug only;
+      never in distribution.
+
+  The entitlement is applied ONLY after the strictest-first CI proof
+  (production-readiness mode) demonstrates the failure; if Node's V8
+  changes to not require it, the proof goes GREEN with zero entitlements
+  and this file stops being referenced.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+</dict>
+</plist>

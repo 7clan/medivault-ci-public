@@ -1,12 +1,11 @@
 {
+  "_comment": "Reference for the SHIPPED production supervisor-config.json (written by macos/scripts/stage-app-bundle.sh). Every bundle path is Contents/ — relative (resolved against the installed app bundle derived from the supervisor's own executable — install-location independent); app_support_dir/log_dir are ABSENT (the supervisor applies the per-user ~/Library defaults at load). The desktop webview origin is tauri://localhost (Tauri 2 macOS custom scheme). CI harnesses may pass an explicit --config with absolute paths — both forms are supported by config.rs.",
   "version": 1,
   "paths": {
-    "pg_bundle": "/Applications/MediVault.app/Contents/Resources/runtime/postgresql/17",
-    "node_binary": "/Applications/MediVault.app/Contents/Resources/runtime/nodejs/bin/node",
-    "api_entry": "/Applications/MediVault.app/Contents/Resources/api/dist/index.js",
-    "api_working_dir": "/Applications/MediVault.app/Contents/Resources/api",
-    "app_support_dir": "~/Library/Application Support/MediVault",
-    "log_dir": "~/Library/Logs/MediVault"
+    "pg_bundle": "Contents/Resources/runtime/postgresql/17",
+    "node_binary": "Contents/Resources/runtime/nodejs/bin/node",
+    "api_entry": "Contents/Resources/api/dist/index.js",
+    "api_working_dir": "Contents/Resources/api"
   },
   "postgres": {
     "host": "127.0.0.1",
@@ -19,10 +18,16 @@
   "api": {
     "host": "127.0.0.1",
     "port": 3001,
-    "allowed_origins": "http://localhost:3000"
+    "allowed_origins": "tauri://localhost,http://localhost:3000"
   },
   "secrets": {
     "source": "keychain"
+  },
+  "provisioner": {
+    "entry": "Contents/Resources/provision/dist/index.js",
+    "prisma_cli": "Contents/Resources/prisma-cli/node_modules/prisma/build/index.js",
+    "prisma_schema": "Contents/Resources/prisma/schema.prisma",
+    "timeout_sec": 600
   },
   "limits": {
     "pg_start_timeout_sec": 120,

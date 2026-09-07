@@ -108,9 +108,16 @@ fn usage() -> ! {
         "mediavault-supervisor {} — MediVault macOS background supervisor\n\
          \n\
          usage:\n\
-         \x20 mediavault-supervisor run    --config <supervisor-config.json>\n\
-         \x20 mediavault-supervisor status --config <supervisor-config.json>\n\
-         \x20 mediavault-supervisor version",
+         \x20 mediavault-supervisor [run]    [--config <supervisor-config.json>]\n\
+         \x20 mediavault-supervisor status   [--config <supervisor-config.json>]\n\
+         \x20 mediavault-supervisor bootstrap-secrets [--config <supervisor-config.json>]\n\
+         \x20 mediavault-supervisor version\n\
+         \n\
+         LaunchAgent shape (no arguments at all): run + the bundle-relative\n\
+         default config at <exe>/../Resources/supervisor-config.json —\n\
+         install-location independent (SMAppService BundleProgram contract).\n\
+         --config stays available for the CI foreground harness and explicit\n\
+         operator runs.",
         env!("CARGO_PKG_VERSION")
     );
     std::process::exit(64);
@@ -118,7 +125,10 @@ fn usage() -> ! {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let cmd = args.first().map(String::as_str).unwrap_or("");
+    // LaunchAgent shape: BundleProgram starts the supervisor with NO
+    // arguments at all — default to `run` (production contract). Explicit
+    // subcommands keep working for operators and the CI harness.
+    let cmd = args.first().map(String::as_str).unwrap_or("run");
 
     // `version` answers without touching any config.
     if cmd == "version" {
@@ -264,6 +274,38 @@ fn extract_config(args: &[String]) -> Result<std::path::PathBuf, String> {
             }
             Ok(pb)
         }
-        None => Err("missing --config <path>".to_string()),
+        // LaunchAgent / production default (SMAppService BundleProgram starts
+        // this process with no arguments): the config ships INSIDE the app
+        // bundle at Contents/Resources/supervisor-config.json, resolved
+        // relative to THIS executable (Contents/MacOS/mediavault-supervisor).
+        // The shipped config's bundle paths are themselves Contents/
+        // — the whole chain is install-location independent.
+        None => {
+            let default = default_config_path()?;
+            if !default.is_file() {
+                return Err(format!(
+                    "no --config given and the default bundle config does not exist: {}",
+                    default.display()
+                ));
+            }
+            Ok(default)
+        }
     }
+}
+
+/// <exe-dir>/../Resources/supervisor-config.json — the shipped production
+/// config location (exe is Contents/MacOS/mediavault-supervisor inside the
+/// installed MediVault.app; CI staging trees share the same shape).
+pub fn default_config_path() -> Result<std::path::PathBuf, String> {
+    let exe = std::env::current_exe()
+        .map_err(|e| format!("cannot resolve the supervisor executable path: {e}"))?;
+    let dir = exe
+        .parent()
+        .ok_or_else(|| "supervisor executable has no parent directory".to_string())?;
+    let default = dir.join("..").join("Resources").join("supervisor-config.json");
+    Ok(std::path::PathBuf::from(
+        std::fs::canonicalize(&default)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| default.to_string_lossy().into_owned()),
+    ))
 }
