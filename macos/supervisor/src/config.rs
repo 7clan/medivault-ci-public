@@ -627,20 +627,27 @@ mod tests {
 
     #[test]
     fn bundle_root_from_exe_normalizes_lexically() {
-        // The test binary lives somewhere arbitrary; the CONTRACT is that
-        // bundle_root = lexical(exe_dir/../..). Prove the normalization
-        // property regardless of where the test binary sits.
+        // The CONTRACT is bundle_root == lexical(exe_dir/../..) wherever
+        // the binary actually lives (proven against THIS test binary's
+        // real location — no bundle-shape assumption).
         let root = bundle_root_from_exe().unwrap();
         let exe = std::env::current_exe().unwrap();
         let exe_dir = exe.parent().unwrap();
-        // Walking UP two levels from exe_dir lands on the same lexical
-        // result the supervisor computes inside a real .app.
         let manual = lexical_normalize(&exe_dir.join("..").join(".."));
         assert_eq!(root, manual);
-        // And walking DOWN again reproduces the executable directory.
+        // The bundle-shape property (exe at <root>/Contents/MacOS ⇒
+        // root == exe_dir/../.., and the return trip is exact) is proven
+        // end-to-end by the production-readiness CI job from a REAL
+        // installed .app; here we prove the lexical math on a synthetic
+        // path where the shape genuinely holds:
+        let app_exe =
+            std::path::Path::new("/tmp/Synthetic.app/Contents/MacOS/mediavault-supervisor");
+        let synth_root =
+            lexical_normalize(&app_exe.parent().unwrap().join("..").join(".."));
+        assert_eq!(synth_root, std::path::Path::new("/tmp/Synthetic.app"));
         assert_eq!(
-            lexical_normalize(&root.join("Contents").join("MacOS")),
-            lexical_normalize(exe_dir)
+            lexical_normalize(&synth_root.join("Contents").join("MacOS")),
+            std::path::Path::new("/tmp/Synthetic.app/Contents/MacOS")
         );
     }
 
