@@ -51,9 +51,11 @@ Graceful SIGTERM: exit 0, `stopped`, zero orphans.
 
 Re-run the supervisor from the installed app: VALID_EXISTING → healthy
 (`/health` + `/ready`), sentinel STILL PRESENT, `PG_VERSION` sha
-unchanged, provisioned `createdAt` unchanged, a `VALID_EXISTING`
-classification logged, initdb occurrences NOT grown ⇒ cluster NOT
-re-initialized. Graceful stop.
+unchanged, provisioned `createdAt` unchanged, provision.log
+byte-identical to the case-1 capture (the frozen supervisor never
+re-invokes the provisioner when the cluster exists — that IS the
+VALID_EXISTING restart path, fail-closed by design), initdb
+occurrences NOT grown ⇒ cluster NOT re-initialized. Graceful stop.
 
 ## 3. CASE 3 — REINSTALL / UPGRADE (app replacement)
 

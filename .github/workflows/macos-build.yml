@@ -4950,6 +4950,7 @@ jobs:
           jq -r .createdAt "$MV_APP_SUPPORT/config/provisioned.json" | tee /tmp/r7-provisioned-created.txt
           echo "  initdb occurrences in provision.log so far: $(grep -c 'initdb' "$MV_LOG_DIR/provision.log" 2>/dev/null || echo 0)"
           (grep -c 'initdb' "$MV_LOG_DIR/provision.log" 2>/dev/null || echo 0) > /tmp/r7-initdb-count.txt
+          shasum -a 256 "$MV_LOG_DIR/provision.log" | awk '{print $1}' | tee /tmp/r7-provisionlog.sha
 
           echo "[1.9] close/stop the app (graceful ladder)"
           r7_graceful_stop "$STATUS" "$EXITF"
@@ -4994,9 +4995,17 @@ jobs:
           CREATED_NOW=$(jq -r .createdAt "$MV_APP_SUPPORT/config/provisioned.json")
           CREATED_WAS=$(cat /tmp/r7-provisioned-created.txt)
           [ "$CREATED_NOW" = "$CREATED_WAS" ] || { echo "::error::provisioned.json createdAt changed"; exit 1; }
-          grep -q "VALID_EXISTING" "$MV_LOG_DIR/provision.log" || {
-            echo "::error::no VALID_EXISTING classification logged after restart"; exit 1
+          # The frozen supervisor NEVER re-invokes the provisioner when
+          # PG_VERSION exists (delegate_provisioning is skipped, fail-closed
+          # by design), so the restart's VALID_EXISTING proof is: provision.log
+          # byte-identical to the case-1 capture (provisioner not re-invoked)
+          # — together with the marker/cluster/sentinel/initdb assertions above.
+          PLG_NOW=$(shasum -a 256 "$MV_LOG_DIR/provision.log" | awk '{print $1}')
+          PLG_WAS=$(cat /tmp/r7-provisionlog.sha)
+          [ "$PLG_NOW" = "$PLG_WAS" ] || {
+            echo "::error::provisioner re-invoked during restart (provision.log changed: $PLG_WAS -> $PLG_NOW)"; exit 1
           }
+          r7_summary "RESTART CLASSIFICATION: VALID_EXISTING (provisioner not re-invoked; marker+cluster+sentinel intact)"
           INITDBS=$(grep -c 'initdb' "$MV_LOG_DIR/provision.log" 2>/dev/null || echo 0)
           INITDBS_BASE=$(cat /tmp/r7-initdb-count.txt 2>/dev/null || echo 0)
           echo "  initdb occurrences in provision.log: $INITDBS (baseline $INITDBS_BASE — must not grow)"
