@@ -4221,7 +4221,8 @@ jobs:
           cfg["provisioner"]["prisma_schema"] = f"{new_root}/Contents/Resources/prisma/schema.prisma"
           json.dump(cfg, open(path, "w"), indent=2)
           PYEOF
-          echo "CONFIG=$INSTALLED/Contents/Resources/supervisor-config.json" | tee /tmp/26-config.env
+          CONFIG="$INSTALLED/Contents/Resources/supervisor-config.json"
+          echo "CONFIG=$CONFIG" | tee /tmp/26-config.env
           cat "$CONFIG"
 
       - name: Keychain bootstrap (seeded CI values, REAL login keychain)
