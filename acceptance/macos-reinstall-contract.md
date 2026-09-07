@@ -94,11 +94,16 @@ prisma + PG on macOS 26, with isolated app-support trees):
 
 - **4a RECOVERABLE_INCOMPLETE** ("app replaced but provisioning not
   completed"): constructed state = cluster + app role + app db DONE,
-  migrations NOT done, `provision-pending.json` present, sentinel row
-  pre-existing. Provisioner must resume EXACTLY (migrations +
-  completion marker, pending removed), `PG_VERSION` sha unchanged,
-  sentinel survived; then the supervisor runs the recovered state to
-  healthy (proving it is production-usable); graceful stop.
+  migrations NOT done, `provision-pending.json` present, app-db EMPTY
+  (the production-realistic interrupted state — nothing but the
+  provisioner writes to the app-db before completion; a pre-seeded
+  sentinel table would be a prisma P3005 ambiguous baseline, which the
+  provisioner correctly refuses fail-closed). Provisioner must resume
+  EXACTLY (migrations + completion marker, pending removed),
+  `PG_VERSION` sha unchanged, role/db identity preserved; then the
+  supervisor runs the recovered state to healthy (proving it is
+  production-usable) and the sentinel is seeded POST-resume as the app
+  role (writability proof); graceful stop.
 - **4b FAIL-CLOSED (pending + unexpected state)**: pending marker +
   an unexpected non-template database. Provisioner exits 5
   (INCOMPLETE_EXISTING) with NOTHING altered: cluster file count

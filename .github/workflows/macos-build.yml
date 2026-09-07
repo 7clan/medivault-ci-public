@@ -5249,10 +5249,14 @@ jobs:
           CREATE ROLE medivault LOGIN PASSWORD '${MV_KEYCHAIN_SEED_PG_APP_PASSWORD}';
           CREATE DATABASE medivault OWNER medivault;
           SQL
-          PGPASSWORD="$MV_KEYCHAIN_SEED_PG_APP_PASSWORD" "$PGBIN/psql" -h 127.0.0.1 -p "$MV_PGPORT" -U medivault -d medivault -v ON_ERROR_STOP=1 <<SQL
-          CREATE TABLE ci_reinstall_sentinel (id TEXT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT now());
-          INSERT INTO ci_reinstall_sentinel (id) VALUES ('$ISO_SENTINEL');
-          SQL
+          # The app-db stays EMPTY here — the production-realistic interrupted
+          # state (nothing but the provisioner writes to the app-db before
+          # provisioning completes). A pre-seeded sentinel table would make the
+          # schema non-empty with no migration history → prisma P3005
+          # (ambiguous baseline) → the provisioner's correct fail-closed
+          # refusal (first-red run 34158152261). The sentinel is seeded
+          # POST-resume in [4a.5] instead, proving the recovered state is
+          # writable as the app role.
           "$PGBIN/pg_ctl" -D "$PGDATA" -m fast -w -t 60 stop
           PGV_SHA_ISO=$(shasum -a 256 "$PGDATA/PG_VERSION" | awk '{print $1}')
           echo "  iso PG_VERSION sha: $PGV_SHA_ISO"
@@ -5313,12 +5317,17 @@ jobs:
             exit 1
           fi
           r7_api_probe
+          echo "  seeding the iso sentinel NOW (post-resume writability proof — the app role writes to the recovered app-db)"
+          PGPASSWORD="$MV_KEYCHAIN_SEED_PG_APP_PASSWORD" "$PGBIN/psql" -h 127.0.0.1 -p "$MV_PGPORT" -U medivault -d medivault -v ON_ERROR_STOP=1 <<SQL
+          CREATE TABLE ci_reinstall_sentinel (id TEXT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT now());
+          INSERT INTO ci_reinstall_sentinel (id) VALUES ('$ISO_SENTINEL');
+          SQL
           CNT=$(r7_sentinel_count "$PGBIN" "$ISO_SENTINEL")
-          echo "  iso sentinel rows: $CNT (expect 1)"
-          [ "$CNT" = "1" ] || { echo "::error::iso sentinel lost during recovery"; exit 1; }
+          echo "  iso sentinel rows: $CNT (expect 1 — writable as the app role after recovery)"
+          [ "$CNT" = "1" ] || { echo "::error::recovered app-db not writable as the app role"; exit 1; }
           r7_graceful_stop "$STATUS2" "$EXITF2"
           r7_plants_alive
-          r7_summary "RECOVERABLE INCOMPLETE: GREEN (resumed exactly, migrations applied, sentinel + cluster preserved)"
+          r7_summary "RECOVERABLE INCOMPLETE: GREEN (resumed exactly, migrations applied, cluster + role/db identity preserved, recovered app-db writable as the app role)"
 
       - name: "CASE 4b — FAIL-CLOSED: pending marker + unexpected state (nothing altered)"
         shell: bash
