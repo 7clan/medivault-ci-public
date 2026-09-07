@@ -3137,11 +3137,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if command -v tauri >/dev/null 2>&1; then
-            tauri --version
+          # cargo install tauri-cli provides the executable as `cargo-tauri`
+          # (a cargo subcommand): invoke it as `cargo tauri ...`.
+          if [ -x "$HOME/.cargo/bin/cargo-tauri" ]; then
+            cargo tauri --version
           else
             cargo install tauri-cli --locked --version '^2.11'
-            tauri --version
+            cargo tauri --version
           fi
 
       # ------------------------------------------------------------------
@@ -3164,7 +3166,7 @@ jobs:
         run: |
           set -euo pipefail
           cd src-tauri
-          tauri build --bundles app 2>&1 | tee /tmp/tauri-build.log
+          cargo tauri build --bundles app 2>&1 | tee /tmp/tauri-build.log
           APP="target/release/bundle/macos/MediVault.app"
           test -x "$APP/Contents/MacOS/MediVault" || {
             echo "::error::Tauri desktop binary missing"
