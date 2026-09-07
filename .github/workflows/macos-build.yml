@@ -3158,9 +3158,31 @@ jobs:
           echo "out/ entries: $(find out -type f | wc -l | tr -d ' ')"
 
       # ------------------------------------------------------------------
-      # Tauri build: the MediVault.app desktop bundle (app target only —
-      # DMG construction is the next stage).
+      # macOS app icon: tauri's bundler needs an .icns (the frozen icon set
+      # has PNGs + .ico only — first-red run 34071656997: 'Failed to create
+      # app icon: No matching IconType'). Generate it deterministically
+      # from the committed PNGs with sips + iconutil.
       # ------------------------------------------------------------------
+      - name: Generate icon.icns (sips + iconutil, from the committed PNGs)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ICONSET="src-tauri/icons/MediVault.iconset"
+          rm -rf "$ICONSET"; mkdir -p "$ICONSET"
+          SRC="src-tauri/icons"
+          sips -z 16 16    "$SRC/32x32.png"     --out "$ICONSET/icon_16x16.png"    >/dev/null
+          sips -z 32 32    "$SRC/32x32.png"     --out "$ICONSET/icon_16x16@2x.png" >/dev/null
+          sips -z 32 32    "$SRC/32x32.png"     --out "$ICONSET/icon_32x32.png"    >/dev/null
+          sips -z 64 64    "$SRC/128x128.png"   --out "$ICONSET/icon_32x32@2x.png" >/dev/null
+          sips -z 128 128  "$SRC/128x128.png"   --out "$ICONSET/icon_128x128.png"  >/dev/null
+          sips -z 256 256  "$SRC/128x128@2x.png" --out "$ICONSET/icon_128x128@2x.png" >/dev/null
+          sips -z 256 256  "$SRC/256x256.png"   --out "$ICONSET/icon_256x256.png"  >/dev/null
+          sips -z 512 512  "$SRC/icon.png"      --out "$ICONSET/icon_256x256@2x.png" >/dev/null
+          sips -z 512 512  "$SRC/icon.png"      --out "$ICONSET/icon_512x512.png"  >/dev/null
+          sips -z 1024 1024 "$SRC/icon.png"    --out "$ICONSET/icon_512x512@2x.png" >/dev/null
+          iconutil -c icns "$ICONSET" -o src-tauri/icons/icon.icns
+          ls -la src-tauri/icons/icon.icns
+
       - name: Tauri build (app bundle, per-arch)
         shell: bash
         run: |
