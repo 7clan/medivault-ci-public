@@ -5974,6 +5974,52 @@ jobs:
           echo "--- bundle top level:"
           find "$APP" -maxdepth 3 -not -path "*/runtime/postgresql/17/*" | sed "s|$APP|<APP>|" | sort | sed -n '1,40p'
 
+      # ------------------------------------------------------------------
+      # NEW (production-readiness first-red #3): the PREBUILT prisma query
+      # engines ship with their BUILD MACHINE's absolute install ID
+      # (/Users/runner/work/prisma-engines/…/libquery_engine.dylib) baked
+      # into LC_ID_DYLIB — a build-machine absolute path inside a shipped
+      # Mach-O (never surfaced before: the frozen gates never covered the
+      # prisma engines; they are dlopen'ed by node, not linked). The ID is
+      # irrelevant for dlopen semantics, but the no-build-path contract
+      # still demands scrubbing: rewrite to @loader_path/<name> and
+      # re-sign (the same repair family stage-pg-bundle applies to PG).
+      # ------------------------------------------------------------------
+      - name: Prisma engine install-ID hygiene (scrub build-machine paths)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/app-root.env
+          APP="$APP_ROOT"
+          REPAIRED=0
+          while IFS= read -r -d '' f; do
+            ID_LINE="$(otool -l "$f" 2>/dev/null | awk '/LC_ID_DYLIB/{id=1} id && $1=="name"{print $2; id=0}' | head -1)"
+            if [ -n "$ID_LINE" ] && [[ "$ID_LINE" == /* ]]; then
+              base="$(basename "$f")"
+              echo "  repair: $(basename "$f") id '$ID_LINE' -> @loader_path/$base"
+              install_name_tool -id "@loader_path/$base" "$f"
+              codesign --force --sign - "$f" >/dev/null
+              REPAIRED=$((REPAIRED + 1))
+            fi
+          done < <(find "$APP/Contents/Resources/api/node_modules/.prisma" \
+                        "$APP/Contents/Resources/prisma-cli/node_modules/@prisma/engines" \
+                        -type f -name '*.dylib.node' -print0 2>/dev/null)
+          echo "prisma install-IDs repaired: $REPAIRED"
+          # Fail-closed residual scan: NO shipped Mach-O may carry an
+          # absolute build-path install ID or dependency afterwards. All
+          # otool -L lines are scanned (for dylibs line 1 is the install
+          # ID — post-repair it must be @loader_path; for executables all
+          # lines are deps): any absolute non-system path = violation.
+          LEFT=$(find "$APP" -type f -print0 | xargs -0 file 2>/dev/null | grep 'Mach-O' | cut -d: -f1 | while read -r m; do
+            otool -L "$m" 2>/dev/null | sed 's/(.*//' | grep -E '^/' | grep -vE '^/usr/lib/|^/System/' || true
+          done | sort -u)
+          if [ -n "$LEFT" ]; then
+            echo "::error::absolute (non-system) Mach-O references remain:"
+            echo "$LEFT"
+            exit 1
+          fi
+          echo "PRISMA-INSTALL-ID-HYGIENE-GREEN (zero non-system absolute references)"
+
       - name: Mach-O gates on the merged bundle (all binaries incl. the helper)
         shell: bash
         run: |

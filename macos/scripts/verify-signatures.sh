@@ -92,7 +92,8 @@ while IFS=$'\t' read -r _order expected_ent rel; do
   fi
 
   # -- Hardened Runtime flag present in the CodeDirectory
-  flags="$(codesign -d -d "$path" 2>&1 | sed -n 's/^.*CodeDirectory v=.* flags=0x[0-9a-f]*(\(.*\)).*/\1/p')"
+  # (codesign -dvv: the flags line is only printed with verbose set)
+  flags="$(codesign -dvv "$path" 2>&1 | sed -n 's/^.*CodeDirectory v=.* flags=0x[0-9a-f]*(\(.*\)).*/\1/p')"
   if grep -qw runtime <<<"$flags"; then
     pass "hardened runtime flag: $rel"
   else
@@ -129,7 +130,7 @@ if codesign --verify --strict --verbose=2 "$APP_ROOT" >/dev/null 2>&1; then
 else
   fail "root .app does not strict-verify"
 fi
-root_flags="$(codesign -d -d "$APP_ROOT" 2>&1 | sed -n 's/^.*CodeDirectory v=.* flags=0x[0-9a-f]*(\(.*\)).*/\1/p')"
+root_flags="$(codesign -dvv "$APP_ROOT" 2>&1 | sed -n 's/^.*CodeDirectory v=.* flags=0x[0-9a-f]*(\(.*\)).*/\1/p')"
 if grep -qw runtime <<<"$root_flags"; then
   pass "root hardened runtime flag"
 else
