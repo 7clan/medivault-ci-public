@@ -46,19 +46,6 @@ sha2 = "0.10"
 base64 = "0.22"
 hex = "0.4"
 
-# ── Windows Credential Manager (FFI) ──
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = [
-    "Win32_Security_Credentials",
-    "Win32_Security_Cryptography",
-    "Win32_Foundation",
-    "Win32_Storage_FileSystem",
-    "Win32_System_Com",
-    "Win32_System_Ole",
-    "Win32_System_Registry",
-    "Win32_UI_WindowsAndMessaging",
-] }
-
 # ── Async runtime ──
 tokio = { version = "1", features = ["full"] }
 
@@ -80,6 +67,24 @@ zip = "2"
 # ── Credential file fallback encryption ──
 aes-gcm = "0.10"
 hostname = "0.4"
+
+# ── Windows Credential Manager (FFI) — macOS first-red run 34068656915:
+# section ORDER in Cargo.toml made every crate listed after the original
+# placement of this header (tokio, log, uuid, chrono, …) WINDOWS-ONLY
+# dependencies, so the macOS build had none of them (unresolved import
+# chrono). The cross-platform crates now live in [dependencies] above;
+# ONLY windows-sys stays Windows-gated. ──
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Security_Credentials",
+    "Win32_Security_Cryptography",
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Registry",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [profile.release]
 codegen-units = 1
