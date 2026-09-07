@@ -1,8 +1,19 @@
 # MediVault — macOS Reinstall / Uninstall Acceptance Contract (stage: reinstall-acceptance)
 
-Status: **AUTHORED — awaiting first public dispatch** (stage 7 of the
-macOS campaign; runs AFTER `macos-26-smoke` is GREEN; first-red
-discipline applies until GREEN, then FREEZE)
+Status: **FROZEN GREEN** (stage 7 of the macOS campaign — frozen
+2026-09-07T21:00Z). Evidence: public run **34159463755** @ mirror
+snapshot `adf2439` (= private `04828f5`) — `reinstall-acceptance
+(arm64)` job **101858055678** GREEN (20:27:24→20:39:15Z) and
+`reinstall-acceptance (x64)` job **101858055511** GREEN
+(20:27:20→20:58:15Z). First-red ledger (all new-lane issues, zero
+frozen-product changes): (1) run 34155527771 — CASE 2 asserted a
+provisioner classification line the supervisor-restart path never
+produces → proof switched to provision.log invariance (088e440);
+(2) run 34156668748 — CASE 3b referenced DMG_B without sourcing
+/tmp/dmg-b.env (cd8cc85); (3) run 34158152261 — CASE 4a pre-seeded a
+sentinel table into the interrupted app-db (prisma P3005 ambiguous
+baseline, production-impossible state) → construction now
+production-realistic with the sentinel seeded post-resume (04828f5).
 Lane: `platform/macos` (private) → `7clan/medivault-ci-public` (mirror)
 Predecessor stages (FROZEN GREEN): `integration`, `pg-bundle-verify`,
 `supervisor-lifecycle`, `provision-lifecycle`, `bundle-verify`,
