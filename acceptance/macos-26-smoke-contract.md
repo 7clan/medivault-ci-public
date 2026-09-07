@@ -1,7 +1,14 @@
 # MediVault — macOS 26 (Tahoe) Smoke Contract (stage: macos-26-smoke)
 
-Status: **AUTHORED — awaiting first public dispatch** (stage 6 of the
-macOS campaign; first-red discipline applies until GREEN, then FREEZE)
+Status: **FROZEN GREEN** (stage 6 of the macOS campaign — frozen
+2026-09-07T19:25Z). Evidence: public run **34154281875** @ mirror
+snapshot `a36caa8` (= private `54ce59f`) — `macos-26-smoke (arm64)` job
+**101842744226** GREEN (19:06:24→19:15:51Z) and `macos-26-smoke (x64)`
+job **101842744446** GREEN (19:06:19→19:23:49Z). First-red ledger: ONE
+red — run 34153434912 @ `4d558e9`, arm64 job 101840239146, step
+"Re-point the installed app config": CONFIG written to the env file but
+never assigned as a shell variable (`set -u` unbound abort); fixed by
+private commit `54ce59f` (assign-then-write, the r7 pattern).
 Lane: `platform/macos` (private) → `7clan/medivault-ci-public` (mirror)
 Predecessor stages (FROZEN GREEN): `integration` @ `a282f45`
 (34031521912), `pg-bundle-verify` @ `795df26` (34051758040),
