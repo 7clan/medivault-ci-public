@@ -6521,9 +6521,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bunx vitest run tests/model-a-localhost-production.test.ts 2>&1 | tee /tmp/ls-model-a-tests.log
-          grep -q 'tests/model-a-localhost-production.test.ts' /tmp/ls-model-a-tests.log
-          grep -qE 'Tests[[:space:]]+[0-9]+ passed \([0-9]+\)' /tmp/ls-model-a-tests.log
+          # First-red fix (run 34235952324, both arches): vitest 4 writes ANSI
+          # SGR codes into piped output on CI runners, so the summary-line
+          # grep failed although all 24 tests passed. NO_COLOR removes the
+          # codes at the source and the assertions grep an ANSI-stripped
+          # copy — belt and braces, proven against the raw bytes of that run.
+          NO_COLOR=1 bunx vitest run tests/model-a-localhost-production.test.ts 2>&1 | tee /tmp/ls-model-a-tests.log
+          ESC=$(printf '\033')
+          sed "s/${ESC}\[[0-9;]*[a-zA-Z]//g" /tmp/ls-model-a-tests.log > /tmp/ls-model-a-tests.clean.log
+          grep -q 'tests/model-a-localhost-production.test.ts' /tmp/ls-model-a-tests.clean.log
+          grep -qE 'Tests[[:space:]]+[0-9]+ passed \([0-9]+\)' /tmp/ls-model-a-tests.clean.log
 
       - name: Build the supervisor + provisioner + API runtime
         shell: bash
