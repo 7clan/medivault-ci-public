@@ -207,6 +207,9 @@ on:
           - reinstall-acceptance
           - production-readiness
           - localhost-security
+          - zero-cost-release
+          - smappservice-lifecycle
+          - keychain-lifecycle
           - full
           - desktop-launch-regression
           - reinstall-regression
