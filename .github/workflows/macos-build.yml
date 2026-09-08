@@ -6147,9 +6147,14 @@ jobs:
         run: |
           set -euo pipefail
           echo "--- production tree must contain no legacy ServiceManagement/launchd registration"
-          # Sources that define production behavior:
+          # Scan CODE, not documentation: strip line-comment lines (//, #,
+          # /*, and block-continuation *) after the line-number colon, and
+          # skip prose file types. A hit on real code (or a comment that
+          # OPERATES, e.g. a shell command line) fails the mode.
           HITS=$(grep -rn -E 'launchctl (load|unload)|SMLoginItemSetEnabled|SMJobBless' \
-            macos/ src-tauri/src/ 2>/dev/null | grep -v -E '\.(md|log):' || true)
+            macos/ src-tauri/src/ 2>/dev/null \
+            | grep -v -E '\.(md|log):' \
+            | grep -v -E ':[0-9]+:[[:space:]]*(//|#|/\*|\*)' || true)
           if [ -n "$HITS" ]; then
             echo "::error::legacy registration path found:"
             echo "$HITS"
