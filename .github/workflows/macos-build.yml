@@ -6932,24 +6932,30 @@ jobs:
             "$API/api/auth/logout" || echo 000)
           echo "logout WITHOUT X-CSRF-Token -> $CODE (expect 403)"
           [ "$CODE" = "403" ] || { echo "::error::CSRF protection not enforced (expected 403)"; exit 1; }
-          # CSRF-positive: the double-submit token completes the logout.
-          # (-d '{}' matches the CSRF-negative control and the real frontend:
-          # Fastify answers 400 to a bodyless application/json POST before the
-          # route ever runs — first-red fix of run 34238773249.)
+          # CSRF extraction (double-submit): the header value for the flows below
           CSRF=$(awk '$6=="mvlt_csrf" {print $7}' "$JAR")
           [ -n "$CSRF" ] || { echo "::error::could not read the csrf cookie from the jar"; cat "$JAR"; exit 1; }
-          CODE=$(curl -s -o /dev/null -w "%{http_code}" -b "$JAR" -X POST \
-            -H 'Origin: tauri://localhost' -H 'Content-Type: application/json' -d '{}' \
-            -H "X-CSRF-Token: $CSRF" "$API/api/auth/logout" || echo 000)
-          echo "logout WITH X-CSRF-Token -> $CODE (expect 200)"
-          [ "$CODE" = "200" ] || { echo "::error::CSRF-positive logout failed"; exit 1; }
-          # Hostile Origin beats a fully-valid session+CSRF (origin gate first;
-          # body present so the JSON parser cannot 400 before the origin gate)
+          # Hostile Origin beats a fully-valid session+CSRF (origin gate first).
+          # (First-red fix of run 34239760593: this must run BEFORE the
+          # CSRF-positive logout — the successful logout revokes the session,
+          # and a dead session answers 401 from the auth guard, which proves
+          # nothing about the ORIGIN gate. With a live session the auth guard
+          # passes and the origin gate must be the one to answer 403.)
           CODE=$(curl -s -o /dev/null -w "%{http_code}" -b "$JAR" -X POST \
             -H 'Origin: https://evil.invalid' -H 'Content-Type: application/json' -d '{}' \
             -H "X-CSRF-Token: $CSRF" "$API/api/auth/sessions/revoke-all" || echo 000)
           echo "hostile-origin revoke-all WITH valid session+CSRF -> $CODE (expect 403)"
           [ "$CODE" = "403" ] || { echo "::error::hostile Origin overrode a valid session"; exit 1; }
+          # CSRF-positive: the double-submit token completes the logout.
+          # (-d '{}' matches the CSRF-negative control and the real frontend:
+          # Fastify answers 400 to a bodyless application/json POST before the
+          # route ever runs — first-red fix of run 34238773249. Runs LAST —
+          # it consumes the session.)
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" -b "$JAR" -X POST \
+            -H 'Origin: tauri://localhost' -H 'Content-Type: application/json' -d '{}' \
+            -H "X-CSRF-Token: $CSRF" "$API/api/auth/logout" || echo 000)
+          echo "logout WITH X-CSRF-Token -> $CODE (expect 200)"
+          [ "$CODE" = "200" ] || { echo "::error::CSRF-positive logout failed"; exit 1; }
           echo "T9/T10-AUTH-SESSION-CSRF-GREEN"
 
       # ------------------------------------------------------------------
