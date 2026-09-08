@@ -24,6 +24,26 @@ altered):
 > `TRUSTED_LOCAL_TLS_TERMINATION=true` injection, `supervise.rs:209` @
 > `32ded2d`) is documented there (§3) and remediated by that lane; this
 > stage's recorded evidence stands as history at its frozen SHA.
+
+> **ZERO-COST addendum (2026-09-08, later the same day):** the owner
+> changed the release strategy — no Apple Developer Program membership
+> will be purchased, so Developer ID signing and notarization are
+> REMOVED from the release requirements entirely (never faked, never
+> requested again). The governing release contract is now
+> `acceptance/macos-zero-cost-release-contract.md`: the ad-hoc
+> signature (as structurally proven by this stage, MV_ADHOC_STRUCTURAL)
+> becomes THE release signature via `sign-production.sh
+> MV_ADHOC_RELEASE=1`; releases ship as `MediVault-arm64.dmg` /
+> `MediVault-x86_64.dmg` with deterministic SHA-256 manifests and the
+> offline `verify-release.sh` pre-install gate; first-install Gatekeeper
+> approval is the Apple-supported **Open Anyway** flow (the warning is
+> the contract, not a failure); updates are controlled manual
+> replacement (`acceptance/macos-controlled-update-contract.md`); the
+> keychain question moved to the ad-hoc identity form
+> (`acceptance/macos-keychain-requalification-plan.md`). New CI modes:
+> `zero-cost-release`, `smappservice-lifecycle`, `keychain-lifecycle`.
+> This stage's structural-signing and hardened-lifecycle evidence
+> carries over by construction (same mechanics, honestly relabeled).
 1. run 34167622193 @ `1e2a5cd` — MY OWN test was shape-flawed: asserted
    `lexical(root/Contents/MacOS) == lexical(exe_dir)`, which only holds
    when the exe truly sits at `<root>/Contents/MacOS` (not for a test

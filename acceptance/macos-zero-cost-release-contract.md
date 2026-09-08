@@ -1,0 +1,251 @@
+# MediVault macOS — Zero-cost release contract
+
+Status: **AUTHORED** — the governing contract for the macOS release model
+adopted by owner decision on 2026-09-08 (this document records and
+implements it). CI stages: `zero-cost-release`, `smappservice-lifecycle`,
+`keychain-lifecycle` (macos-build.yml). Final status target:
+**ZERO-COST-RELEASE-CANDIDATE** (NOT Apple-notarized-production).
+
+## 1. Owner decision record (2026-09-08)
+
+> CHANGE RELEASE STRATEGY — ZERO-COST MACOS DISTRIBUTION.
+> I will NOT purchase an Apple Developer Program membership.
+> Therefore Developer ID signing and Apple notarization are NOT
+> requirements for this release. Do NOT ask for Apple credentials again.
+
+Consequences, binding for every artifact and document in this lane:
+
+| Property | Value |
+|---|---|
+| Apple Developer Program membership | NONE (no credentials will be requested again) |
+| Developer ID signing | NOT AVAILABLE — never faked |
+| Apple notarization | NOT AVAILABLE — never faked |
+| Distribution | DIRECT, to a small number of known doctor Macs |
+| First-install Gatekeeper behavior | user explicitly approves via Apple's supported **System Settings → Privacy & Security → Open Anyway → Open** flow |
+| Gatekeeper itself | NEVER disabled, globally or per-machine |
+
+## 2. Security disclosure (mandatory, shipped, verbatim facts)
+
+Every release ships `SECURITY-DISCLOSURE.md` on the DMG volume root and
+states these exact greppable facts:
+
+```
+APPLE DEVELOPER ID: NO
+APPLE NOTARIZATION: NO
+GATEKEEPER AUTOMATIC TRUST: NO
+FIRST INSTALL MANUAL APPROVAL: YES
+```
+
+This release must NEVER be labeled "Apple-verified", "Apple-approved",
+"Developer-ID-signed", or "notarized". CI step `build-release-dmg.sh`
+fails closed if the disclosure is missing any fact; `verify-release.sh`
+re-checks it before installation.
+
+## 3. Build model (kept — unchanged from the proven stages)
+
+* native `arm64` and native `x86_64` builds (no fat, no Rosetta);
+* macOS >= 13.0 (`MACOSX_DEPLOYMENT_TARGET=13.0`, vtool-verified);
+* Hardened-Runtime-compatible bundle: every Mach-O signed with
+  `--options runtime` (zero entitlements — the frozen
+  NODE_ALLOW_JIT=not-needed proof), inside-out (deepest-first, root
+  `.app` last — never `codesign --deep`);
+* **ad-hoc signatures are THE release signature** (`sign-production.sh`
+  `MV_ADHOC_RELEASE=1`): integrity + Hardened Runtime, no identity;
+* relocatable runtime (`@executable_path`/`@loader_path`, bundle-relative
+  config, verified relocation);
+* Model A localhost security (FROZEN GREEN, run 34240532237: API
+  127.0.0.1:3001 only, PostgreSQL 127.0.0.1:55432 only, strict Origin,
+  auth/session/CSRF, fail-closed on unsafe configs);
+* SMAppService LaunchAgent (user-scoped, `BundleProgram`, plist shipped
+  in-bundle);
+* Keychain secret store (`dev.medivault` service, 5 accounts,
+  explicit first-run bootstrap, never-overwrite, fail-closed on missing);
+* PostgreSQL/data-preservation semantics (FROZEN:
+  reinstall-acceptance + provision-lifecycle).
+
+Final artifacts per release:
+
+* `MediVault-arm64.dmg` + `MediVault-arm64.dmg.sha256` +
+  `MediVault-arm64.manifest.txt`
+* `MediVault-x86_64.dmg` + `MediVault-x86_64.dmg.sha256` +
+  `MediVault-x86_64.manifest.txt`
+* `verify-release.sh` (the offline pre-install verification tool) +
+  `SECURITY-DISCLOSURE.md` + `FIRST-INSTALL.md` (also on the volumes)
+
+## 4. Integrity manifest (deterministic, offline-verifiable)
+
+`macos/scripts/release-manifest.sh` generates, from the REAL mounted DMG:
+
+* the DMG's own SHA-256;
+* EVERY file on the volume: SHA-256, byte size, kind (`macho` for the
+  executable inventory — desktop binary, supervisor, SMAppService
+  helper, Node runtime, every PostgreSQL binary, Prisma native engines —
+  or `file`), volume-relative path;
+* every symlink (target recorded);
+* metadata: arch, app version/build/bundle id, desktop-binary minOS.
+
+Determinism: LC_ALL=C path ordering; the same DMG yields byte-identical
+manifests. The manifest proves INTEGRITY, never identity.
+
+## 5. Pre-install verification (offline, no internet service)
+
+`macos/scripts/verify-release.sh` (run by CI and by the doctor Mac):
+
+1. re-hashes the DMG and every volume file against the manifest —
+   fail-closed on any missing/extra/changed byte;
+2. strict-verifies every Mach-O's ad-hoc signature + the `.app` root;
+3. checks the Hardened Runtime flag on the key binaries;
+4. checks arch + minOS + drag layout;
+5. checks the shipped disclosure facts.
+
+OFFLINE BY CONSTRUCTION: the tool invokes no network command; it
+self-audits this (`--offline-audit`) and CI asserts the audit. Only
+local macOS tools are used (`hdiutil`, `shasum`, `file`, `codesign`,
+`vtool`, `PlistBuddy`).
+
+## 6. Gatekeeper acceptance contract (zero-cost form)
+
+**The initial Gatekeeper warning is NOT a product failure.** PASS means
+ALL of:
+
+1. fresh Mac / clean user + quarantined DMG acquisition (quarantine flag
+   present — the harness fails closed otherwise);
+2. mount → Finder drag to `/Applications` (quarantine inherited);
+3. first launch attempt → the EXPECTED Gatekeeper
+   unidentified-developer warning/block occurs;
+4. the user follows Apple's supported manual override
+   (System Settings → Privacy & Security → **Open Anyway** → **Open**);
+5. the app launches;
+6. every subsequent launch works normally (no warning);
+7. Gatekeeper remains enabled throughout (no `spctl --master-disable`,
+   no security-policy disabling, no quarantine removal, no fake/stolen/
+   shared certificates, no fake notarization, no certificate-trust
+   tricks).
+
+Details: `acceptance/macos-gatekeeper-acceptance-plan.md` (zero-cost
+revision). Interactive proof: `macos/scripts/interactive-acceptance.sh`
+sections 0–4.
+
+## 7. SMAppService proofs
+
+**CI-provable contract** (`smappservice-lifecycle` mode, hosted macOS
+runners): helper `self-test` (bundle identity + shipped plist);
+`status` = `notRegistered` before registration; `register()` succeeds
+under the ad-hoc release signature (empirically proven — if Apple
+restricts ad-hoc SMAppService registration, the failure is captured
+verbatim and escalated BEFORE any architecture change); after
+registration the status is one of the four documented values with the
+launchd job present (`launchctl print gui/<uid>/dev.medivault.supervisor`);
+when `enabled`, launchd itself starts the supervisor (RunAtLoad) to
+healthy, the backend's parent is launchd (independence from any desktop
+/CI shell), KeepAlive restarts a SIGKILLed supervisor back to healthy;
+`unregister` returns to `notRegistered` with the job and processes gone.
+
+**Interactive contract** (clean Mac, `interactive-acceptance.sh`
+sections 5–10): Login Items approval UI (via
+`openSystemSettingsLoginItems()`), backend starts through launchd,
+desktop closes while the backend remains alive, reopen succeeds,
+logout/login returns the backend (RunAtLoad), reboot returns the
+backend. SMAppService is NOT replaced by legacy `launchctl`
+production installation unless current Apple behavior empirically proves
+it cannot work under this release model.
+
+## 8. Keychain lifecycle proofs
+
+**CI-provable contract** (`keychain-lifecycle` mode): first-run
+bootstrap creates exactly the 5 `dev.medivault` items (values never
+printed); supervisor run #1 with `secrets.source: "keychain"` reaches
+healthy (secret read #1, via SCRAM-authenticated PostgreSQL + API
+/health + /ready); graceful SIGTERM (exit 0, zero orphans); supervisor
+run #2 from a FRESH process re-reads the keychain (secret read #2) and
+reaches healthy; bootstrap-secrets idempotence (5× "already present",
+never overwrites); deleting one item makes the next supervisor run FAIL
+CLOSED naming the account (no env fallback, no API start). Cross-build
+reads under the ad-hoc identity are proven by the frozen
+reinstall-acceptance CASE 3b (replacement build reads the 5 items).
+
+**Interactive contract** (clean Mac): initial provisioning → secret
+read → supervisor restart → secret read again → logout/login → secret
+read again → reboot → secret read again → app replacement/update read.
+The indirect proof discipline is unchanged: the supervisor re-reads the
+items at every start; a healthy API after restart proves the read; the
+harness never extracts keychain values.
+
+**Ad-hoc identity stability rule (binding):** if ad-hoc code identity
+causes Keychain authorization instability between builds (prompts that
+cannot be satisfied, denied reads), the exact behavior is recorded and
+escalated BEFORE any change. Keychain ACLs are NEVER loosened merely to
+make a test pass.
+
+## 9. Controlled update model (no silent automatic updater)
+
+Because there is no Developer ID identity and no notarization, there is
+NO silent automatic updater. Updates are controlled manual replacement:
+
+1. verify the NEW DMG offline (`verify-release.sh` + its manifest) —
+   GREEN required before anything is touched;
+2. stop owned processes safely (quit MediVault; the supervisor shuts
+   down PostgreSQL gracefully — SIGTERM, exit 0, zero orphans);
+3. replace `MediVault.app` (Finder drag-replace);
+4. preserve Application Support, PostgreSQL data, Keychain items (the
+   frozen reinstall-acceptance CASE 3a/3b semantics);
+5. restart (launch once; re-register if macOS dropped the Login Item);
+6. verify sentinel data (the synthetic acceptance patient is still
+   visible; the API is healthy).
+
+Preservation semantics are CI-proven by the frozen reinstall-acceptance
+mode (sentinel row count, no re-initdb, provisioned.json createdAt
+unchanged, keychain 5× already-present). The interactive harness
+section 11 executes the same flow on the doctor Mac.
+
+## 10. ZERO-COST-RELEASE-CANDIDATE criteria
+
+| # | Requirement | Evidence |
+|---|---|---|
+| 1 | ARM64 artifact GREEN | `zero-cost-release` arm64 run |
+| 2 | Intel artifact GREEN | `zero-cost-release` x64 run |
+| 3 | SHA-256 integrity GREEN | manifest + verify-release steps in the same runs |
+| 4 | ad-hoc signature verification GREEN | verify-signatures + verify-release steps |
+| 5 | Model A GREEN | FROZEN: localhost-security run 34240532237 |
+| 6 | SMAppService CI-provable contract GREEN | `smappservice-lifecycle` runs (both arches) |
+| 7 | Keychain CI-provable contract GREEN | `keychain-lifecycle` runs (both arches) |
+| 8 | install/reinstall/uninstall preservation GREEN | FROZEN: reinstall-acceptance |
+| 9 | interactive acceptance harness READY | `interactive-acceptance.sh` (zero-cost revision) + docs |
+
+When 1–9 hold, the status is ZERO-COST-RELEASE-CANDIDATE and the
+remaining proof is exactly the interactive acceptance on ONE clean Mac
+(§11).
+
+## 11. What remains for the owner on ONE clean interactive Mac
+
+1. Acquire the release artifacts (DMG + `.manifest.txt` + `verify-release.sh`)
+   from the green CI run, onto the clean Mac, quarantine-preserving
+   (browser download or `curl` from a web URL).
+2. `bash verify-release.sh <dmg> <manifest>` → VERIFY-RELEASE-GREEN.
+3. `bash macos/scripts/interactive-acceptance.sh DMG=<dmg> MANIFEST=<manifest> EXPECTED_ARCH=<arm64|x86_64>`
+   and follow the printed HUMAN steps: the Gatekeeper warning +
+   Open-Anyway approval (section 4), Login Items approval (section 5),
+   sentinel patient (section 6), quit/reopen (7–8), logout/login (9),
+   reboot (10), optional controlled update (11), uninstall check (12).
+4. Record the keychain prompt behavior during section 11 (prompted or
+   not) — the ad-hoc identity stability evidence.
+
+## 12. Prohibited (never, under this model)
+
+`spctl --master-disable`; security-policy disabling; automatic or manual
+quarantine removal as part of acceptance; fake Developer ID
+certificates; stolen/shared certificates; fake notarization;
+certificate trust tricks presented as Apple trust; labeling the release
+Apple-verified/Apple-approved/Developer-ID-signed/notarized; silent
+automatic updates; touching the Windows tree; merging to main;
+modifying the dashboard; re-running the ten frozen CI modes.
+
+## 13. Freeze evidence (filled at first GREEN)
+
+- [ ] `zero-cost-release` arm64 run: ______ (SHA ______)
+- [ ] `zero-cost-release` x64 run: ______ (SHA ______)
+- [ ] `smappservice-lifecycle` arm64 run: ______
+- [ ] `smappservice-lifecycle` x64 run: ______
+- [ ] `keychain-lifecycle` arm64 run: ______
+- [ ] `keychain-lifecycle` x64 run: ______
+- [ ] Status: ZERO-COST-RELEASE-CANDIDATE declared on ______

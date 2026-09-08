@@ -1,6 +1,13 @@
 # MediVault macOS — Apple credential contract (names/types ONLY)
 
-Status: **AUTHORED** — nothing is requested yet. This document defines
+> **SUPERSEDED (2026-09-08, owner decision):** the zero-cost release
+> model (acceptance/macos-zero-cost-release-contract.md) means NO Apple
+> Developer Program membership, NO Developer ID signing, NO
+> notarization. No Apple credentials will be requested again. This
+> document is retained as the exact specification IF the owner ever
+> reverses that decision; nothing in it is active.
+
+Status: **SUPERSEDED (zero-cost model)** — nothing is requested, nothing will be. This document defines
 exactly what the owner must later provide to unlock the production half of
 the pipeline (signing + notarization). NO values are ever printed,
 committed, mirrored, or written to the public repo.

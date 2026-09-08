@@ -33,22 +33,40 @@
 #
 #   # structural CI mode:
 #   APP_ROOT=... MV_ADHOC_STRUCTURAL=1 MV_SIGN_IDENTITY=- bash macos/scripts/sign-production.sh
+#
+#   # ZERO-COST RELEASE mode (owner decision 2026-09-08, no Apple Developer
+#   # Program membership): the ad-hoc signature IS the release signature.
+#   # Same inside-out order, same --options runtime, same entitlement
+#   # policy — honestly labeled, never phrased as Apple trust:
+#   APP_ROOT=... MV_ADHOC_RELEASE=1 MV_SIGN_IDENTITY=- bash macos/scripts/sign-production.sh
 # =============================================================================
 set -euo pipefail
+
+die() { echo "::error::sign-production: $*" >&2; exit 1; }
 
 APP_ROOT="${APP_ROOT:?APP_ROOT (built MediVault.app) is required}"
 MV_SIGN_IDENTITY="${MV_SIGN_IDENTITY:?MV_SIGN_IDENTITY is required (Developer ID Application: NAME (TEAMID) for production; - with MV_ADHOC_STRUCTURAL=1 for the CI structural proof)}"
 MV_NODE_ALLOW_JIT="${MV_NODE_ALLOW_JIT:-0}"
-ADHOC=0
-if [ "${MV_ADHOC_STRUCTURAL:-0}" = "1" ] || [ "$MV_SIGN_IDENTITY" = "-" ]; then
-  ADHOC=1
-  [ "${MV_ADHOC_STRUCTURAL:-0}" = "1" ] || die "refusing ad-hoc signing without the explicit MV_ADHOC_STRUCTURAL=1 acknowledgement"
+# ADHOC_MODE: "" (Developer ID production), "structural" (CI structural
+# proof), "release" (the zero-cost release model — the ad-hoc signature is
+# THE release signature per acceptance/macos-zero-cost-release-contract.md).
+ADHOC_MODE=""
+if [ "${MV_ADHOC_RELEASE:-0}" = "1" ] && [ "${MV_ADHOC_STRUCTURAL:-0}" = "1" ]; then
+  die "refusing ambiguous ad-hoc mode: set MV_ADHOC_RELEASE=1 OR MV_ADHOC_STRUCTURAL=1, not both"
+fi
+if [ "${MV_ADHOC_RELEASE:-0}" = "1" ]; then
+  ADHOC_MODE="release"
+  [ "$MV_SIGN_IDENTITY" = "-" ] || die "MV_ADHOC_RELEASE=1 requires MV_SIGN_IDENTITY=- (ad-hoc)"
+  echo "::notice::sign-production: ZERO-COST RELEASE MODE — the ad-hoc signature IS the release signature (owner-approved model). NOT Developer ID, NOT notarized, NOT Gatekeeper-accepted; first-install manual approval is the documented contract" >&2
+elif [ "${MV_ADHOC_STRUCTURAL:-0}" = "1" ] || [ "$MV_SIGN_IDENTITY" = "-" ]; then
+  ADHOC_MODE="structural"
+  [ "${MV_ADHOC_STRUCTURAL:-0}" = "1" ] || die "refusing ad-hoc signing without the explicit MV_ADHOC_STRUCTURAL=1 acknowledgement (or MV_ADHOC_RELEASE=1 for the zero-cost release model)"
   echo "::notice::sign-production: STRUCTURAL AD-HOC MODE — this is a CI structural proof, NOT production signing" >&2
 fi
+ADHOC=0; [ -n "$ADHOC_MODE" ] && ADHOC=1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-die() { echo "::error::sign-production: $*" >&2; exit 1; }
 [ -d "$APP_ROOT/Contents" ] || die "$APP_ROOT is not an app bundle root"
 command -v codesign >/dev/null 2>&1 || die "codesign not found (run on macOS with Command Line Tools)"
 
@@ -97,7 +115,10 @@ done < "$MANIFEST_TSV"
 # ---------------------------------------------------------------------------
 cs "$MV_SIGN_IDENTITY" "$APP_ROOT" ""
 
-if [ "$ADHOC" = "1" ]; then
+if [ "$ADHOC_MODE" = "release" ]; then
+  echo "SIGN-ZERO-COST-RELEASE-GREEN ($SIGNED nested + root; ad-hoc + Hardened Runtime, inside-out; this IS the release signature per the zero-cost release contract)" >&2
+  echo "::notice::zero-cost release: integrity-signed, NOT identity-signed; Gatekeeper first-launch warning is expected (Open Anyway flow)" >&2
+elif [ "$ADHOC_MODE" = "structural" ]; then
   echo "SIGN-STRUCTURAL-ADHOC-GREEN ($SIGNED nested + root; order+entitlements+runtime structurally proven)" >&2
   echo "::notice::ad-hoc output is NOT production-signed; Gatekeeper GREEN is NOT claimed here" >&2
 else

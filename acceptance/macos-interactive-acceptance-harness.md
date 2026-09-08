@@ -1,54 +1,78 @@
-# MediVault macOS — Interactive acceptance harness (doc)
+# MediVault macOS — Interactive acceptance harness (ZERO-COST revision)
 
-Status: **READY** (the harness is authored and automated as far as
-honestly possible; it RUNS on the doctor/clean Mac once a
-Developer-ID-signed, notarized, stapled DMG exists).
+Status: **READY (zero-cost form)** — runs on the doctor/clean Mac
+against a zero-cost release DMG (ad-hoc signed, not notarized). Governing
+contract: `acceptance/macos-zero-cost-release-contract.md`.
 
-Script: `macos/scripts/interactive-acceptance.sh` (run ON the Mac,
-`DMG=<path> EXPECTED_ARCH=arm64|universal-check bash …`).
+Script: `macos/scripts/interactive-acceptance.sh`
+(run ON the Mac):
 
-## Coverage map (directive §10 → harness sections)
+```sh
+DMG=/path/MediVault-arm64.dmg \
+MANIFEST=/path/MediVault-arm64.manifest.txt \
+EXPECTED_ARCH=arm64 \
+bash macos/scripts/interactive-acceptance.sh
+```
 
-| Directive requirement | Harness section | Automated? |
+The harness sits at the STOP-GATE required by the campaign: everything
+that genuinely needs interactive macOS UI (Gatekeeper dialog, Login
+Items approval, logout/login, reboot, Finder drag) is prepared here and
+executed by the operator; hosted CI proves the CI-provable contracts in
+the `zero-cost-release` / `smappservice-lifecycle` / `keychain-lifecycle`
+modes.
+
+## Coverage map (directive → harness sections)
+
+| Requirement | Harness section | Automated? |
 |---|---|---|
-| fresh/quarantined DMG download | 0 (quarantine flag MUST be present on the DMG path — the harness fails if acquisition dropped it) + doc note: acquire via browser download or `curl` from a web URL (quarantine is applied to downloaded files) | AUTO |
-| mount DMG | 2 | AUTO |
-| Finder drag to Applications | 2 (layout verified; the drag itself is human) | HUMAN+AUTO |
-| double-click launch | 4 | HUMAN (observes the window) |
-| Gatekeeper | 1 (syspolicy_check/spctl pre-flight) + 4 (real first-launch) | AUTO+HUMAN |
-| SMAppService registration | 5 (`mediavault-launchagent status` == `enabled`) | AUTO |
-| Login Items approval | 4/5 (the app's Background panel drives it; approval is human) | HUMAN |
-| backend starts | 5 (/health) | AUTO |
-| PostgreSQL starts | 6 (pg_isready 127.0.0.1) | AUTO |
-| /health, /ready | 5 | AUTO |
-| create SYNTHETIC sentinel record | 6 (synthetic marker row / synthetic test patient — **no real patient data**) | HUMAN (UI) |
-| close desktop → backend remains | 7 (supervisor pgrep + /health after Cmd+Q) | AUTO |
-| reopen desktop → sentinel persists | 8 | AUTO+HUMAN |
-| logout/login → backend returns, sentinel persists | 9 | AUTO+HUMAN |
-| reboot → backend returns, sentinel persists | 10 | AUTO+HUMAN |
-| replace app with newer build → sentinel persists | 11 | AUTO+HUMAN |
-| uninstall app only → data remains | 12 (App Support + PG_VERSION + keychain items + no orphan supervisor) | AUTO |
+| quarantined DMG acquisition | 0 (quarantine MUST be present — fail-closed) | AUTO |
+| offline pre-install verification (hashes + signatures, no network) | 1b (verify-release.sh) | AUTO |
+| machine-level assessment recorded (expected: NOT trusted) | 1 (info only — never a failure) | AUTO |
+| mount DMG + layout + shipped disclosure | 2 | AUTO |
+| Finder drag to /Applications (quarantine-preserving) | 2 (the drag is human — cp is explicitly rejected) | HUMAN+AUTO |
+| installed app ad-hoc + Hardened Runtime signature | 3 | AUTO |
+| first launch: EXPECTED Gatekeeper warning | 4 (expected block — the CONTRACT) | HUMAN (observes) |
+| System Settings → Privacy & Security → Open Anyway → Open | 4 | HUMAN |
+| app launches after the manual approval | 4 | AUTO (process check) |
+| subsequent launch works normally (no warning) | 4 | HUMAN+AUTO |
+| SMAppService status model + Login Items approval | 5 (status + openSystemSettingsLoginItems + approval) | AUTO+HUMAN |
+| backend starts through launchd (parent = launchd) | 5 | AUTO |
+| PostgreSQL up + synthetic sentinel | 6 | AUTO+HUMAN |
+| close desktop → backend remains | 7 | AUTO |
+| reopen desktop | 8 | AUTO+HUMAN |
+| logout/login → backend returns, supervisor RESTARTED, keychain re-read | 9 (restart marker + /health) | AUTO+HUMAN |
+| reboot → backend returns, supervisor RESTARTED, keychain re-read | 10 | AUTO+HUMAN |
+| controlled update: verify new DMG offline first, replace, preserve | 11 (verify-release.sh + replacement + keychain prompt note) | AUTO+HUMAN |
+| uninstall = app only; Application Support + cluster + 5 keychain items preserved | 12 | AUTO |
 
 ## Rules baked into the harness
 
-* **PASS/FAIL output everywhere**; exit code reflects automated failures.
-* **Quarantine is NEVER removed** for acceptance. The only quarantine
-  removal in the file is inside the clearly-marked DEVELOPMENT DIAGNOSTIC
-  block, gated behind `MV_DEV_DIAGNOSTIC=1`, off by default, and it only
-  ever touches a dev copy.
-* HUMAN steps print their EXPECTED outcome — the operator confirms; the
-  harness never auto-passes a human step.
-* The sentinel is synthetic (`INTERACTIVE_ACCEPTANCE_<epoch>` /
-  a clearly-marked test patient) — no real patient data.
+* **The Gatekeeper warning is expected**: PASS means warning observed +
+  Apple's supported Open-Anyway override + subsequent normal launch
+  (zero-cost Gatekeeper acceptance contract).
+* **PASS/FAIL everywhere**; exit code reflects automated failures; human
+  steps print EXPECTED outcomes and are operator-confirmed, never
+  auto-passed.
+* **Quarantine is NEVER removed** (the only quarantine-touching block is
+  the disabled `MV_DEV_DIAGNOSTIC=1` development diagnostic).
+* **Offline by construction**: the only sub-tool invoked is
+  `verify-release.sh` (self-audited to contain no network command).
+* The sentinel is synthetic (a clearly-marked test patient) — no real
+  patient data.
 * Secrets stay in the keychain: the harness never extracts keychain
-  values; it proves secret usability indirectly through the running
-  supervisor/API (the same discipline as the frozen CI stages).
+  values; readability is proven indirectly through the running
+  supervisor/API (the same discipline as the frozen CI stages). If a
+  keychain authorization problem appears during the update section, the
+  operator records the exact prompt/error (ad-hoc identity stability
+  evidence) and does NOT weaken protections to pass.
+* Supervisor restart proofs use a process marker (PID + lstart) around
+  logout/login and reboot, so "supervisor restarted → keychain re-read"
+  is explicit, not implied.
 
 ## Environment notes
 
-* Runs from the repo checkout (or any copy of the script) on the target
-  Mac; needs only macOS + Xcode CLT (`xcrun`, `codesign`, `hdiutil`,
-  `spctl`/`syspolicy_check`, `security`, `pgrep`, `curl`).
-* The OFFLINE-with-stapled-ticket check and the clean/clean-machine
-  no-cached-trust check belong to the Gatekeeper acceptance plan
-  (separate document) — this harness covers the interactive UX flow.
+Runs on the target Mac; needs macOS + Xcode CLT (`xcrun`, `codesign`,
+`hdiutil`, `syspolicy_check`/`spctl`, `security`, `vtool`, `pgrep`,
+`curl`, `python3`). `NEW_DMG`/`NEW_MANIFEST` env enables the controlled
+update section; `KEYCHAIN_PROMPT_NOTE=prompted|not prompted` records the
+keychain authorization behavior during replacement.
