@@ -6006,12 +6006,13 @@ jobs:
                         -type f -name '*.dylib.node' -print0 2>/dev/null)
           echo "prisma install-IDs repaired: $REPAIRED"
           # Fail-closed residual scan: NO shipped Mach-O may carry an
-          # absolute build-path install ID or dependency afterwards. All
-          # otool -L lines are scanned (for dylibs line 1 is the install
-          # ID — post-repair it must be @loader_path; for executables all
-          # lines are deps): any absolute non-system path = violation.
+          # absolute build-path install ID or dependency afterwards.
+          # otool -L line 1 is the HEADER (the inspected file's own path +
+          # ':') — skip exactly that one line; line 2 is the install ID for
+          # dylibs (post-repair: @loader_path) and the lines after are the
+          # dependencies. Any absolute non-system path = violation.
           LEFT=$(find "$APP" -type f -print0 | xargs -0 file 2>/dev/null | grep 'Mach-O' | cut -d: -f1 | while read -r m; do
-            otool -L "$m" 2>/dev/null | sed 's/(.*//' | grep -E '^/' | grep -vE '^/usr/lib/|^/System/' || true
+            otool -L "$m" 2>/dev/null | tail -n +2 | sed 's/(.*//' | grep -E '^/' | grep -vE '^/usr/lib/|^/System/' || true
           done | sort -u)
           if [ -n "$LEFT" ]; then
             echo "::error::absolute (non-system) Mach-O references remain:"
