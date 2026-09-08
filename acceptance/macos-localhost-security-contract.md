@@ -1,11 +1,14 @@
 # MediVault — macOS Production Localhost Security Contract (MODEL A)
 
-Status: **APPROVED — the production localhost security contract** (product
-decision received from the owner, 2026-09-08). **IMPLEMENTED** (2026-09-08,
-before Apple credentials — this work requires none) with the targeted CI
-mode `localhost-security` wired for first-red dispatch. Freeze evidence
-(run IDs, first-red ledger) is recorded in §6 when the lane is GREEN on
-both architectures. This document supersedes the RECOMMENDATION status of
+Status: **FROZEN GREEN — the production localhost security contract**
+(product decision received from the owner, 2026-09-08; IMPLEMENTED the
+same day, before Apple credentials — this work requires none; the targeted
+CI mode `localhost-security` ran the full first-red discipline and is
+**FROZEN GREEN on both architectures** — run 34240532237 @ private
+`752d936`, see §6 for the freeze evidence and the five-run first-red
+ledger, including one genuine product find: the comma-joined Set-Cookie
+header that silently dropped `mvlt_csrf`/`mvlt_refresh` for every real
+HTTP client). This document supersedes the RECOMMENDATION status of
 `acceptance/macos-localhost-security-recommendation.md` (the analysis
 record). Model A compliance is NECESSARY, not sufficient, for any
 production-ready claim (§7).
@@ -211,14 +214,62 @@ and delegated CLEAN provisioning at the SHIPPED production ports
 Plus the supervisor unit tests (17, incl. the loopback gate) and the
 Model A unit tests (24) run first (fail fast).
 
-## 6. Freeze evidence (to be recorded at first GREEN — appended, never rewritten)
+## 6. Freeze evidence (recorded at first GREEN — appended, never rewritten)
 
-* Status: **AUTHORED — awaiting first dispatch** (implementation complete
-  and locally validated; the dispatch requires the GitHub credentials
-  that the restored sandbox does not yet carry — the targeted run is the
-  next credentialed action).
-* First-red ledger: (record each run ID, SHA, and the minimal fix).
-* GREEN run: (record run ID + both arch job IDs).
+* Status: **FROZEN GREEN** — `localhost-security` = the Model A contract proven
+  on real macOS runners of BOTH architectures (macos-26 arm64 + macos-26-intel
+  x64), 2026-09-08.
+* GREEN run: **34240532237** @ mirror `8c9a1e3` = private `752d936`
+  (`7clan/medivault-ci-public`, mode `localhost-security`, ONE SHA + ONE MODE
+  = ONE RUN).
+  * arm64 job **102109235692** — 33/34 steps success, 0 failed, 1 skipped —
+    all twelve `LS-T1…LS-T12` assertions GREEN (T2 `127.0.0.1:3001 only`;
+    T3 `127.0.0.1:55432 only`; T5 `TRUSTED_LOCAL_TLS_TERMINATION: ABSENT`;
+    T6 `TRUST-PROXY: FALSE`; T8 `HOSTILE-ORIGIN: REJECTED`; T11
+    `UNSAFE-CONFIG: FAILS CLOSED`; T12 graceful SIGTERM, zero postgres
+    orphans, postmaster.pid gone).
+  * x64 job **102109236184** — 33/34 steps success, 0 failed, 1 skipped —
+    the same twelve assertions GREEN.
+* First-red ledger (each red: first proven failure only, minimal private fix,
+  push → sanitized sync → new SHA → exactly one new run):
+  1. Run 34235952324 @ 1dde2ad (= 967b400) — vitest 4 writes ANSI SGR codes
+     into piped output on runners; the `Tests N passed (N)` summary grep
+     failed although all 24 unit tests passed on both arches. Fix 876dc43:
+     `NO_COLOR=1` + assertions grep an ANSI-stripped copy (proven against the
+     raw failing-run bytes).
+  2. Run 34236597907 @ 465dc4e (= 876dc43) — lsof ORs the process selection
+     (`-p`) with the network selection (`-iTCP`) unless `-a` is given, so the
+     T4 per-pid loop read kqueue/pipe fields as bogus addresses. Fix eb90bd2:
+     `lsof -a -nP -p … -iTCP -sTCP:LISTEN` + awk extracts only from true
+     `(LISTEN)` lines (proven on mock shapes + negative control).
+  3. Run 34237523921 @ 96d3101 (= eb90bd2) — GENUINE PRODUCT FIND:
+     `setAuthCookies`/`clearAuthCookies` joined all three auth cookies into
+     ONE comma-separated `Set-Cookie` header; every real HTTP client parses
+     that as a single cookie, so `mvlt_refresh` and `mvlt_csrf` were never
+     actually delivered over the wire (the test suite's lenient `', '`
+     splitting masked it; the frontend always expected them). Fix 5d1569f:
+     pass the array to `reply.header('Set-Cookie', …)` — three separate
+     headers, wire-proven; zero test regressions (baseline-diffed).
+  4. Run 34238773249 @ 413180e (= 5d1569f) — two T9/T10 curls declared
+     `Content-Type: application/json` without a body; Fastify answers 400
+     (empty JSON body) before the route's origin/CSRF gates run. Fix 10eaaed:
+     `-d '{}'` on both calls (matching the negative control and the real
+     frontend); premise proven locally against the same Fastify version.
+  5. Run 34239760593 @ 9b35dca (= 10eaaed) — test-sequencing flaw: the
+     successful CSRF-positive logout revokes the session, so the
+     hostile-origin call that followed was 401'd by the auth guard (proving
+     nothing about the origin gate). Fix 752d936: the hostile-origin proof
+     now runs BEFORE the logout, with a fully-live session; the route's own
+     wiring (`[requireAuth, csrfPreHandler]`, CsrfError → 403) was verified
+     before the reorder.
+* Frozen-stage safety: the ten previously frozen modes were NOT rerun (each
+  historical GREEN stands as history; all other mode jobs in the run are
+  skipped by the ONE-MODE dispatch guard). The single shared-code delta of
+  this campaign (5d1569f, the three Set-Cookie headers) is additive transport
+  correctness — same cookies, same attributes, now actually deliverable —
+  with the inject-based suites unchanged and passing; per the established
+  additive pattern the developer-id-release clean build carries this delta
+  forward on both platforms.
 
 ## 7. Production-ready claim discipline
 

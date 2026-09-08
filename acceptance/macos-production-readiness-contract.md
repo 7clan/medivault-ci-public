@@ -16,8 +16,10 @@ altered):
 > open by this stage ("production TLS loopback contract unresolved")
 > was resolved by the owner's product decision (MODEL A — loopback-only
 > HTTP, no TLS terminator, no trusted local termination) and is now a
-> landed, tested contract: see `acceptance/macos-localhost-security-contract.md`
-> and the targeted `localhost-security` CI mode. The one Model A
+> landed, **FROZEN GREEN** contract: see
+> `acceptance/macos-localhost-security-contract.md` (§6: run
+> 34240532237, both architectures, private `752d936`) and the targeted
+> `localhost-security` CI mode. The one Model A
 > exception this stage's tree carried (the supervisor's
 > `TRUSTED_LOCAL_TLS_TERMINATION=true` injection, `supervise.rs:209` @
 > `32ded2d`) is documented there (§3) and remediated by that lane; this
