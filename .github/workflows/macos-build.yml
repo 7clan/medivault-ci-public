@@ -6810,7 +6810,13 @@ jobs:
           WILD_OURS=$(echo "$WILD" | grep -E ":(3001|55432)$" || true)
           [ -z "$WILD_OURS" ] || { echo "::error::wildcard listener on a contract port:"; echo "$WILD_OURS"; exit 1; }
           for pid in "$API_PID" "$PG_PID"; do
-            OWNED=$(lsof -nP -p "$pid" -iTCP -sTCP:LISTEN 2>/dev/null | tail -n +2 | awk '{print $(NF-1)}' | sed 's/ (LISTEN)//' || true)
+            # First-red fix (run 34236597907, both arches): without -a, lsof
+            # ORs the process selection (-p) with the network selection
+            # (-iTCP), so the pid's non-TCP fds (kqueues, pipes — 'count=0,',
+            # 'unit', '0t0' junk fields) pollute the address column and the
+            # non-loopback grep trips. -a ANDs the selectors; the awk also
+            # extracts the address ONLY from true '(LISTEN)' lines.
+            OWNED=$(lsof -a -nP -p "$pid" -iTCP -sTCP:LISTEN 2>/dev/null | tail -n +2 | awk '$NF=="(LISTEN)"{print $(NF-1)}' || true)
             [ -z "$OWNED" ] && continue
             BAD=$(echo "$OWNED" | grep -v '^127\.0\.0\.1:' || true)
             [ -z "$BAD" ] || { echo "::error::pid $pid owns a NON-loopback listener (0.0.0.0/::/LAN):"; echo "$BAD"; exit 1; }
