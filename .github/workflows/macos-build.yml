@@ -9142,17 +9142,22 @@ jobs:
             echo "--- supervisor.log:"; tail -30 "$HOME/Library/Logs/MediVault/supervisor.log" 2>/dev/null || true
             exit 1
           fi
-          grep -q 'VALID_EXISTING' "$HOME/Library/Logs/MediVault/provision.log" || {
-            echo "::error::run 2 did not classify the cluster VALID_EXISTING (data preservation broken?)"
-            tail -20 "$HOME/Library/Logs/MediVault/provision.log" 2>/dev/null || true
-            exit 1
-          }
+          # The supervisor recognizes an already-provisioned cluster ITSELF
+          # (PG_VERSION in PGDATA — supervise.rs cluster_provisioned) and does
+          # NOT re-invoke the provisioner (VALID_EXISTING is the provisioner's
+          # classification when invoked explicitly, e.g. reinstall CASE 3b).
+          # The restart proofs: no NEW provisioner delegation, no initdb
+          # growth, the cluster file still present, the API healthy.
+          DELEG_COUNT=$(grep -c 'delegating to the provisioner' "$HOME/Library/Logs/MediVault/supervisor.log" 2>/dev/null || echo 0)
           INITDB_AFTER=$(grep -c 'initdb' "$HOME/Library/Logs/MediVault/provision.log" 2>/dev/null || echo 0)
-          echo "initdb occurrences: $INITDB_BEFORE -> $INITDB_AFTER (must not grow)"
+          echo "provisioner delegations total: $DELEG_COUNT (expect 1 — run 1 only) — initdb: $INITDB_BEFORE -> $INITDB_AFTER (must not grow)"
           [ "$INITDB_AFTER" -le "$INITDB_BEFORE" ] || { echo "::error::the cluster was re-initialized on restart"; exit 1; }
+          [ "$DELEG_COUNT" -eq "1" ] || { echo "::error::run 2 re-invoked the provisioner (or run 1 never did)"; exit 1; }
+          PGDATA="$HOME/Library/Application Support/MediVault/PostgreSQL/17/data"
+          [ -f "$PGDATA/PG_VERSION" ] || { echo "::error::PG_VERSION gone after run 2"; exit 1; }
           CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:3001/health" || echo 000)
           echo "/health -> $CODE"; test "$CODE" = "200"
-          echo "K4-RUN2-GREEN (fresh process re-read the 5 keychain items; VALID_EXISTING; healthy; no re-initdb)"
+          echo "K4-RUN2-GREEN (fresh process re-read the 5 keychain items -> healthy; existing cluster recognized; no re-provisioning, no re-initdb)"
 
       - name: K5 graceful stop of run 2 + bootstrap idempotence (never overwrites)
         shell: bash
