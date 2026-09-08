@@ -8333,10 +8333,10 @@ jobs:
           echo "SA_STATUS=$ST" | tee /tmp/sa-status.env
           case "$ST" in
             enabled)
-              echo "SA-BRANCH=enabled" | tee -a /tmp/sa-status.env
+              echo "SA_BRANCH=enabled" | tee -a /tmp/sa-status.env
               echo "registered AND approved/running (launchd owns the job)" ;;
             requiresApproval)
-              echo "SA-BRANCH=requiresApproval" | tee -a /tmp/sa-status.env
+              echo "SA_BRANCH=requiresApproval" | tee -a /tmp/sa-status.env
               echo "registered; the Login Items approval gate is ACTIVE (the doctor approves in System Settings — the interactive harness section 5)" ;;
             notRegistered|notFound)
               echo "::error::status '$ST' after a successful register — registration did not stick"; exit 1 ;;
@@ -8507,7 +8507,7 @@ jobs:
           {
             echo "SA-ARCH: ${{ matrix.expected_uname }}"
             echo "SA-STATUS-AFTER-REGISTER: ${SA_STATUS:-unknown}"
-            echo "SA-BRANCH: ${SA-BRANCH:-unknown}"
+            echo "SA-BRANCH: ${SA_BRANCH:-unknown}"
             echo "SA-REGISTER-UNDER-ADHOC: GREEN"
             echo "SA-LAUNCHD-JOB: GREEN"
             echo "SA-KEEPALIVE: $(grep -h 'SA-KEEPALIVE-GREEN' /dev/null 2>/dev/null || echo 'branch-dependent (see job log)')"
