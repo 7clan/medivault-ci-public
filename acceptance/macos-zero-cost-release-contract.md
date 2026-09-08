@@ -1,10 +1,12 @@
 # MediVault macOS — Zero-cost release contract
 
-Status: **AUTHORED** — the governing contract for the macOS release model
-adopted by owner decision on 2026-09-08 (this document records and
-implements it). CI stages: `zero-cost-release`, `smappservice-lifecycle`,
-`keychain-lifecycle` (macos-build.yml). Final status target:
-**ZERO-COST-RELEASE-CANDIDATE** (NOT Apple-notarized-production).
+Status: **FROZEN GREEN — ZERO-COST-RELEASE-CANDIDATE** (declared
+2026-09-08; freeze evidence in §13: run 34255257006 both arches
+first-run GREEN; run 34279589309 both arches; run 34285107767 both
+arches). Adopted by owner decision on 2026-09-08. CI stages:
+`zero-cost-release`, `smappservice-lifecycle`, `keychain-lifecycle`
+(macos-build.yml). This is NOT and will never be labeled
+Apple-notarized-production.
 
 ## 1. Owner decision record (2026-09-08)
 
@@ -202,15 +204,15 @@ section 11 executes the same flow on the doctor Mac.
 
 | # | Requirement | Evidence |
 |---|---|---|
-| 1 | ARM64 artifact GREEN | `zero-cost-release` arm64 run |
-| 2 | Intel artifact GREEN | `zero-cost-release` x64 run |
-| 3 | SHA-256 integrity GREEN | manifest + verify-release steps in the same runs |
-| 4 | ad-hoc signature verification GREEN | verify-signatures + verify-release steps |
+| 1 | ARM64 artifact GREEN | run 34255257006 (arm64 job; first-run GREEN) |
+| 2 | Intel artifact GREEN | run 34255257006 (x64 job; first-run GREEN) |
+| 3 | SHA-256 integrity GREEN | run 34255257006 (manifest + offline verification + tamper negative controls) |
+| 4 | ad-hoc signature verification GREEN | run 34255257006 (verify-signatures + verify-release + Hardened Runtime flags) |
 | 5 | Model A GREEN | FROZEN: localhost-security run 34240532237 |
-| 6 | SMAppService CI-provable contract GREEN | `smappservice-lifecycle` runs (both arches) |
-| 7 | Keychain CI-provable contract GREEN | `keychain-lifecycle` runs (both arches) |
+| 6 | SMAppService CI-provable contract GREEN | run 34279589309 (both arches; 5-red ledger in §13) |
+| 7 | Keychain CI-provable contract GREEN | run 34285107767 (both arches; 1-red ledger in §13) |
 | 8 | install/reinstall/uninstall preservation GREEN | FROZEN: reinstall-acceptance |
-| 9 | interactive acceptance harness READY | `interactive-acceptance.sh` (zero-cost revision) + docs |
+| 9 | interactive acceptance harness READY | `interactive-acceptance.sh` (zero-cost revision) + 5 acceptance docs |
 
 When 1–9 hold, the status is ZERO-COST-RELEASE-CANDIDATE and the
 remaining proof is exactly the interactive acceptance on ONE clean Mac
@@ -240,12 +242,96 @@ Apple-verified/Apple-approved/Developer-ID-signed/notarized; silent
 automatic updates; touching the Windows tree; merging to main;
 modifying the dashboard; re-running the ten frozen CI modes.
 
-## 13. Freeze evidence (filled at first GREEN)
+## 13. Freeze evidence (FILLED 2026-09-08 — all runs on the public mirror,
+dispatched per ONE SHA + ONE MODE = ONE RUN; the ten frozen modes were
+never rerun — all skipped by the mode guard in every run)
 
-- [ ] `zero-cost-release` arm64 run: ______ (SHA ______)
-- [ ] `zero-cost-release` x64 run: ______ (SHA ______)
-- [ ] `smappservice-lifecycle` arm64 run: ______
-- [ ] `smappservice-lifecycle` x64 run: ______
-- [ ] `keychain-lifecycle` arm64 run: ______
-- [ ] `keychain-lifecycle` x64 run: ______
-- [ ] Status: ZERO-COST-RELEASE-CANDIDATE declared on ______
+**zero-cost-release — run 34255257006 @ private b3dc522 (FIRST-RUN
+GREEN, both arches, zero reds):**
+
+- arm64 job: `MediVault-arm64.dmg` (203,766,525 bytes),
+  SHA-256 `7059c3725b256be8860622e89e28e3d76cce3388ec7aec4953637f8eefc29b34`,
+  manifest 8733 files (15 Mach-O), 16 symlinks, arch arm64, version
+  0.1.0, bundle id `com.medivault.desktop`, minOS 13.0;
+  `ZC-NODE-ALLOW-JIT: not-needed` (zero entitlements);
+  ZC-OFFLINE-VERIFICATION GREEN (self-audit + tamper negative
+  controls: corrupted-DMG RED + forged-manifest RED);
+  ZC-HARDENED-LIFECYCLE GREEN (canonical per-user install of the exact
+  release artifact, shipped relocatable config, CLEAN provisioning,
+  /health + /ready 200 on 127.0.0.1:3001, SCRAM SELECT 1, 8 migrations,
+  graceful SIGTERM exit 0, zero orphans).
+  Artifacts retained 30 days: `medivault-zero-cost-release-arm64`
+  (DMG + .sha256 + manifest + verify-release.sh + SECURITY-DISCLOSURE.md
+  + FIRST-INSTALL.md + summary). The downloaded artifact re-hashed to
+  the exact manifest value end-to-end through GitHub's pipeline.
+- x64 job: `MediVault-x86_64.dmg`,
+  SHA-256 `1eb5a2452922d3f587227623cfa0a176443ebcbb178fc18da5164b2923b22f35`,
+  manifest 8733 files (15 Mach-O); same GREEN marker set.
+  Artifacts: `medivault-zero-cost-release-x86_64` (same set).
+
+**smappservice-lifecycle — run 34279589309 @ private d4ef774 (GREEN,
+both arches; first-red ledger of 5):**
+
+- 34261011477 @ 84fc66b-lineage b3dc522: my pre-registration assertion
+  was mis-shaped (`notRegistered` asserted; the documented fresh state
+  for a never-launched app is `notFound` — identical value in the frozen
+  production-readiness evidence). Fixed: both accepted + recorded.
+- 34265844092 @ 84fc66b: register() SUCCEEDED under the ad-hoc release
+  signature → status `enabled`; my generic `launchctl print` grep
+  expected `program = ` but the SMAppService job prints
+  `program identifier = <BundleProgram>` + `managed_by =
+  com.apple.xpc.ServiceManagement`. Fixed with the REAL (stronger)
+  job-shape assertions.
+- 34269854253 @ fed2dff: `SA-BRANCH=enabled` written into a sourced env
+  file — hyphens are invalid in bash identifiers (executed as a command,
+  exit 127). Fixed to `SA_BRANCH`.
+- 34271908241 @ c6c0bcd: EMPIRICAL FINDING — launchd/SMAppService-
+  trampolined processes are NOT visible to `pgrep -f` (pid 86833 running
+  + healthy, pgrep matched nothing). Fixed: the supervisor's
+  self-reported `.pid` (status file) + `kill -0` liveness — the honest
+  discipline.
+- 34275097624 @ 9e7f8de: SMAppService.unregister() flips status to
+  `notRegistered` immediately but the launchd job teardown is
+  ASYNCHRONOUS. Fixed: bounded 60s wait for job removal; residual job
+  acceptable only if inert (no live supervisor, not state=running).
+- Final GREEN evidence (both arches): SA-REGISTER-UNDER-ADHOC GREEN,
+  status after register `enabled`, SA-LAUNCHD-JOB GREEN
+  (ServiceManagement-managed, BundleProgram shape, parent bundle
+  com.medivault.desktop), SA-BRANCH-A-GREEN (launchd RunAtLoad →
+  healthy; supervisor parent == launchd(1); /health 200),
+  SA-KEEPALIVE-GREEN (SIGKILL 89266 → launchd relaunch 90285 healthy),
+  SA-OPEN-SETTINGS-GREEN, unregister → notRegistered + async teardown +
+  processes stopped.
+
+**keychain-lifecycle — run 34285107767 @ private 8ead05c (GREEN, both
+arches; first-red ledger of 1):**
+
+- 34283175406 @ d4ef774: my K4 assertion expected the provisioner's
+  `VALID_EXISTING` line on restart — but the supervisor recognizes an
+  already-provisioned cluster ITSELF (`cluster_provisioned()`:
+  PG_VERSION in PGDATA) and does NOT re-invoke the provisioner; run 2's
+  healthy state + unchanged initdb count IS the restart proof (the
+  x64 leg failed only at `next/font` Google-Fonts fetch — the known
+  transient runner variance, frozen production-readiness precedent).
+  Fixed: K4 = fresh process healthy + exactly ONE provisioner
+  delegation total + initdb count unchanged + PG_VERSION present +
+  /health 200.
+- Final GREEN evidence (both arches): K1 provisioning GREEN (5 items,
+  REAL random values, never printed), K2 read #1 GREEN (CLEAN delegated
+  provisioning → healthy; /ready authenticated), K3 graceful GREEN
+  (exit 0, zero orphans, postmaster.pid gone), K4 read #2 GREEN (fresh
+  process, existing cluster recognized, no re-provisioning), K5
+  idempotence GREEN (5/5 already present — never overwritten), K6
+  fail-closed GREEN (deleted jwt-secret → supervisor exit 1 +
+  documented error naming the account + no API/DB start).
+  KL-ACL-MODIFICATIONS: NONE.
+
+**Status: ZERO-COST-RELEASE-CANDIDATE declared on 2026-09-08.**
+
+Remaining proof = EXACTLY the interactive acceptance on ONE clean Mac
+(§11): the Gatekeeper warning + Open-Anyway approval (the contract's
+PASS is warning + override + subsequent normal launch), the Login Items
+approval, the synthetic sentinel, quit/reopen, logout/login, reboot,
+the controlled update (with the keychain prompt note), and the
+uninstall data-preservation check — all driven by
+`macos/scripts/interactive-acceptance.sh`.
