@@ -8409,8 +8409,16 @@ jobs:
             fi
             CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:3001/health" || echo 000)
             echo "/health -> $CODE"; test "$CODE" = "200"
-            SUP_PID=$(pgrep -f "$INSTALLED/Contents/MacOS/mediavault-supervisor" | head -1)
-            [ -n "$SUP_PID" ] || { echo "::error::supervisor not running"; exit 1; }
+            # The supervisor's pid comes from its SELF-REPORTED status file:
+            # launchd/SMAppService-trampolined processes are not reliably
+            # visible to pgrep -f (run 34271908241: pid 86833 running+healthy,
+            # pgrep -f <full-path> matched NOTHING). kill -0 proves liveness.
+            SUP_PID=$(jq -r '.pid // 0' "$STATUS" 2>/dev/null || echo 0)
+            echo "supervisor pid (self-reported): $SUP_PID"
+            { [ -n "$SUP_PID" ] && [ "$SUP_PID" != "0" ] && kill -0 "$SUP_PID" 2>/dev/null; } || {
+              echo "::error::supervisor not running (self-reported pid $SUP_PID is not alive)"
+              exit 1
+            }
             PPID_=$(ps -o ppid= -p "$SUP_PID" | tr -d ' ')
             echo "supervisor pid=$SUP_PID parent=$PPID_ (launchd is 1)"
             [ "$PPID_" = "1" ] || {
@@ -8421,11 +8429,17 @@ jobs:
           else
             echo "[branch B] requiresApproval: the supervisor must NOT auto-start before the user approves (bounded 30s proof of the gate)"
             sleep 30
-            if pgrep -f "$INSTALLED/Contents/MacOS/mediavault-supervisor" >/dev/null 2>&1; then
-              echo "::error::the agent started WITHOUT user approval — the approval gate is not holding"
+            # No-approval proof: no healthy status file AND no API answer
+            # (pgrep -f is unreliable for trampolined processes — see branch A).
+            if [ -f "$STATUS" ] && jq -e '.state == "healthy"' "$STATUS" >/dev/null 2>&1; then
+              echo "::error::the agent reached healthy WITHOUT user approval — the approval gate is not holding"
               exit 1
             fi
-            echo "SA-BRANCH-B-GREEN (approval gate holds: no process before user approval — the interactive harness proves the post-approval flow)"
+            if curl -fsS --max-time 2 "http://127.0.0.1:3001/health" >/dev/null 2>&1; then
+              echo "::error::the API is answering WITHOUT user approval — the approval gate is not holding"
+              exit 1
+            fi
+            echo "SA-BRANCH-B-GREEN (approval gate holds: no healthy backend before user approval — the interactive harness proves the post-approval flow)"
           fi
 
       - name: Branch A only — KeepAlive restart after SIGKILL (launchd owns resilience)
@@ -8440,18 +8454,20 @@ jobs:
           fi
           SUP="$HOME/Library/Application Support/MediVault"
           STATUS="$SUP/runtime-state/supervisor-status.json"
-          SUP_PID=$(pgrep -f "$INSTALLED/Contents/MacOS/mediavault-supervisor" | head -1)
-          echo "[keepalive] SIGKILL the supervisor (pid $SUP_PID) — launchd KeepAlive must restart it"
+          SUP_PID=$(jq -r '.pid // 0' "$STATUS" 2>/dev/null || echo 0)
+          echo "[keepalive] SIGKILL the supervisor (self-reported pid $SUP_PID) — launchd KeepAlive must restart it"
           kill -9 "$SUP_PID"
-          HEALTHY=0
+          HEALTHY=0; NEW_PID=0
           for i in $(seq 1 240); do
+            NEW_PID=$(jq -r '.pid // 0' "$STATUS" 2>/dev/null || echo 0)
             S=$(jq -r '.state // "none"' "$STATUS" 2>/dev/null || echo none)
-            if [ "$S" = "healthy" ]; then HEALTHY=1; break; fi
+            if [ "$S" = "healthy" ] && [ "$NEW_PID" != "0" ] && [ "$NEW_PID" != "$SUP_PID" ] && kill -0 "$NEW_PID" 2>/dev/null; then
+              HEALTHY=1; break
+            fi
             sleep 1
           done
-          NEW_PID=$(pgrep -f "$INSTALLED/Contents/MacOS/mediavault-supervisor" | head -1 || true)
           echo "new supervisor pid: $NEW_PID (old: $SUP_PID); state: $(jq -r '.state // "none"' "$STATUS" 2>/dev/null || echo none)"
-          [ -n "$NEW_PID" ] && [ "$NEW_PID" != "$SUP_PID" ] || {
+          { [ -n "$NEW_PID" ] && [ "$NEW_PID" != "$SUP_PID" ]; } || {
             echo "::error::launchd did not restart the SIGKILLed supervisor (KeepAlive)"
             exit 1
           }
@@ -8488,16 +8504,22 @@ jobs:
           echo "launchctl print after unregister exit: $RC (expect non-zero — job gone)"
           [ "$RC" -ne 0 ] || { echo "::error::the launchd job still exists after unregister"; exit 1; }
           echo "[bounded wait] owned processes stop (launchd stops the job at unregister)"
+          STATUS_F="$HOME/Library/Application Support/MediVault/runtime-state/supervisor-status.json"
           for i in $(seq 1 120); do
-            pgrep -f "$INSTALLED/Contents/MacOS/mediavault-supervisor" >/dev/null 2>&1 || break
+            PID=$(jq -r '.pid // 0' "$STATUS_F" 2>/dev/null || echo 0)
+            [ "$PID" = "0" ] && break
+            kill -0 "$PID" 2>/dev/null || break
             sleep 1
           done
           sleep 3
-          pgrep -f "$INSTALLED/Contents/MacOS/mediavault-supervisor" >/dev/null 2>&1 && {
-            echo "::warning::supervisor still alive after unregister+wait — stopping it explicitly for teardown"
-            pkill -f "$INSTALLED/Contents/MacOS/mediavault-supervisor" 2>/dev/null || true
+          PID=$(jq -r '.pid // 0' "$STATUS_F" 2>/dev/null || echo 0)
+          if [ "$PID" != "0" ] && kill -0 "$PID" 2>/dev/null; then
+            echo "::warning::supervisor (pid $PID) still alive after unregister+wait — stopping it explicitly for teardown"
+            kill -TERM "$PID" 2>/dev/null || true
             sleep 3
-          } || echo "SA-UNREGISTER-GREEN (notRegistered + job gone + processes stopped)"
+          else
+            echo "SA-UNREGISTER-GREEN (notRegistered + job gone + processes stopped)"
+          fi
 
       - name: SMAppService summary (machine-readable)
         shell: bash
