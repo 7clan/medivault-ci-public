@@ -362,6 +362,21 @@ impl Config {
             );
         }
 
+        // ------------------------------------------------------------------
+        // Model A localhost-security contract (approved 2026-09-08): the
+        // supervisor is the DESKTOP-LOCAL process manager. The API and
+        // PostgreSQL may bind LOOPBACK ONLY — any non-loopback host in the
+        // config (`0.0.0.0`, `::`, LAN/interface addresses, hostnames)
+        // fails closed at resolution time, BEFORE any process is spawned.
+        // ------------------------------------------------------------------
+        for (field, host) in [("api.host", &cfg.api.host), ("postgres.host", &cfg.postgres.host)] {
+            if !is_loopback_host(host) {
+                return Err(format!(
+                    "config error: {field} must be a loopback address (127.0.0.1, ::1 or localhost) — the Model A localhost-security contract forbids non-loopback binds: '{host}'"
+                ));
+            }
+        }
+
         let app_support = resolve_path(
             "app_support_dir",
             cfg.paths.app_support_dir.as_deref().unwrap_or(&default_app_support_dir()),
@@ -489,6 +504,18 @@ impl Config {
     }
 }
 
+/// Loopback bind hosts permitted by the Model A localhost-security
+/// contract: `127.0.0.1`, the IPv6 loopback `::1`, and the `localhost`
+/// name (resolves only to loopback addresses). Everything else —
+/// `0.0.0.0`, `::`, LAN or interface addresses, remote hostnames — is
+/// non-loopback and must fail closed.
+fn is_loopback_host(host: &str) -> bool {
+    matches!(
+        host.trim().to_ascii_lowercase().as_str(),
+        "127.0.0.1" | "::1" | "localhost"
+    )
+}
+
 /// Exponential restart backoff in milliseconds: base * 2^(restart-1),
 /// capped. Interruptible sleep is the caller's job.
 pub fn backoff_ms(restarts: u32, limits: &LimitsConfig) -> u64 {
@@ -568,6 +595,80 @@ mod tests {
         );
         // only a LEADING tilde expands
         assert_eq!(expand_tilde("/opt/~/weird").unwrap(), "/opt/~/weird");
+    }
+
+    // ------------------------------------------------------------------
+    // Model A localhost-security contract: loopback-only binds, fail
+    // closed at resolution time (approved 2026-09-08).
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn rejects_non_loopback_api_host_fail_closed() {
+        let mut cfg: Config = serde_json::from_str(MINIMAL).unwrap();
+        cfg.api.host = "0.0.0.0".to_string();
+        let err = Config::resolve_with_bundle_root(
+            cfg,
+            std::path::Path::new("/tmp/any.json"),
+            std::path::Path::new("/tmp/Synthetic.app"),
+        )
+        .unwrap_err();
+        assert!(err.contains("api.host"), "unexpected error: {err}");
+        assert!(err.contains("loopback"), "unexpected error: {err}");
+        assert!(err.contains("0.0.0.0"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn rejects_non_loopback_postgres_host_fail_closed() {
+        let mut cfg: Config = serde_json::from_str(MINIMAL).unwrap();
+        cfg.postgres.host = "192.168.1.20".to_string();
+        let err = Config::resolve_with_bundle_root(
+            cfg,
+            std::path::Path::new("/tmp/any.json"),
+            std::path::Path::new("/tmp/Synthetic.app"),
+        )
+        .unwrap_err();
+        assert!(err.contains("postgres.host"), "unexpected error: {err}");
+        assert!(err.contains("192.168.1.20"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn rejects_wildcard_and_remote_postgres_hosts_fail_closed() {
+        for bad in ["::", "0.0.0.0", "db.lan.invalid"] {
+            let mut cfg: Config = serde_json::from_str(MINIMAL).unwrap();
+            cfg.postgres.host = bad.to_string();
+            let err = Config::resolve_with_bundle_root(
+                cfg,
+                std::path::Path::new("/tmp/any.json"),
+                std::path::Path::new("/tmp/Synthetic.app"),
+            )
+            .unwrap_err();
+            assert!(
+                err.contains("postgres.host") && err.contains("loopback"),
+                "host '{bad}' must fail closed (error was: {err})"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_ipv6_loopback_and_localhost_name_past_the_gate() {
+        // `::1` and `localhost` ARE loopback: resolution must PROCEED past
+        // the host gate (it then fails on the synthetic bundle's missing
+        // files — never on the loopback check).
+        for host in ["::1", "localhost", " 127.0.0.1 "] {
+            let mut cfg: Config = serde_json::from_str(MINIMAL).unwrap();
+            cfg.postgres.host = host.to_string();
+            cfg.api.host = host.to_string();
+            let err = Config::resolve_with_bundle_root(
+                cfg,
+                std::path::Path::new("/tmp/any.json"),
+                std::path::Path::new("/tmp/Synthetic.app"),
+            )
+            .unwrap_err();
+            assert!(
+                !err.contains("loopback"),
+                "host '{host}' is loopback — the gate must pass (error was: {err})"
+            );
+        }
     }
 
     // ------------------------------------------------------------------

@@ -11,6 +11,17 @@ SAME SHA, no duplicate dispatch; ONE SHA + ONE MODE = ONE RUN held).
 
 First-red ledger (all new-lane issues; frozen product semantics never
 altered):
+
+> **Model A addendum (2026-09-08):** the localhost security model left
+> open by this stage ("production TLS loopback contract unresolved")
+> was resolved by the owner's product decision (MODEL A — loopback-only
+> HTTP, no TLS terminator, no trusted local termination) and is now a
+> landed, tested contract: see `acceptance/macos-localhost-security-contract.md`
+> and the targeted `localhost-security` CI mode. The one Model A
+> exception this stage's tree carried (the supervisor's
+> `TRUSTED_LOCAL_TLS_TERMINATION=true` injection, `supervise.rs:209` @
+> `32ded2d`) is documented there (§3) and remediated by that lane; this
+> stage's recorded evidence stands as history at its frozen SHA.
 1. run 34167622193 @ `1e2a5cd` — MY OWN test was shape-flawed: asserted
    `lexical(root/Contents/MacOS) == lexical(exe_dir)`, which only holds
    when the exe truly sits at `<root>/Contents/MacOS` (not for a test

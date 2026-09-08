@@ -8,7 +8,7 @@
 import Fastify from 'fastify'
 import cookie from '@fastify/cookie'
 import { loggerConfig } from './plugins/logging.js'
-import { enforceHttpsConfig } from './lib/https-enforcement.js'
+import { enforceHttpsConfig, isLocalhostProductionMode, shouldTrustProxy } from './lib/https-enforcement.js'
 import { disconnectDb, db } from './lib/db.js'
 import { fastifyAuthPlugin } from './plugins/auth.js'
 import { corsPlugin } from './plugins/cors.js'
@@ -35,22 +35,17 @@ try {
 }
 
 // ─── Trust Proxy Configuration ──────────────────────────
-
-function getTrustProxy(): boolean | number | string | string[] {
-  if (process.env.NODE_ENV !== 'production') {
-    return '127.0.0.1'
-  }
-  if (process.env.TRUSTED_LOCAL_TLS_TERMINATION === 'true') {
-    return '127.0.0.1'
-  }
-  return false
-}
+// Model A (localhost-security contract): the desktop-local architecture
+// has NO proxy — X-Forwarded-* headers are never trusted in that mode
+// (shouldTrustProxy() === false). All other deployments keep their exact
+// previous behavior.
+const TRUST_PROXY = shouldTrustProxy()
 
 // ─── Create Fastify Instance ────────────────────────────
 
 const server = Fastify({
   logger: loggerConfig,
-  trustProxy: getTrustProxy(),
+  trustProxy: TRUST_PROXY,
   genReqId: () => crypto.randomUUID(),
   routerOptions: {
     ignoreTrailingSlash: false,
@@ -117,6 +112,12 @@ async function start(): Promise<void> {
   try {
     await server.listen({ port: PORT, host: HOST })
     server.log.info({ port: PORT, host: HOST, env: process.env.NODE_ENV || 'development' }, 'MediVault API server started')
+    if (isLocalhostProductionMode()) {
+      server.log.info(
+        { mode: 'localhost-production', host: HOST, port: PORT, trustProxy: TRUST_PROXY },
+        'MODEL-A-LOCALHOST-PRODUCTION — loopback-only bind, no TLS terminator, no proxy trust',
+      )
+    }
   } catch (error) {
     server.log.fatal({ err: error }, 'Failed to start server')
     process.exit(1)

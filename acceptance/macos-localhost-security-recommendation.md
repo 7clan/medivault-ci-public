@@ -1,5 +1,11 @@
 # MediVault macOS — Production localhost security model recommendation
 
+Status: **SUPERSEDED BY APPROVAL — see
+`acceptance/macos-localhost-security-contract.md`** (product decision
+2026-09-08: MODEL A APPROVED; implemented + the `localhost-security` CI
+lane). This document is the analysis record for that decision; its
+"RECOMMENDATION ONLY" status below is historical.
+
 Status: **RECOMMENDATION ONLY** — per the directive, NO production
 network/security behavior changes until the owner approves. Current
 production behavior stays: API 127.0.0.1-only, PG 127.0.0.1-only, LAN OFF,

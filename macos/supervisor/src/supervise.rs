@@ -206,7 +206,15 @@ impl Supervisor {
                 "ALLOWED_ORIGINS".into(),
                 self.resolved.api_allowed_origins.clone(),
             ),
-            ("TRUSTED_LOCAL_TLS_TERMINATION".into(), "true".into()),
+            // Model A localhost-security contract (approved 2026-09-08):
+            // the DESKTOP-LOCAL production assertion. The API enables its
+            // narrowly scoped localhost-production mode from this variable
+            // and fails closed on every unsafe combination (non-loopback
+            // bind, TRUSTED_LOCAL_TLS_TERMINATION, HTTPS, non-local Origin
+            // allowlist). The forbidden TRUSTED_LOCAL_TLS_TERMINATION
+            // claim of a trusted TLS-terminating proxy is NEVER injected —
+            // no such proxy exists in this architecture.
+            ("MEDIVAULT_LOCALHOST_ONLY".into(), "true".into()),
             ("NODE_ENV".into(), "production".into()),
         ];
         let handle = proc::spawn_api(

@@ -151,6 +151,30 @@
 #                  every stop/restart cycle — owned-process rules only).
 #                  Contract: acceptance/macos-reinstall-contract.md.
 #
+#   localhost-security : the Model A localhost-security contract
+#                  (approved 2026-09-08) — the approved production
+#                  localhost posture made CODE + PROVEN: the supervisor
+#                  injects MEDIVAULT_LOCALHOST_ONLY=true (never
+#                  TRUSTED_LOCAL_TLS_TERMINATION — no TLS terminator
+#                  exists) and fails closed at config resolution on any
+#                  non-loopback api/postgres host; the API gains the
+#                  narrowly scoped localhost-production mode (fail closed
+#                  on non-loopback bind / trusted termination / direct
+#                  HTTPS / wildcard or non-local Origin allowlist;
+#                  trustProxy=false). The lane runs the full packaged
+#                  bundle lifecycle (synthetic .app, production ports
+#                  55432/3001, real login-keychain bootstrap, delegated
+#                  CLEAN provisioning) and the 12-contract test battery:
+#                  exact 127.0.0.1 listeners (lsof), forbidden-flag
+#                  absence, trustProxy=false, hostile-Origin rejection,
+#                  auth/session/CSRF liveness (first-admin setup → login
+#                  session → CSRF-negative/positive), and the unsafe
+#                  non-loopback fail-closed matrix at BOTH levels
+#                  (API startup exits + supervisor config resolution).
+#                  Windows semantics byte-identical (the mode is
+#                  opt-in via a variable Windows never sets).
+#                  Contract: acceptance/macos-localhost-security-contract.md.
+#
 #   full / desktop-launch-regression / reinstall-regression / dmg-only :
 #                  reserved by the audit's CI matrix; not yet wired (the
 #                  guard job fails them explicitly instead of pretending).
@@ -167,7 +191,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'CI mode (wired: integration, pg-bundle-verify, supervisor-lifecycle, provision-lifecycle, bundle-verify, desktop-build, dmg, macos-26-smoke, reinstall-acceptance, production-readiness)'
+        description: 'CI mode (wired: integration, pg-bundle-verify, supervisor-lifecycle, provision-lifecycle, bundle-verify, desktop-build, dmg, macos-26-smoke, reinstall-acceptance, production-readiness, localhost-security)'
         required: true
         default: 'integration'
         type: choice
@@ -182,6 +206,7 @@ on:
           - macos-26-smoke
           - reinstall-acceptance
           - production-readiness
+          - localhost-security
           - full
           - desktop-launch-regression
           - reinstall-regression
@@ -196,12 +221,12 @@ jobs:
   # ---------------------------------------------------------------------------
   not-yet-wired:
     name: "Mode guard"
-    if: github.event.inputs.mode != 'integration' && github.event.inputs.mode != 'pg-bundle-verify' && github.event.inputs.mode != 'supervisor-lifecycle' && github.event.inputs.mode != 'provision-lifecycle' && github.event.inputs.mode != 'bundle-verify' && github.event.inputs.mode != 'desktop-build' && github.event.inputs.mode != 'dmg' && github.event.inputs.mode != 'macos-26-smoke' && github.event.inputs.mode != 'reinstall-acceptance' && github.event.inputs.mode != 'production-readiness'
+    if: github.event.inputs.mode != 'integration' && github.event.inputs.mode != 'pg-bundle-verify' && github.event.inputs.mode != 'supervisor-lifecycle' && github.event.inputs.mode != 'provision-lifecycle' && github.event.inputs.mode != 'bundle-verify' && github.event.inputs.mode != 'desktop-build' && github.event.inputs.mode != 'dmg' && github.event.inputs.mode != 'macos-26-smoke' && github.event.inputs.mode != 'reinstall-acceptance' && github.event.inputs.mode != 'production-readiness' && github.event.inputs.mode != 'localhost-security'
     runs-on: ubuntu-latest
     steps:
       - name: Mode not yet wired on this lane
         run: |
-          echo "::error::Mode '${{ github.event.inputs.mode }}' is reserved by the macOS CI matrix but not yet wired. The lane is built stage-by-stage (first-red discipline). Wired modes today: integration, pg-bundle-verify, supervisor-lifecycle, provision-lifecycle, bundle-verify, desktop-build, dmg, macos-26-smoke, reinstall-acceptance, production-readiness."
+          echo "::error::Mode '${{ github.event.inputs.mode }}' is reserved by the macOS CI matrix but not yet wired. The lane is built stage-by-stage (first-red discipline). Wired modes today: integration, pg-bundle-verify, supervisor-lifecycle, provision-lifecycle, bundle-verify, desktop-build, dmg, macos-26-smoke, reinstall-acceptance, production-readiness, localhost-security."
 
   # ---------------------------------------------------------------------------
   # Integration mode — the shared app proof on real macOS runners, both archs.
@@ -6381,4 +6406,682 @@ jobs:
             /tmp/pr-bootstrap.log
             /tmp/pr-status.out
             /Users/runner/work/_temp/MediVault-macOS-${{ matrix.label }}.dmg.sha256
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # localhost-security mode — the Model A localhost-security contract
+  # (approved 2026-09-08), implemented and proven BEFORE Apple credentials:
+  # API 127.0.0.1-only, PostgreSQL 127.0.0.1-only, LAN OFF, strict Origin
+  # validation, auth/session/CSRF preserved, NO trustedLocalTlsTermination,
+  # NO TLS-terminator claim, NO 0.0.0.0, trustProxy=false — with the unsafe
+  # non-loopback matrix failing closed at BOTH levels.
+  # Contract: acceptance/macos-localhost-security-contract.md
+  # ---------------------------------------------------------------------------
+  localhost-security:
+    name: "localhost-security (${{ matrix.label }})"
+    if: github.event.inputs.mode == 'localhost-security'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: arm64
+            runner: macos-26
+            expected_uname: arm64
+            node_arch: arm64
+            node_sha256: '61130f394c1630d211dd50aecc4353d379480f36d3ac913cd85dbba1aed585c6'
+          - label: x64
+            runner: macos-26-intel
+            expected_uname: x86_64
+            node_arch: x64
+            node_sha256: '58e99022c2ff89395576cc7fd4d98cea24bb68081475d5f88b801ee8729fb026'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+
+    env:
+      PG_VERSION: '17.11'
+      PG_SHA256: '5367f6fb2ec97efe1eb2e0c7926bb33438e51b0bd3a9733b88498056a7dc9a7e'
+      PG_TARBALL_URL: 'https://ftp.postgresql.org/pub/source/v17.11/postgresql-17.11.tar.gz'
+      PG_INSTALL: '/Users/runner/pg17-install-dt13'
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+      NODE_VERSION: '22.23.2'
+      NODE_DIST_URL: 'https://nodejs.org/dist'
+      MV_APP_SUPPORT: '/Users/runner/work/_temp/mv-localhost-appsupport'
+      MV_PGPORT: '55432'
+      MV_API_PORT: '3001'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Preflight — native arch proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "uname -m: $(uname -m) (expected ${{ matrix.expected_uname }})"
+          test "$(uname -m)" = "${{ matrix.expected_uname }}"
+          echo "sw_vers: $(sw_vers -productVersion)"
+          if [ "${{ matrix.expected_uname }}" = "arm64" ]; then
+            T=$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)
+            echo "sysctl.proc_translated: ${T}"
+            test "$T" = "0"
+          fi
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            mini-services/api-service/node_modules
+            packages/*/node_modules
+          key: macos-deps-${{ matrix.label }}-${{ hashFiles('bun.lock', 'package.json', 'packages/*/package.json', 'mini-services/api-service/package.json') }}
+          restore-keys: |
+            macos-deps-${{ matrix.label }}-
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+          cd macos/supervisor
+          rustup toolchain install --profile minimal "$(grep -oE 'channel = "[^"]+"' ../../rust-toolchain.toml | cut -d'"' -f2)"
+          cargo --version
+
+      # ------------------------------------------------------------------
+      # Unit tests FIRST (fail fast): the supervisor's Model A loopback
+      # config gate + the API's localhost-production mode matrix.
+      # ------------------------------------------------------------------
+      - name: Supervisor unit tests (incl. the Model A loopback fail-closed gate)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd macos/supervisor
+          cargo test --locked 2>&1 | tee /tmp/ls-supervisor-tests.log
+          test "$(grep -c 'test result: ok' /tmp/ls-supervisor-tests.log)" -ge 1
+          grep -q 'rejects_non_loopback_api_host_fail_closed' /tmp/ls-supervisor-tests.log
+          grep -q 'rejects_wildcard_and_remote_postgres_hosts_fail_closed' /tmp/ls-supervisor-tests.log
+          grep -q 'accepts_ipv6_loopback_and_localhost_name_past_the_gate' /tmp/ls-supervisor-tests.log
+
+      - name: Model A unit tests (localhost-production mode, fail-closed matrix)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bunx vitest run tests/model-a-localhost-production.test.ts 2>&1 | tee /tmp/ls-model-a-tests.log
+          grep -q 'tests/model-a-localhost-production.test.ts' /tmp/ls-model-a-tests.log
+          grep -qE 'Tests[[:space:]]+[0-9]+ passed \([0-9]+\)' /tmp/ls-model-a-tests.log
+
+      - name: Build the supervisor + provisioner + API runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          export MACOSX_DEPLOYMENT_TARGET=13.0
+          cd macos/supervisor
+          cargo build --release --locked
+          codesign --force --sign - target/release/mediavault-supervisor
+          cd ../provision
+          bun install
+          bun run build
+          test -f dist/index.js
+          cd ../..
+          ./node_modules/.bin/prisma generate --schema packages/db/prisma/schema.prisma 2>&1 | tail -2
+          ./node_modules/.bin/tsc --project mini-services/api-service/tsconfig.json
+          test -f mini-services/api-service/dist/mini-services/api-service/src/index.js
+
+      - name: Stage the API runtime tree + prisma CLI closure + Node runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="$RUNNER_TEMP/medivault-api"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE/api/dist" "$STAGE/api/node_modules/@medivault"/{auth,crypto,db}
+          cp -R mini-services/api-service/dist/mini-services/api-service/src/. "$STAGE/api/dist/"
+          cp mini-services/api-service/package.json "$STAGE/api/package.json"
+          ( cd "$STAGE/api" && npm install --omit=dev --no-audit --no-fund --loglevel=error )
+          cp -R mini-services/api-service/dist/packages/auth/src/.    "$STAGE/api/node_modules/@medivault/auth/"
+          cp -R mini-services/api-service/dist/packages/crypto/src/. "$STAGE/api/node_modules/@medivault/crypto/"
+          cp -R mini-services/api-service/dist/packages/db/src/.     "$STAGE/api/node_modules/@medivault/db/"
+          printf '{"name":"@medivault/auth","version":"1.0.0","type":"module","main":"./index.js"}\n'   > "$STAGE/api/node_modules/@medivault/auth/package.json"
+          printf '{"name":"@medivault/crypto","version":"1.0.0","type":"module","main":"./index.js"}\n' > "$STAGE/api/node_modules/@medivault/crypto/package.json"
+          printf '{"name":"@medivault/db","version":"1.0.0","type":"module","main":"./client.js"}\n'    > "$STAGE/api/node_modules/@medivault/db/package.json"
+          rm -rf "$STAGE/api/node_modules/.prisma"
+          cp -R node_modules/.prisma "$STAGE/api/node_modules/.prisma"
+          echo "STAGE=$STAGE" | tee /tmp/api-stage.env
+
+          PRISMA_STAGE="$RUNNER_TEMP/prisma-cli-stage"
+          rm -rf "$PRISMA_STAGE"
+          mkdir -p "$PRISMA_STAGE"
+          PRISMA_VERSION="$(node -p "require('$PWD/node_modules/prisma/package.json').version")"
+          printf '{"name":"mv-prisma-cli","private":true,"dependencies":{"prisma":"%s"}}\n' "$PRISMA_VERSION" > "$PRISMA_STAGE/package.json"
+          ( cd "$PRISMA_STAGE" && npm install --omit=dev --no-audit --no-fund --loglevel=error )
+          test -d "$PRISMA_STAGE/node_modules/effect"
+          echo "PRISMA_STAGE=$PRISMA_STAGE" | tee /tmp/prisma-stage.env
+
+          TARBALL="node-v$NODE_VERSION-darwin-${{ matrix.node_arch }}.tar.gz"
+          curl -fsSL --retry 3 -o "/tmp/$TARBALL" "$NODE_DIST_URL/v$NODE_VERSION/$TARBALL"
+          echo "${{ matrix.node_sha256 }}  /tmp/$TARBALL" | shasum -a 256 --check --strict
+          echo "NODE_TARBALL=/tmp/$TARBALL" | tee /tmp/node-tarball.env
+
+      - name: Cache PostgreSQL ${{ env.PG_VERSION }} build (MACOSX_DEPLOYMENT_TARGET=13.0)
+        id: pg-cache
+        uses: actions/cache@v4
+        with:
+          path: '/Users/runner/pg17-install-dt13'
+          key: macos-pg17-dt13-${{ matrix.label }}-${{ env.PG_VERSION }}-${{ env.PG_SHA256 }}
+
+      - name: Build PostgreSQL ${{ env.PG_VERSION }} from source (MACOSX_DEPLOYMENT_TARGET=13.0)
+        if: steps.pg-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export MACOSX_DEPLOYMENT_TARGET=13.0
+          curl -fsSL --retry 3 -o /tmp/postgresql-$PG_VERSION.tar.gz "$PG_TARBALL_URL"
+          echo "$PG_SHA256  /tmp/postgresql-$PG_VERSION.tar.gz" | shasum -a 256 --check --strict
+          rm -rf "/tmp/postgresql-$PG_VERSION"
+          tar -xzf "/tmp/postgresql-$PG_VERSION.tar.gz" -C /tmp
+          cd "/tmp/postgresql-$PG_VERSION"
+          ./configure --prefix="$PG_INSTALL" --without-icu --without-readline
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+
+      # ------------------------------------------------------------------
+      # The synthetic .app (no Tauri shell needed for this contract — the
+      # object under test is the supervisor + API + PG runtime posture).
+      # ------------------------------------------------------------------
+      - name: Stage the PG bundle + supervisor into the synthetic app
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUNDLE="$RUNNER_TEMP/MediVault.app/Contents/Resources/runtime/postgresql/17"
+          PG_INSTALL="$PG_INSTALL" BUNDLE="$BUNDLE" PG_VERSION="$PG_VERSION" \
+            SUPERVISOR_BIN="$PWD/macos/supervisor/target/release/mediavault-supervisor" \
+            bash macos/scripts/stage-pg-bundle.sh
+          echo "BUNDLE=$BUNDLE" | tee /tmp/ls-bundle.env
+
+      - name: Assemble the complete MediVault.app tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/api-stage.env
+          . /tmp/prisma-stage.env
+          . /tmp/node-tarball.env
+          APP_ROOT="$RUNNER_TEMP/MediVault.app"
+          APP_ROOT="$APP_ROOT" \
+            NODE_TARBALL="$NODE_TARBALL" \
+            API_STAGE="$STAGE" \
+            PROVISION_DIR="$PWD/macos/provision" \
+            PRISMA_MODULES="$PRISMA_STAGE/node_modules" \
+            PRISMA_SCHEMA_DIR="$PWD/packages/db/prisma" \
+            LAUNCHAGENT_SRC="$PWD/macos/launchagent/dev.medivault.supervisor.plist" \
+            bash macos/scripts/stage-app-bundle.sh
+          echo "APP_ROOT=$APP_ROOT" | tee /tmp/ls-app-root.env
+
+      - name: Mach-O gate — node + supervisor + PG
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/ls-app-root.env
+          MACHO_RECORDS=/tmp/macho-gate-ls-1.txt bash macos/scripts/macho-gate.sh "$APP_ROOT/Contents/MacOS/mediavault-supervisor" "${{ matrix.expected_uname }}" 13.0
+          MACHO_RECORDS=/tmp/macho-gate-ls-2.txt bash macos/scripts/macho-gate.sh "$APP_ROOT/Contents/Resources/runtime/nodejs/bin/node" "${{ matrix.expected_uname }}" 13.0
+          MACHO_RECORDS=/tmp/macho-gate-ls-3.txt bash macos/scripts/macho-gate.sh "$APP_ROOT/Contents/Resources/runtime/postgresql/17" "${{ matrix.expected_uname }}" 13.0
+
+      # ------------------------------------------------------------------
+      # The Model A production-shaped config: loopback hosts, the SHIPPED
+      # production ports (PG 55432, API 3001) and the SHIPPED origin
+      # semantics (tauri://localhost + the dev origin).
+      # ------------------------------------------------------------------
+      - name: Write the localhost-security supervisor config
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/ls-app-root.env
+          cat > "$APP_ROOT/Contents/Resources/supervisor-config.json" <<EOF
+          {
+            "version": 1,
+            "paths": {
+              "pg_bundle": "$APP_ROOT/Contents/Resources/runtime/postgresql/17",
+              "node_binary": "$APP_ROOT/Contents/Resources/runtime/nodejs/bin/node",
+              "api_entry": "$APP_ROOT/Contents/Resources/api/dist/index.js",
+              "api_working_dir": "$APP_ROOT/Contents/Resources/api",
+              "app_support_dir": "$MV_APP_SUPPORT",
+              "log_dir": "$MV_APP_SUPPORT/logs"
+            },
+            "postgres": {
+              "host": "127.0.0.1",
+              "port": $MV_PGPORT,
+              "superuser": "postgres",
+              "app_user": "medivault",
+              "app_database": "medivault",
+              "pgdata_rel": "PostgreSQL/17/data"
+            },
+            "api": { "host": "127.0.0.1", "port": $MV_API_PORT, "allowed_origins": "tauri://localhost,http://localhost:3000" },
+            "secrets": { "source": "keychain" },
+            "provisioner": {
+              "entry": "$APP_ROOT/Contents/Resources/provision/dist/index.js",
+              "prisma_cli": "$APP_ROOT/Contents/Resources/prisma-cli/node_modules/prisma/build/index.js",
+              "prisma_schema": "$APP_ROOT/Contents/Resources/prisma/schema.prisma",
+              "timeout_sec": 600
+            },
+            "limits": { "pg_start_timeout_sec": 120, "api_start_timeout_sec": 90, "health_interval_sec": 5 }
+          }
+          EOF
+          cat "$APP_ROOT/Contents/Resources/supervisor-config.json"
+          echo "CONFIG=$APP_ROOT/Contents/Resources/supervisor-config.json" | tee /tmp/ls-config.env
+
+      - name: Generate CI keychain seed values (values never printed)
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "export MV_KEYCHAIN_SEED_PG_APP_PASSWORD=$(openssl rand -hex 12)"
+            echo "export MV_KEYCHAIN_SEED_PG_BOOTSTRAP=$(openssl rand -hex 12)"
+            echo "export MV_KEYCHAIN_SEED_MASTER_KEY=$(openssl rand -hex 32)"
+            echo "export MV_KEYCHAIN_SEED_JWT_SECRET=$(openssl rand -hex 32)"
+            echo "export MV_KEYCHAIN_SEED_CSRF_SECRET=$(openssl rand -hex 32)"
+          } > /tmp/ls-seeds.env
+          chmod 600 /tmp/ls-seeds.env
+          echo "seed file written (values never printed): /tmp/ls-seeds.env"
+
+      - name: Keychain bootstrap (REAL login keychain, 5/5)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/ls-app-root.env
+          . /tmp/ls-config.env
+          . /tmp/ls-seeds.env
+          "$APP_ROOT/Contents/MacOS/mediavault-supervisor" bootstrap-secrets --config "$CONFIG" | tee /tmp/ls-bootstrap.log
+          [ "$(grep -c 'created keychain item' /tmp/ls-bootstrap.log)" = "5" ] || {
+            echo "::error::expected 5 created keychain items"; cat /tmp/ls-bootstrap.log; exit 1
+          }
+          for account in pg-app-password pg-bootstrap master-key jwt-secret csrf-secret; do
+            security find-generic-password -s dev.medivault -a "$account" >/dev/null 2>&1 || {
+              echo "::error::keychain item missing: $account"
+              exit 1
+            }
+          done
+          echo "keychain items: 5/5 present"
+
+      # ------------------------------------------------------------------
+      # TESTS 1 + 12: the APPROVED localhost production configuration
+      # STARTS under full supervisor management (delegated CLEAN
+      # provisioning → healthy → /health + /ready 200 on the packaged
+      # hardened Node, production ports).
+      # ------------------------------------------------------------------
+      - name: "T1/T12: run the packaged bundle — supervisor-managed startup to healthy"
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/ls-app-root.env
+          . /tmp/ls-config.env
+          . /tmp/ls-seeds.env
+          STATUS="$MV_APP_SUPPORT/runtime-state/supervisor-status.json"
+          rm -rf "$MV_APP_SUPPORT"
+          rm -f /tmp/ls-supervisor.exit
+
+          ( "$APP_ROOT/Contents/MacOS/mediavault-supervisor" run --config "$CONFIG" \
+              > "$RUNNER_TEMP/ls-supervisor-stdout.log" 2>&1; echo $? > /tmp/ls-supervisor.exit ) &
+
+          echo "[poll] bounded wait (300s) for healthy — full packaged bootstrap"
+          HEALTHY=0
+          for i in $(seq 1 600); do
+            S=$(jq -r '.state // "none"' "$STATUS" 2>/dev/null || echo none)
+            if [ "$S" = "healthy" ]; then HEALTHY=1; break; fi
+            if [ "$S" = "failed" ]; then break; fi
+            if [ -f /tmp/ls-supervisor.exit ]; then break; fi
+            sleep 0.5
+          done
+          echo "final state: $(jq -r '.state // "none"' "$STATUS" 2>/dev/null || echo none)"
+          if [ "$HEALTHY" != "1" ]; then
+            echo "::error::packaged bundle did not reach healthy under Model A"
+            echo "--- supervisor.log:"; tail -30 "$MV_APP_SUPPORT/logs/supervisor.log" 2>/dev/null || true
+            echo "--- provision.log:"; tail -30 "$MV_APP_SUPPORT/logs/provision.log" 2>/dev/null || true
+            echo "--- api.log:"; tail -30 "$MV_APP_SUPPORT/logs/api.log" 2>/dev/null || true
+            echo "--- stdout:"; tail -40 "$RUNNER_TEMP/ls-supervisor-stdout.log" 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "[proof] PG healthy on the production port $MV_PGPORT"
+          "$APP_ROOT/Contents/Resources/runtime/postgresql/17/bin/pg_isready" -h 127.0.0.1 -p "$MV_PGPORT"
+          echo "[proof] API /health + /ready 200 on the production port $MV_API_PORT"
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$MV_API_PORT/health" || echo 000)
+          echo "/health -> $CODE"; test "$CODE" = "200"
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$MV_API_PORT/ready" || echo 000)
+          echo "/ready -> $CODE"; test "$CODE" = "200"
+          MIG=$(PGPASSWORD="$MV_KEYCHAIN_SEED_PG_APP_PASSWORD" "$APP_ROOT/Contents/Resources/runtime/postgresql/17/bin/psql" \
+            -h 127.0.0.1 -p "$MV_PGPORT" -U medivault -d medivault -t -A \
+            -c "SELECT count(*) FROM _prisma_migrations WHERE finished_at IS NOT NULL")
+          echo "applied migrations: $MIG (expect 8)"
+          [ "$MIG" = "8" ] || { echo "::error::expected 8 applied migrations"; exit 1; }
+          echo "T1/T12-STARTUP-GREEN (approved localhost production config, supervisor-managed)"
+
+      # ------------------------------------------------------------------
+      # TESTS 2/3/4/5/6: the live network + environment posture.
+      # ------------------------------------------------------------------
+      - name: "T2-T6: Model A live posture (exact loopback listeners, forbidden env, trustProxy)"
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/ls-app-root.env
+          . /tmp/ls-config.env
+          STATUS="$MV_APP_SUPPORT/runtime-state/supervisor-status.json"
+          API_PID=$(jq -r '.api_pid // empty' "$STATUS")
+          PG_PID=$(jq -r '.pg_pid // empty' "$STATUS")
+          [ -n "$API_PID" ] && [ -n "$PG_PID" ] || { echo "::error::status file missing api_pid/pg_pid"; jq . "$STATUS"; exit 1; }
+          echo "API pid: $API_PID, PG pid: $PG_PID"
+
+          echo "== T2: the API listens ONLY on 127.0.0.1:$MV_API_PORT =="
+          API_LISTENERS=$(lsof -nP -iTCP:"$MV_API_PORT" -sTCP:LISTEN | tail -n +2 | awk '{print $1" pid="$2" addr="$(NF-1)}')
+          echo "API listeners:"; echo "$API_LISTENERS"
+          [ -n "$API_LISTENERS" ] || { echo "::error::no API listener found on port $MV_API_PORT"; exit 1; }
+          BAD=$(echo "$API_LISTENERS" | grep -v "127.0.0.1:$MV_API_PORT" || true)
+          [ -z "$BAD" ] || { echo "::error::API listener on a non-contract address:"; echo "$BAD"; exit 1; }
+          echo "$API_LISTENERS" | grep -q "pid=$API_PID" || { echo "::error::the API listener is not owned by the supervised API process"; exit 1; }
+
+          echo "== T3: PostgreSQL listens ONLY on 127.0.0.1:$MV_PGPORT =="
+          PG_LISTENERS=$(lsof -nP -iTCP:"$MV_PGPORT" -sTCP:LISTEN | tail -n +2 | awk '{print $1" pid="$2" addr="$(NF-1)}')
+          echo "PG listeners:"; echo "$PG_LISTENERS"
+          [ -n "$PG_LISTENERS" ] || { echo "::error::no PG listener found on port $MV_PGPORT"; exit 1; }
+          BAD=$(echo "$PG_LISTENERS" | grep -v "127.0.0.1:$MV_PGPORT" || true)
+          [ -z "$BAD" ] || { echo "::error::PG listener on a non-contract address:"; echo "$BAD"; exit 1; }
+
+          echo "== T4: NO wildcard / non-loopback listener for the supervised tree =="
+          WILD=$(lsof -nP -iTCP -sTCP:LISTEN | awk '{print $(NF-1)}' | grep -E '^\*:' || true)
+          WILD_OURS=$(echo "$WILD" | grep -E ":(3001|55432)$" || true)
+          [ -z "$WILD_OURS" ] || { echo "::error::wildcard listener on a contract port:"; echo "$WILD_OURS"; exit 1; }
+          for pid in "$API_PID" "$PG_PID"; do
+            OWNED=$(lsof -nP -p "$pid" -iTCP -sTCP:LISTEN 2>/dev/null | tail -n +2 | awk '{print $(NF-1)}' | sed 's/ (LISTEN)//' || true)
+            [ -z "$OWNED" ] && continue
+            BAD=$(echo "$OWNED" | grep -v '^127\.0\.0\.1:' || true)
+            [ -z "$BAD" ] || { echo "::error::pid $pid owns a NON-loopback listener (0.0.0.0/::/LAN):"; echo "$BAD"; exit 1; }
+          done
+          echo "T2/T3/T4-LISTENERS-GREEN (exactly 127.0.0.1:$MV_API_PORT + 127.0.0.1:$MV_PGPORT; no wildcard, no LAN)"
+
+          echo "== T5: TRUSTED_LOCAL_TLS_TERMINATION absent / MEDIVAULT_LOCALHOST_ONLY present =="
+          # Direct process-environment read (macOS: ps 'e' modifier). The
+          # output contains SECRET values — capture WITHOUT printing and
+          # assert on variable NAMES only.
+          PS_ENV="$(ps eww -o command= -p "$API_PID" 2>/dev/null || true)"
+          if printf '%s' "$PS_ENV" | grep -q 'MEDIVAULT_LOCALHOST_ONLY'; then
+            if printf '%s' "$PS_ENV" | grep -q 'TRUSTED_LOCAL_TLS_TERMINATION'; then
+              echo "::error::TRUSTED_LOCAL_TLS_TERMINATION is PRESENT in the live API environment (forbidden by Model A)"
+              exit 1
+            fi
+            echo "T5-ENV-DIRECT-GREEN (MEDIVAULT_LOCALHOST_ONLY present; TRUSTED_LOCAL_TLS_TERMINATION absent — checked on the live process env, values never printed)"
+          else
+            # ps env display unavailable on this runner: the startup
+            # fail-closed contract stands as the proof — the API reaches
+            # healthy ONLY in localhost-production mode, which CRASHES on
+            # TRUSTED_LOCAL_TLS_TERMINATION=true (proven in the T11 matrix
+            # below); the MODEL-A startup line is the runtime assertion.
+            grep -q 'MODEL-A-LOCALHOST-PRODUCTION' "$MV_APP_SUPPORT/logs/api.log" || {
+              echo "::error::MODEL-A-LOCALHOST-PRODUCTION startup line missing from api.log"
+              tail -20 "$MV_APP_SUPPORT/logs/api.log" 2>/dev/null || true
+              exit 1
+            }
+            echo "T5-ENV-CONTRACT-GREEN (ps env display unavailable; startup fail-closed contract + MODEL-A startup line prove the forbidden flag absent)"
+          fi
+
+          echo "== T6: trustProxy is FALSE (the API's own startup posture) =="
+          grep -q 'MODEL-A-LOCALHOST-PRODUCTION' "$MV_APP_SUPPORT/logs/api.log" || {
+            echo "::error::MODEL-A-LOCALHOST-PRODUCTION startup line missing from api.log"
+            exit 1
+          }
+          grep -q '"trustProxy":false' "$MV_APP_SUPPORT/logs/api.log" || {
+            echo "::error::trustProxy is not false in the Model A startup posture"
+            grep 'MODEL-A-LOCALHOST-PRODUCTION' "$MV_APP_SUPPORT/logs/api.log" || true
+            exit 1
+          }
+          echo "T6-TRUSTPROXY-GREEN (false — no proxy exists; X-Forwarded-* never trusted)"
+          echo "T2-T6-LIVE-POSTURE-GREEN"
+
+      # ------------------------------------------------------------------
+      # TESTS 7/8/9/10: Origin + auth/session/CSRF behavior (live HTTP).
+      # ------------------------------------------------------------------
+      - name: "T7-T10: Origin policy + auth/session/CSRF live proofs"
+        shell: bash
+        run: |
+          set -euo pipefail
+          API="http://127.0.0.1:$MV_API_PORT"
+          JAR="$RUNNER_TEMP/ls-cookies.txt"
+          rm -f "$JAR"
+
+          echo "== T7: the VALID MediVault desktop Origin succeeds =="
+          HDRS=$(curl -s -D - -o /dev/null -H 'Origin: tauri://localhost' "$API/health")
+          echo "$HDRS" | head -1 | grep -q ' 200 ' || { echo "::error::valid-origin /health not 200"; echo "$HDRS"; exit 1; }
+          echo "$HDRS" | grep -qi '^access-control-allow-origin: tauri://localhost' || {
+            echo "::error::CORS grant missing for the desktop origin"; echo "$HDRS"; exit 1
+          }
+          echo "T7-VALID-ORIGIN-GREEN (tauri://localhost granted)"
+
+          echo "== T8: hostile / unapproved Origins are rejected =="
+          # (a) state-changing endpoint + hostile Origin → app-level 403
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H 'Origin: https://evil.invalid' \
+            -H 'Content-Type: application/json' -d '{}' "$API/api/auth/setup" || echo 000)
+          echo "hostile-origin POST /api/auth/setup -> $CODE (expect 403)"
+          [ "$CODE" = "403" ] || { echo "::error::hostile Origin was NOT rejected by the app"; exit 1; }
+          # (b) state-changing endpoint with NO Origin → 403 (Origin is REQUIRED)
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H 'Content-Type: application/json' \
+            -d '{}' "$API/api/auth/setup" || echo 000)
+          echo "no-origin POST /api/auth/setup -> $CODE (expect 403)"
+          [ "$CODE" = "403" ] || { echo "::error::missing Origin was NOT rejected"; exit 1; }
+          # (c) read-side: hostile Origin gets NO CORS grant (browser-blocked)
+          HDRS=$(curl -s -D - -o /dev/null -H 'Origin: https://evil.invalid' "$API/health")
+          if echo "$HDRS" | grep -qi '^access-control-allow-origin:'; then
+            echo "::error::CORS grant leaked to a hostile origin"; echo "$HDRS"; exit 1
+          fi
+          # (d) preflight with hostile Origin gets NO CORS grant
+          HDRS=$(curl -s -D - -o /dev/null -X OPTIONS -H 'Origin: https://evil.invalid' \
+            -H 'Access-Control-Request-Method: POST' "$API/api/auth/setup")
+          if echo "$HDRS" | grep -qi '^access-control-allow-origin:'; then
+            echo "::error::preflight CORS grant leaked to a hostile origin"; echo "$HDRS"; exit 1
+          fi
+          echo "T8-HOSTILE-ORIGIN-REJECTED-GREEN (403 app-level + no CORS grant + no preflight grant)"
+
+          echo "== T9: authentication + session protections remain active =="
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" "$API/api/auth/me" || echo 000)
+          echo "unauthenticated GET /api/auth/me -> $CODE (expect 401)"
+          [ "$CODE" = "401" ] || { echo "::error::auth not enforced (expected 401)"; exit 1; }
+          SETUP=$(curl -s "$API/api/auth/setup")
+          echo "setup check: $SETUP"
+          echo "$SETUP" | grep -q '"needsSetup":true' || { echo "::error::expected a fresh DB (needsSetup true)"; exit 1; }
+
+          echo "== T10: session issue + CSRF protections live =="
+          # First admin via the app's own setup route (valid Origin required) → session + csrf cookies
+          CODE=$(curl -s -o /tmp/ls-setup-body.json -w "%{http_code}" -c "$JAR" -X POST \
+            -H 'Origin: tauri://localhost' -H 'Content-Type: application/json' \
+            -d '{"name":"Model A CI","email":"model-a@medivault.local","password":"MediVault!ModelA2026"}' \
+            "$API/api/auth/setup" || echo 000)
+          echo "POST /api/auth/setup -> $CODE (expect 201)"
+          [ "$CODE" = "201" ] || { echo "::error::first-admin setup failed"; cat /tmp/ls-setup-body.json; exit 1; }
+          grep -q 'mvlt_session' "$JAR" || { echo "::error::session cookie not issued"; cat "$JAR"; exit 1; }
+          grep -q 'mvlt_csrf' "$JAR" || { echo "::error::csrf cookie not issued"; cat "$JAR"; exit 1; }
+          # Authenticated request with the session cookie works
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" -b "$JAR" -H 'Origin: tauri://localhost' "$API/api/auth/me" || echo 000)
+          echo "authenticated GET /api/auth/me -> $CODE (expect 200)"
+          [ "$CODE" = "200" ] || { echo "::error::session authentication failed"; exit 1; }
+          # CSRF-negative: mutating request WITHOUT the X-CSRF-Token header → 403
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" -b "$JAR" -X POST \
+            -H 'Origin: tauri://localhost' -H 'Content-Type: application/json' -d '{}' \
+            "$API/api/auth/logout" || echo 000)
+          echo "logout WITHOUT X-CSRF-Token -> $CODE (expect 403)"
+          [ "$CODE" = "403" ] || { echo "::error::CSRF protection not enforced (expected 403)"; exit 1; }
+          # CSRF-positive: the double-submit token completes the logout
+          CSRF=$(awk '$6=="mvlt_csrf" {print $7}' "$JAR")
+          [ -n "$CSRF" ] || { echo "::error::could not read the csrf cookie from the jar"; cat "$JAR"; exit 1; }
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" -b "$JAR" -X POST \
+            -H 'Origin: tauri://localhost' -H 'Content-Type: application/json' \
+            -H "X-CSRF-Token: $CSRF" "$API/api/auth/logout" || echo 000)
+          echo "logout WITH X-CSRF-Token -> $CODE (expect 200)"
+          [ "$CODE" = "200" ] || { echo "::error::CSRF-positive logout failed"; exit 1; }
+          # Hostile Origin beats a fully-valid session+CSRF (origin gate first)
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" -b "$JAR" -X POST \
+            -H 'Origin: https://evil.invalid' -H 'Content-Type: application/json' \
+            -H "X-CSRF-Token: $CSRF" "$API/api/auth/sessions/revoke-all" || echo 000)
+          echo "hostile-origin revoke-all WITH valid session+CSRF -> $CODE (expect 403)"
+          [ "$CODE" = "403" ] || { echo "::error::hostile Origin overrode a valid session"; exit 1; }
+          echo "T9/T10-AUTH-SESSION-CSRF-GREEN"
+
+      # ------------------------------------------------------------------
+      # TEST 11: the unsafe non-loopback production matrix fails closed
+      # at BOTH levels — API startup (packaged Node + packaged API) and
+      # supervisor config resolution.
+      # ------------------------------------------------------------------
+      - name: "T11: unsafe non-loopback production configurations FAIL CLOSED"
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/ls-app-root.env
+          . /tmp/ls-config.env
+          . /tmp/ls-seeds.env
+          NODE="$APP_ROOT/Contents/Resources/runtime/nodejs/bin/node"
+          API_ENTRY="$APP_ROOT/Contents/Resources/api/dist/index.js"
+          [ -x "$NODE" ] && [ -f "$API_ENTRY" ] || { echo "::error::packaged node/API missing"; exit 1; }
+
+          dburl="postgresql://medivault:$MV_KEYCHAIN_SEED_PG_APP_PASSWORD@127.0.0.1:$MV_PGPORT/medivault"
+
+          api_neg() { # label, extra-env assignments…
+            LABEL="$1"; shift
+            set +e
+            OUT=$(env "$@" NODE_ENV=production MEDIVAULT_LOCALHOST_ONLY=true \
+              PORT=3999 DATABASE_URL="$dburl" \
+              "$NODE" "$API_ENTRY" 2>&1)
+            RC=$?
+            set -e
+            echo "[$LABEL] exit=$RC"
+            echo "$OUT" | tail -3
+            [ "$RC" -ne 0 ] || { echo "::error::$LABEL did NOT fail closed (exit 0)"; exit 1; }
+            echo "$OUT" | grep -q 'FATAL (localhost-production mode)' || {
+              echo "::error::$LABEL failed for an unexpected reason (not the Model A gate)"; exit 1
+            }
+          }
+
+          echo "== T11a: API startup — non-loopback bind hosts fail closed =="
+          api_neg "HOST=0.0.0.0"      HOST=0.0.0.0 ALLOWED_ORIGINS=tauri://localhost
+          api_neg "HOST=::"            HOST=:: ALLOWED_ORIGINS=tauri://localhost
+          api_neg "HOST=LAN address"   HOST=192.168.1.20 ALLOWED_ORIGINS=tauri://localhost
+          echo "== T11b: API startup — forbidden flag / origin policy combinations fail closed =="
+          api_neg "TRUSTED_LOCAL_TLS_TERMINATION=true" HOST=127.0.0.1 ALLOWED_ORIGINS=tauri://localhost TRUSTED_LOCAL_TLS_TERMINATION=true
+          api_neg "HTTPS=true"          HOST=127.0.0.1 ALLOWED_ORIGINS=tauri://localhost HTTPS=true
+          api_neg "wildcard origins"    HOST=127.0.0.1 'ALLOWED_ORIGINS=*'
+          api_neg "non-local origins"   HOST=127.0.0.1 ALLOWED_ORIGINS=https://evil.invalid
+          api_neg "missing origins"     HOST=127.0.0.1 ALLOWED_ORIGINS=
+
+          echo "== T11c: supervisor config resolution — non-loopback hosts fail closed =="
+          SUP="$APP_ROOT/Contents/MacOS/mediavault-supervisor"
+          sup_neg() { # label, jq filter
+            LABEL="$1"; FILTER="$2"
+            BADCFG="$RUNNER_TEMP/ls-bad-config.json"
+            jq "$FILTER" "$CONFIG" > "$BADCFG"
+            set +e
+            OUT=$("$SUP" status --config "$BADCFG" 2>&1)
+            RC=$?
+            set -e
+            echo "[$LABEL] exit=$RC"
+            echo "$OUT" | tail -2
+            [ "$RC" -ne 0 ] || { echo "::error::$LABEL did NOT fail closed (exit 0)"; exit 1; }
+            echo "$OUT" | grep -q 'loopback' || {
+              echo "::error::$LABEL failed for an unexpected reason (not the loopback gate)"; exit 1
+            }
+          }
+          sup_neg "api.host=0.0.0.0"        '.api.host = "0.0.0.0"'
+          sup_neg "api.host=LAN address"    '.api.host = "192.168.1.20"'
+          sup_neg "postgres.host=0.0.0.0"   '.postgres.host = "0.0.0.0"'
+          sup_neg "postgres.host=::"        '.postgres.host = "::"'
+          sup_neg "postgres.host=remote"    '.postgres.host = "db.lan.invalid"'
+          echo "T11-FAIL-CLOSED-GREEN (API startup + supervisor resolution, both levels)"
+
+      - name: "T12 (tail): graceful SIGTERM + zero owned orphans"
+        shell: bash
+        run: |
+          set -euo pipefail
+          STATUS="$MV_APP_SUPPORT/runtime-state/supervisor-status.json"
+          kill -TERM "$(jq -r .pid "$STATUS")"
+          for i in $(seq 1 180); do [ -f /tmp/ls-supervisor.exit ] && break; sleep 0.5; done
+          EXIT_CODE=$(cat /tmp/ls-supervisor.exit 2>/dev/null || echo MISSING)
+          echo "supervisor exit code: $EXIT_CODE (expect 0)"
+          [ "$EXIT_CODE" = "0" ] || { echo "::error::supervisor did not exit 0"; exit 1; }
+          sleep 2
+          LEFT=$(pgrep -fl "postgres -D" | grep -v pgrep || true)
+          [ -z "$LEFT" ] && echo "zero postgres orphans" || { echo "$LEFT"; exit 1; }
+          [ ! -f "$MV_APP_SUPPORT/PostgreSQL/17/data/postmaster.pid" ] || {
+            echo "::error::postmaster.pid still present"; exit 1
+          }
+          echo "T12-SHUTDOWN-GREEN (graceful ladder, zero orphans)"
+
+      - name: Localhost-security summary (machine-readable)
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "LS-ARCH: ${{ matrix.expected_uname }}"
+            echo "LS-OS: macOS 26 (native)"
+            echo "LS-CONTRACT: Model A localhost-security (approved 2026-09-08)"
+            echo "LS-T1-STARTUP: GREEN"
+            echo "LS-T2-API-LISTEN: 127.0.0.1:$MV_API_PORT only"
+            echo "LS-T3-PG-LISTEN: 127.0.0.1:$MV_PGPORT only"
+            echo "LS-T4-NO-WILDCARD-NO-LAN: GREEN"
+            echo "LS-T5-TRUSTED-LOCAL-TLS-TERMINATION: ABSENT"
+            echo "LS-T6-TRUST-PROXY: FALSE"
+            echo "LS-T7-VALID-ORIGIN: GREEN"
+            echo "LS-T8-HOSTILE-ORIGIN: REJECTED"
+            echo "LS-T9-AUTH-SESSION: GREEN"
+            echo "LS-T10-CSRF: GREEN"
+            echo "LS-T11-UNSAFE-CONFIG: FAILS CLOSED"
+            echo "LS-T12-SUPERVISOR-STARTUP-SHUTDOWN: GREEN"
+          } | tee /tmp/ls-summary.txt
+
+      - name: Teardown + orphan sweep (always)
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          pkill -f 'MediVault.app/Contents/MacOS/mediavault-supervisor' 2>/dev/null || true
+          pkill -f 'MediVault.app/Contents/Resources/runtime/nodejs' 2>/dev/null || true
+          d="$MV_APP_SUPPORT/PostgreSQL/17/data"
+          if [ -d "$d" ] && [ -f "$d/PG_VERSION" ]; then
+            PGRT="$RUNNER_TEMP/MediVault.app/Contents/Resources/runtime/postgresql/17/bin"
+            [ -x "$PGRT/pg_ctl" ] && "$PGRT/pg_ctl" -D "$d" -m fast -w -t 60 stop 2>/dev/null || true
+          fi
+          sleep 2
+          LEFT=$(pgrep -fl "postgres -D" | grep -v pgrep || true)
+          [ -z "$LEFT" ] && echo "clean — zero postgres processes" || {
+            echo "$LEFT"; pkill -9 -f "postgres -D" 2>/dev/null || true
+          }
+          rm -rf "$MV_APP_SUPPORT" 2>/dev/null || true
+          for account in pg-app-password pg-bootstrap master-key jwt-secret csrf-secret; do
+            security delete-generic-password -s dev.medivault -a "$account" >/dev/null 2>&1 || true
+          done
+
+      - name: Upload evidence (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: localhost-security-${{ matrix.label }}-evidence
+          retention-days: 1
+          path: |
+            /tmp/ls-summary.txt
+            /tmp/ls-supervisor-tests.log
+            /tmp/ls-model-a-tests.log
+            /tmp/macho-gate-ls-*.txt
+            /tmp/ls-bootstrap.log
+            /tmp/ls-setup-body.json
+            ${{ env.MV_APP_SUPPORT }}/logs/supervisor.log
+            ${{ env.MV_APP_SUPPORT }}/logs/provision.log
+            ${{ env.MV_APP_SUPPORT }}/logs/api.log
+            ${{ env.MV_APP_SUPPORT }}/logs/postgres.log
+            /tmp/ls-bad-config.json
           if-no-files-found: ignore
