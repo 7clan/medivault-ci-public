@@ -35,12 +35,18 @@ export function setAuthCookies(
   const useSecure = secure ?? shouldUseSecureCookies()
   const secureFlag = useSecure ? '; Secure' : ''
 
-  // Access token cookie — HttpOnly
+  // Each cookie as its OWN Set-Cookie header: Fastify stores the array and
+  // Node serializes it as three separate headers. (First-red fix of run
+  // 34237523921: the previous comma-joined single header is parsed by every
+  // real HTTP client — browsers, curl — as ONE cookie, so mvlt_refresh and
+  // mvlt_csrf were never actually delivered over the wire; only the
+  // test-suite's lenient ', ' splitting masked it. SameSite=Lax values
+  // never contain ', ', so the test helpers that join+split keep working.)
   reply.header('Set-Cookie', [
     `mvlt_session=${accessToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${expiresIn}${secureFlag}`,
     `mvlt_refresh=${refreshToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${48 * 60 * 60}${secureFlag}`,
     `mvlt_csrf=${csrfToken}; Path=/; SameSite=Lax; Max-Age=${expiresIn}${secureFlag}`,
-  ].join(', '))
+  ])
 }
 
 /**
@@ -50,11 +56,13 @@ export function clearAuthCookies(reply: FastifyReply): void {
   const secure = shouldUseSecureCookies()
   const secureFlag = secure ? '; Secure' : ''
 
+  // Same first-red fix as setAuthCookies: separate Set-Cookie headers, one
+  // per cleared cookie, so every real client honors all three Max-Age=0.
   reply.header('Set-Cookie', [
     `mvlt_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secureFlag}`,
     `mvlt_refresh=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secureFlag}`,
     `mvlt_csrf=; Path=/; SameSite=Lax; Max-Age=0${secureFlag}`,
-  ].join(', '))
+  ])
 }
 
 /**
