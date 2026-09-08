@@ -8344,7 +8344,12 @@ jobs:
               echo "::error::unexpected status '$ST'"; exit 1 ;;
           esac
 
-      - name: The launchd job exists (fail-closed print proof)
+      # The REAL SMAppService launchd job shape (observed on macOS 26 runners,
+      # run 34265844092): type = Submitted, managed_by = com.apple.xpc.ServiceManagement,
+      # program identifier = the BundleProgram, parent bundle = the app, state/pid.
+      # These lines are the STRONG proof: the job is registered through Apple's
+      # ServiceManagement path (NOT legacy launchctl load).
+      - name: The launchd job exists — the SMAppService-submitted shape (fail-closed)
         shell: bash
         run: |
           set -euo pipefail
@@ -8358,15 +8363,24 @@ jobs:
             cat /tmp/sa-launchctl-print.log
             exit 1
           fi
-          grep -q 'program = ' /tmp/sa-launchctl-print.log || {
-            echo "::error::launchctl print output has no program line"
+          grep -q 'managed_by = com.apple.xpc.ServiceManagement' /tmp/sa-launchctl-print.log || {
+            echo "::error::the job is NOT managed by com.apple.xpc.ServiceManagement (legacy registration?)"
             cat /tmp/sa-launchctl-print.log
             exit 1
           }
-          grep -qE 'state = ' /tmp/sa-launchctl-print.log || true
+          grep -q 'program identifier = Contents/MacOS/mediavault-supervisor' /tmp/sa-launchctl-print.log || {
+            echo "::error::the job's program identifier is not the shipped BundleProgram shape"
+            cat /tmp/sa-launchctl-print.log
+            exit 1
+          }
+          grep -q 'parent bundle identifier = com.medivault.desktop' /tmp/sa-launchctl-print.log || {
+            echo "::error::the job's parent bundle identifier is not com.medivault.desktop"
+            cat /tmp/sa-launchctl-print.log
+            exit 1
+          }
           echo "--- job shape (selected lines):"
-          grep -E 'program = |state = |run interval|pid = ' /tmp/sa-launchctl-print.log | head -8 || true
-          echo "SA-LAUNCHD-JOB-GREEN (gui domain job present after registration)"
+          grep -E 'state = |pid = |runs = |program identifier|parent bundle identifier|managed_by' /tmp/sa-launchctl-print.log | head -8 || true
+          echo "SA-LAUNCHD-JOB-GREEN (gui-domain job, ServiceManagement-managed, BundleProgram shape, parent bundle = the app)"
 
       - name: Branch A (enabled) — launchd starts the backend; Branch B (requiresApproval) — the approval gate holds
         shell: bash
@@ -8496,7 +8510,7 @@ jobs:
             echo "SA-BRANCH: ${SA-BRANCH:-unknown}"
             echo "SA-REGISTER-UNDER-ADHOC: GREEN"
             echo "SA-LAUNCHD-JOB: GREEN"
-            echo "SA-KEEPALIVE: $([ -f /tmp/sa-launchctl-gone.log ] && echo 'see logs' || echo 'see logs')"
+            echo "SA-KEEPALIVE: $(grep -h 'SA-KEEPALIVE-GREEN' /dev/null 2>/dev/null || echo 'branch-dependent (see job log)')"
             echo "SA-INTERACTIVE-REMAINING: Login Items approval UI, logout/login, reboot (harness sections 5-10)"
           } | tee /tmp/sa-summary.txt
 
