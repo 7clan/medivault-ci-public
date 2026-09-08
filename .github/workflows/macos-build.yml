@@ -6932,17 +6932,21 @@ jobs:
             "$API/api/auth/logout" || echo 000)
           echo "logout WITHOUT X-CSRF-Token -> $CODE (expect 403)"
           [ "$CODE" = "403" ] || { echo "::error::CSRF protection not enforced (expected 403)"; exit 1; }
-          # CSRF-positive: the double-submit token completes the logout
+          # CSRF-positive: the double-submit token completes the logout.
+          # (-d '{}' matches the CSRF-negative control and the real frontend:
+          # Fastify answers 400 to a bodyless application/json POST before the
+          # route ever runs — first-red fix of run 34238773249.)
           CSRF=$(awk '$6=="mvlt_csrf" {print $7}' "$JAR")
           [ -n "$CSRF" ] || { echo "::error::could not read the csrf cookie from the jar"; cat "$JAR"; exit 1; }
           CODE=$(curl -s -o /dev/null -w "%{http_code}" -b "$JAR" -X POST \
-            -H 'Origin: tauri://localhost' -H 'Content-Type: application/json' \
+            -H 'Origin: tauri://localhost' -H 'Content-Type: application/json' -d '{}' \
             -H "X-CSRF-Token: $CSRF" "$API/api/auth/logout" || echo 000)
           echo "logout WITH X-CSRF-Token -> $CODE (expect 200)"
           [ "$CODE" = "200" ] || { echo "::error::CSRF-positive logout failed"; exit 1; }
-          # Hostile Origin beats a fully-valid session+CSRF (origin gate first)
+          # Hostile Origin beats a fully-valid session+CSRF (origin gate first;
+          # body present so the JSON parser cannot 400 before the origin gate)
           CODE=$(curl -s -o /dev/null -w "%{http_code}" -b "$JAR" -X POST \
-            -H 'Origin: https://evil.invalid' -H 'Content-Type: application/json' \
+            -H 'Origin: https://evil.invalid' -H 'Content-Type: application/json' -d '{}' \
             -H "X-CSRF-Token: $CSRF" "$API/api/auth/sessions/revoke-all" || echo 000)
           echo "hostile-origin revoke-all WITH valid session+CSRF -> $CODE (expect 403)"
           [ "$CODE" = "403" ] || { echo "::error::hostile Origin overrode a valid session"; exit 1; }
