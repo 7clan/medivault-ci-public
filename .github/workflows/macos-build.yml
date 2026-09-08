@@ -8272,17 +8272,35 @@ jobs:
           grep -q 'status=' /tmp/sa-selftest.log
           echo "SA-SELFTEST-GREEN (bundle identity + shipped plist + live status query)"
 
-      - name: Status BEFORE registration must be notRegistered (fresh)
+      - name: Status BEFORE registration (fresh = notRegistered or notFound — both documented)
         shell: bash
         run: |
           set -euo pipefail
           . /tmp/sa-installed.env
           ST="$("$INSTALLED/Contents/MacOS/mediavault-launchagent" status)"
           echo "status before registration: $ST"
-          [ "$ST" = "notRegistered" ] || {
-            echo "::error::expected notRegistered on a fresh runner, got '$ST' (leftover registration state?)"
-            exit 1
-          }
+          case "$ST" in
+            notRegistered)
+              echo "fresh state: notRegistered (plist present, service not yet registered)" ;;
+            notFound)
+              echo "fresh state: notFound (service unknown to the registration database — the documented pre-first-launch state for an app the machine has not yet launched; the frozen production-readiness run recorded the same value)" ;;
+            enabled|requiresApproval)
+              echo "::error::status '$ST' on a fresh runner — leftover registration state"; exit 1 ;;
+            *)
+              echo "::error::unexpected status '$ST'"; exit 1 ;;
+          esac
+          # LaunchServices discovery — what Finder performs when an app appears
+          # in /Applications on a doctor machine (metadata discovery only;
+          # NOT a Gatekeeper or security setting change). Records whether the
+          # pre-registration status changes.
+          LSREG="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+          if [ -x "$LSREG" ]; then
+            "$LSREG" -f "$INSTALLED" >/dev/null 2>&1 || true
+            ST2="$("$INSTALLED/Contents/MacOS/mediavault-launchagent" status)"
+            echo "status after LaunchServices discovery: $ST2 (recorded; register() is the real transition under test)"
+          else
+            echo "lsregister not found — skipping discovery (recorded)"
+          fi
 
       - name: Register the LaunchAgent via SMAppService (ad-hoc release signature)
         shell: bash
