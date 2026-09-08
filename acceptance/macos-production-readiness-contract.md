@@ -1,12 +1,55 @@
 # MediVault — macOS Production-Readiness Contract (stage: production-readiness)
 
-Status: **AUTHORED** — the production hardening / distribution
-preparation phase. Freezes GREEN when the mode passes on BOTH
-architectures on the public mirror CI.
+Status: **FROZEN GREEN** (frozen 2026-09-08T01:48Z). Evidence: public
+run **34174841903** (run_number 33) @ mirror snapshot `8a549c5` (=
+private `3e14537`) — `production-readiness (arm64)` job **101906072260**
+GREEN (00:54:22→01:05:35Z) and `production-readiness (x64)` job
+**101906071818** GREEN (01:19:06→01:47:55Z; the leg's FIRST attempt
+failed at `next/font` remote-resource fetch — instance variance on that
+runner, retried via the run's `rerun-failed-jobs` endpoint: SAME run,
+SAME SHA, no duplicate dispatch; ONE SHA + ONE MODE = ONE RUN held).
+
+First-red ledger (all new-lane issues; frozen product semantics never
+altered):
+1. run 34167622193 @ `1e2a5cd` — MY OWN test was shape-flawed: asserted
+   `lexical(root/Contents/MacOS) == lexical(exe_dir)`, which only holds
+   when the exe truly sits at `<root>/Contents/MacOS` (not for a test
+   binary in `target/debug/deps`). Fixed `dfdcf77`: prove the
+   normalization contract at the real location + the bundle-shape math
+   on a synthetic path.
+2. run 34168321417 @ `e675767` — swiftc emits `LC_RPATH /usr/lib/swift`
+   (outside the bundle): the frozen Mach-O gate rejects it. Fixed
+   `83d8f66`: `install_name_tool -delete_rpath /usr/lib/swift` + re-sign
+   (the Swift runtime dylibs resolve via absolute `/usr/lib` install
+   names — allowed by the gate's deps rule).
+3. run 34169508827 @ `1e46adb` — TWO findings: (a) MY verifier bug:
+   `codesign -d -d` never prints the CodeDirectory flags line — fixed
+   with `codesign -dvv`; (b) REAL hygiene finding: the PREBUILT prisma
+   query engines ship their BUILD MACHINE's absolute install ID
+   (`/Users/runner/work/prisma-engines/…/libquery_engine.dylib`) in
+   LC_ID_DYLIB — never surfaced before (frozen gates never covered the
+   prisma engines; they are dlopen'ed, not linked). Fixed `d0ef88d`:
+   rewrite install IDs to `@loader_path/<name>` + re-sign + a
+   fail-closed residual absolute-path scan across every shipped Mach-O.
+4. run 34171321066 @ `0cdfeef` — MY scan bug: `otool -L` line 1 is the
+   HEADER (the inspected file's own path) — scanning all lines flagged
+   every Mach-O's header. Fixed `0cfc7a9`: `tail -n +2` (header skip;
+   line 2 = install ID for dylibs, then deps).
+5. run 34172486700 @ `729ef53` — MY scan false-positive: the no-legacy
+   scan matched the SMAppService helper's DOCUMENTATION comments
+   ("NOT legacy launchctl load/unload"). Fixed `7fd473d`: strip
+   comment lines — the scan fails only on real code.
+6. run 34173608740 @ `6fbb150` — REAL gap: the Node provisioner re-reads
+   the shared config with the OLD loader (required absolute user dirs,
+   no `Contents/`-relative support) and crashed on the shipped
+   relocatable shape. Fixed `3e14537`: the provisioner mirrors the
+   Rust contract exactly (optional user dirs with per-user defaults,
+   `Contents/`-relative resolution against the config-derived bundle
+   root, resolved provisioner/prisma paths).
 
 Lane: `platform/macos` (private, canonical) → `7clan/medivault-ci-public`
-(public mirror, history-free) — unchanged flow, ONE SHA + ONE MODE = ONE
-RUN discipline. All predecessor stages remain FROZEN GREEN (not rerun).
+(public mirror, history-free) — unchanged flow. All predecessor stages
+remain FROZEN GREEN (not rerun).
 
 ## 0. Purpose
 
@@ -41,11 +84,49 @@ credentials and an interactive Mac exist:
    running with the HARDENED binaries from an arbitrary install
    location using the SHIPPED relocatable config (production shape).
 
-## 1. What runs (mode: `production-readiness`)
+## 1. What runs (mode: `production-readiness`) — PROVEN GREEN 2026-09-08
 
 Matrix: `macos-26` (arm64) + `macos-26-intel` (x64) — the newest-OS
 runners (the frozen dmg pipeline blocks, pinned versions, same cache
 keys; a cache miss rebuilds the identical dt13 contract).
+
+GREEN evidence per step (both arches):
+* supervisor unit tests 13/13 (incl. the relocatable-config resolution
+  suite: bundle-relative resolution, optional user dirs, the synthetic
+  odd-location bundle) — `test result: ok. 13 passed`;
+* desktop unit tests 2/2 (SMAppService status mapping + the
+  fail-closed rejection of any non-documented status);
+* PRISMA-INSTALL-ID-HYGIENE-GREEN (2 engines repaired to
+  `@loader_path/…` + zero non-system absolute references across every
+  shipped Mach-O);
+* SIGN-STRUCTURAL-ADHOC-GREEN — 15 nested Mach-O components + the root,
+  signed inside-out with `--options runtime`, zero entitlements;
+* **NODE_ALLOW_JIT=not-needed** (the empirical strictest-first proof:
+  hardened Node with NO entitlements ran the JIT-tiering workload,
+  exit 0, `JIT-WORKLOAD-OK` — V8's MAP_JIT W^X path works under the
+  Hardened Runtime on Node 22.23.2; the shipped configuration carries
+  ZERO entitlements, matching the least-privilege directive);
+* VERIFY-SIGNATURES-GREEN — 15 components + root, hardened-runtime flag
+  verified everywhere (`codesign -dvv`), entitlements exact, bundle
+  placement + relocatable-config contract, per-component strict
+  verification;
+* SMAppService proofs — helper `self-test` from inside the built .app
+  (bundle identity + plist found at the exact shipped path), `status`
+  returns a documented value (`notFound` on CI — the four-value model
+  membership is the assert), plutil lint + BundleProgram contract;
+* NO-LEGACY-REGISTRATION-GREEN + NO-ALTOOL-GREEN (code-only scan);
+* DMG built + verified (frozen contract);
+* DEFAULT-CONFIG-RESOLUTION-GREEN — `status` with NO `--config` from
+  `$RUNNER_TEMP/OddPlaces/deep/MediVault.app` exits 2 (valid config,
+  no status yet): exe-relative default resolution proven from an
+  arbitrary install location;
+* HARDENED-LIFECYCLE-GREEN — the supervisor with NO arguments (the
+  LaunchAgent shape) from the odd location: seeded keychain bootstrap
+  5/5, CLEAN delegated provisioning via the PACKAGED provisioner (now
+  relocatable-aware), 8/8 migrations, authenticated SELECT 1 as the
+  app role on the SHIPPED production port 55432, the API on the
+  packaged hardened Node with /health + /ready 200 on port 3001,
+  graceful SIGTERM exit 0, zero owned orphans, postmaster.pid gone.
 
 1. **Preflight** — native arch proof (uname + proc_translated), tools
    (swiftc present).

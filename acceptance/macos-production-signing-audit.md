@@ -1,8 +1,21 @@
 # MediVault macOS — Production Signing Audit (shipped component inventory)
 
-Status: **AUTHORED** (production-readiness phase) — the structural half is
-CI-verified by the `production-readiness` mode; the Developer-ID half
-activates when Apple credentials arrive.
+Status: **CI-VERIFIED (structural)** — the production-readiness mode
+(run 34174841903, GREEN both arches 2026-09-08) proves the structural
+half: inside-out signing with `--options runtime`, zero entitlements,
+recursive fail-closed verification, prisma install-ID hygiene. The
+Developer-ID half activates when Apple credentials arrive.
+
+**Empirical entitlement result (frozen 2026-09-08, run 34174841903,
+BOTH arches):** the strictest-first Node JIT proof PASSED with ZERO
+entitlements — hardened Node 22.23.2 (ad-hoc + `--options runtime`, no
+entitlements) executed the JIT-tiering workload (exit 0,
+`JIT-WORKLOAD-OK`). V8's MAP_JIT W^X (`pthread_jit_write_protect_np`)
+path works under the Hardened Runtime. **The shipped configuration
+carries ZERO entitlements on every component — including Node.** The
+`node-allow-jit.plist` file remains in-tree as the documented fallback
+IF a future Node/V8/macOS combination ever fails the strict proof
+(re-evaluated by the same CI step on every run).
 
 Scope: the ACTUAL shipped `MediVault.app`, audited recursively from the
 frozen staging contract (`macos/scripts/stage-pg-bundle.sh`,
@@ -53,6 +66,16 @@ CLI closure is pure JS; no `.node` native addons ship.)
 sidecar) — the DMG is itself signed (ad-hoc now, Developer ID at
 production) and is the notarytool upload format.
 
+**Hygiene finding, fixed (production-readiness first-red #3):** the
+PREBUILT prisma query engines shipped their BUILD MACHINE's absolute
+install ID (`/Users/runner/work/prisma-engines/…/libquery_engine.dylib`)
+in LC_ID_DYLIB — a build-machine absolute path inside shipped Mach-O,
+never surfaced before (frozen gates never covered the prisma engines,
+which node dlopens instead of links). The production-readiness pipeline
+now rewrites those install IDs to `@loader_path/<name>` + re-signs,
+then fail-closed scans EVERY shipped Mach-O for non-system absolute
+references on any `otool -L` line (GREEN both arches).
+
 ## 2. Hardened Runtime entitlement plan — least privilege
 
 All components are signed with `codesign --options runtime` (Hardened
@@ -63,7 +86,7 @@ is empirical, strictest-first):
 
 | Component | Proposed production entitlements | Justification |
 |---|---|---|
-| Node runtime (row 4) | `com.apple.security.cs.allow-jit` (ONLY if the strictest-first CI proof shows V8 crashing without it) | V8 JIT-compiles JS; under Hardened Runtime, MAP_JIT pages without the entitlement crash on JIT tier-up. Apple's entitlement doc names this exact use case. The production-readiness CI mode runs a JIT-tiering workload under the strictest config first: if it passes, ZERO entitlements ship; if it crashes, the failure is recorded and ONLY the Node binary gets allow-jit. |
+| Node runtime (row 4) | **NONE — empirically proven** | The strictest-first CI proof (run 34174841903, both arches) ran a JIT-tiering workload under hardened Node with ZERO entitlements: PASS (exit 0, `JIT-WORKLOAD-OK`). V8's MAP_JIT W^X path works under the Hardened Runtime on Node 22.23.2. `com.apple.security.cs.allow-jit` (the narrow exception — never the broad `allow-unsigned-executable-memory`) would be added ONLY if that proof ever fails on some future Node/V8/macOS combination, with the failure evidence recorded and the entitlement applied to the Node binary alone. |
 | EVERYTHING else (rows 1–3, 5–14, the `.app` root, the DMG) | **NONE** | No JIT, no unsigned-memory use, no dyld environment manipulation, no debugging. Pure C/Rust/Swift-System-framework code. |
 
 **Explicitly NOT granted anywhere** (directive + Apple least-privilege):
