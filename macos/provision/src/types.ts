@@ -26,12 +26,19 @@
 export interface SupervisorConfig {
   version: number;
   paths: {
+    /** Absolute OR `Contents/`-bundle-relative (the shipped production
+     * shape — resolved against the app-bundle root derived from the
+     * config's own location; see resolveConfigPath in config.ts). */
     pg_bundle: string;
     node_binary: string;
     api_entry: string;
     api_working_dir?: string;
-    app_support_dir: string;
-    log_dir: string;
+    /** Optional — defaults to ~/Library/Application Support/MediVault
+     * (per-user, applied at load; the shipped config carries no user
+     * identity). */
+    app_support_dir?: string;
+    /** Optional — defaults to ~/Library/Logs/MediVault. */
+    log_dir?: string;
   };
   postgres: {
     /** Optional — defaults to 127.0.0.1 (same as the supervisor schema). */
