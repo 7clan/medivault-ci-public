@@ -144,7 +144,8 @@ write_caps() {
 
 # ------------------------------ helpers --------------------------------------
 snap() { # <stem> — native screenshot AFTER a real action; validates the PNG
-  local stem="$1" out="$EVID_DIR/$stem.png"
+  local stem="$1"
+  local out="$EVID_DIR/$stem.png"
   if screencapture -x "$out" 2>>"$LOG" && [ -s "$out" ]; then
     SNAP_COUNT=$((SNAP_COUNT + 1))
     local h dim sz
@@ -168,12 +169,15 @@ snap_changed() { # did the screen actually change since the last snap? hash-diff
 }
 
 osa() { # osascript -e <script> [timeout_s] — watchdogged (a consent/password dialog can hang it)
-  local script="$1" t="${2:-30}"
+  local script="$1"
+  local t="${2:-30}"
   OSA_OUT=""; OSA_ERR=""
-  local outf=/tmp/gui-osa.out errf=/tmp/gui-osa.err
+  local outf=/tmp/gui-osa.out
+  local errf=/tmp/gui-osa.err
   : > "$outf"; : > "$errf"
   osascript -e "$script" >"$outf" 2>"$errf" &
-  local pid=$! i=0
+  local pid=$!
+  local i=0
   while kill -0 "$pid" 2>/dev/null; do
     i=$((i + 1))
     if [ "$i" -gt "$t" ]; then
@@ -191,7 +195,10 @@ osa() { # osascript -e <script> [timeout_s] — watchdogged (a consent/password 
 }
 
 wait_for_path() { # <path> <timeout_s> — waits for an exact-size file
-  local path="$1" timeout="$2" i size
+  local path="$1"
+  local timeout="$2"
+  local i
+  local size
   for i in $(seq 1 "$timeout"); do
     size="$(stat -f%z "$path" 2>/dev/null || echo 0)"
     if [ "$size" = "$EXPECTED_SIZE" ] && [ ! -e "$path.download" ]; then
