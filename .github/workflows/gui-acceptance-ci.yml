@@ -1,0 +1,107 @@
+# ==============================================================================
+# MediVault GUI Acceptance CI — the macOS-runner GUI REALITY experiment
+# ==============================================================================
+# Dispatch-only (same discipline as every lane in this repo: nothing
+# auto-triggers, nothing scheduled). This workflow is TEST INFRASTRUCTURE
+# ONLY — it never modifies MediVault product code.
+#
+# WHAT IT IS: a single empirical experiment (acceptance/
+# macos-gui-acceptance-contract.md) answering, on a REAL GitHub-hosted
+# macOS 26 runner of the requested architecture:
+#
+#   1. Is there a usable GUI session (WindowServer, console user,
+#      Finder/System Settings windows, native screenshots)?
+#   2. How far down the REAL zero-cost install path does genuine
+#      automation go: Safari download -> natural quarantine ->
+#      offline verify -> Finder DMG window -> drag to Applications ->
+#      first launch -> Gatekeeper warning -> Privacy & Security ->
+#      Open Anyway -> MediVault product checks?
+#
+# FROZEN RELEASE UNDER TEST (never rebuilt here):
+#   v0.1.0-zero-cost-rc1 — arm64 7059c372…, x86_64 1eb5a245…
+#   (run 34255257006 artifacts, preserved on the public Release)
+#
+# HONESTY CONTRACT (violating any of these invalidates the run):
+#   * screenshots are native `screencapture` output AFTER the real action;
+#     missing capabilities get NO screenshot, never a mock
+#   * Gatekeeper is NEVER disabled or weakened
+#   * quarantine is never manufactured or removed — only observed
+#   * TCC is never touched — if macOS blocks automation, that is the finding
+#   * no command-line copy is ever reported as a Finder/drag proof
+#   * logout/login + reboot are NOT PROVEN by construction (a GitHub job
+#     cannot survive them)
+#
+# RUN OUTCOME SEMANTICS:
+#   green  = the experiment executed and recorded its findings honestly
+#            (including "GUI_SESSION = NOT AVAILABLE" and every honest
+#            NOT PROVEN stop)
+#   red    = a class-D GUI-harness bug (fixed under first-red discipline)
+#   B/C/E-class environment findings never fail the job.
+#
+# One SHA + one dispatch = one run. Modes in macos-build.yml are FROZEN and
+# are NEVER dispatched by this workflow.
+# ==============================================================================
+
+name: GUI Acceptance CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: 'Target architecture (arm64 = macos-26, x86_64 = macos-26-intel)'
+        required: true
+        default: 'arm64'
+        type: choice
+        options:
+          - arm64
+          - x86_64
+
+permissions:
+  contents: read
+
+jobs:
+  gui-acceptance:
+    name: "GUI acceptance (${{ inputs.arch }})"
+    runs-on: ${{ inputs.arch == 'x86_64' && 'macos-26-intel' || 'macos-26' }}
+    timeout-minutes: 45
+
+    env:
+      EXPECTED_ARCH: ${{ inputs.arch }}
+      RELEASE_TAG: 'v0.1.0-zero-cost-rc1'
+      RELEASE_BASE: 'https://github.com/7clan/medivault-ci-public/releases/download/v0.1.0-zero-cost-rc1'
+      DMG_NAME: ${{ inputs.arch == 'x86_64' && 'MediVault-x86_64.dmg' || 'MediVault-arm64.dmg' }}
+      MANIFEST_NAME: ${{ inputs.arch == 'x86_64' && 'MediVault-x86_64.manifest.txt' || 'MediVault-arm64.manifest.txt' }}
+      # FROZEN release candidate digests (run 34255257006; never rebuilt here)
+      EXPECTED_SHA256: ${{ inputs.arch == 'x86_64' && '1eb5a2452922d3f587227623cfa0a176443ebcbb178fc18da5164b2923b22f35' || '7059c3725b256be8860622e89e28e3d76cce3388ec7aec4953637f8eefc29b34' }}
+      EXPECTED_SIZE: ${{ inputs.arch == 'x86_64' && '218227556' || '203766525' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run the GUI acceptance experiment (capability-gated, honest stops)
+        shell: bash
+        run: bash macos/scripts/gui-acceptance.sh
+
+      - name: Job summary — capability report
+        if: always()
+        shell: bash
+        run: |
+          if [ -f gui-evidence/capability-report.md ]; then
+            {
+              echo "## GUI Acceptance (${{ inputs.arch }}) — capability report"
+              echo '```'
+              cat gui-evidence/capability-report.md
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload screenshot evidence + capability report (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-evidence-${{ inputs.arch }}
+          retention-days: 7
+          path: |
+            gui-evidence/
+          if-no-files-found: warn
