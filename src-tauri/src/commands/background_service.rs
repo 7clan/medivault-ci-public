@@ -116,10 +116,26 @@ fn helper_path() -> Result<PathBuf, String> {
         .collect::<Vec<_>>()
         .join(" ");
 
+    // Name matching: APFS is case-insensitive AND normalization-insensitive
+    // (execve from bash matches the on-disk name regardless of case or
+    // Unicode decomposition), but a BYTE comparison does not. First-red
+    // evidence (runs 34650350460..34654268262): the entry's rendered name
+    // equals the constant, yet the exact comparison fails — the on-disk
+    // name carries a non-ASCII/normalization artifact. Match on the
+    // ASCII-printable, case-folded projection; ALWAYS use the ENTRY's own
+    // path (the true on-disk name) for the stat/spawn.
+    fn ascii_fold(s: &str) -> String {
+        s.chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .flat_map(|c| c.to_lowercase())
+            .collect()
+    }
+    let wanted = ascii_fold(HELPER_NAME);
+
     let mut helper: Option<PathBuf> = None;
     let mut entry_is_regular = false;
     for en in &entries {
-        if en.file_name().to_string_lossy() == HELPER_NAME {
+        if ascii_fold(&en.file_name().to_string_lossy()) == wanted {
             helper = Some(en.path());
             entry_is_regular = en
                 .file_type()

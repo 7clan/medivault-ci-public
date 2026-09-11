@@ -742,6 +742,10 @@ probe "helper file type: $(file "$APP_PATH/Contents/MacOS/$HELPER_NAME" 2>&1 | h
 probe "helper stat: $(stat -f 'mode=%Sp size=%z type=%HT' "$APP_PATH/Contents/MacOS/$HELPER_NAME" 2>&1)"
 probe "helper (bash) status: $("$APP_PATH/Contents/MacOS/$HELPER_NAME" status 2>&1 | head -2 | tr '\n' ' ' || true)"
 [ -f "$APP_PATH/Contents/MacOS/$HELPER_NAME" ] || die "SMAppService helper missing or not a regular file in the installed app"
+# RAW BYTES of the on-disk names (invisible/normalization artifacts would
+# be invisible in ls output but exact here — first-red evidence).
+probe "--- Contents/MacOS name BYTES (od -c):"
+ls "$APP_PATH/Contents/MacOS/" | od -c | tee -a "$LOG"
 snap "03-installed-app" || true
 
 # =============================================================================
@@ -878,6 +882,8 @@ if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*\(helper missing\|error occurred
   ps auxww | grep -i "[M]ediVault" | awk '{printf "  pid=%s %s\n", $2, substr($0, index($0,$11))}' | head -8 | tee -a "$LOG"
   probe "--- Contents/MacOS NOW (after the app checked it):"
   ls -la "$APP_PATH/Contents/MacOS/" 2>&1 | tee -a "$LOG"
+  probe "--- Contents/MacOS name BYTES NOW (od -c):"
+  ls "$APP_PATH/Contents/MacOS/" | od -c | tee -a "$LOG"
   probe "helper (bash) status NOW: $("$APP_PATH/Contents/MacOS/$HELPER_NAME" status 2>&1 | head -2 | tr '\n' ' ' || true)"
   if [ -s /tmp/mv-direct-launch.log ]; then
     probe "--- the app's OWN stderr (RUST_LOG=debug, first 80 lines) ---"

@@ -338,6 +338,10 @@ jobs:
           echo "--- shipped supervisor-config.json (RELOCATABLE, production ports, first-run origins):"
           cat "$APP/Contents/Resources/supervisor-config.json"
           test -f "$APP/Contents/Resources/frontend/index.html" || { echo "::error::frontend not staged in the bundle"; exit 1; }
+          # RAW BYTES of the staged names (the DMG round trip must preserve
+          # them exactly — first-red evidence for the invisible-name artifact).
+          echo "--- Contents/MacOS staged name BYTES (od -c):"
+          ls "$APP/Contents/MacOS/" | od -c
           grep -q 'http://127.0.0.1:3001' "$APP/Contents/Resources/supervisor-config.json" || { echo "::error::shipped config lacks the API-served frontend origin"; exit 1; }
           grep -q 'frontend_dir' "$APP/Contents/Resources/supervisor-config.json" || { echo "::error::shipped config lacks frontend_dir"; exit 1; }
 
