@@ -161,6 +161,7 @@ CAP_QUARANTINE_SRC="NOT PROVEN"
 CAP_DMG_HASH="RED"
 CAP_OFFLINE_VERIFY="RED"
 CAP_DMG_FINDER="NOT PROVEN"
+CAP_DMG_OA="NOT RUN (no DMG-level Gatekeeper block was observed)"
 CAP_PLACEMENT="NOT PROVEN"
 CAP_PLACEMENT_HOW="none"
 CAP_FIRST_LAUNCH="NOT RUN"
@@ -202,6 +203,7 @@ write_caps() {
     echo "DMG_HASH = $CAP_DMG_HASH"
     echo "OFFLINE_VERIFY = $CAP_OFFLINE_VERIFY"
     echo "FINDER_DMG = $CAP_DMG_FINDER"
+    echo "DMG_OPEN_ANYWAY = $CAP_DMG_OA"
     echo "FINDER_PLACEMENT = $CAP_PLACEMENT (method: $CAP_PLACEMENT_HOW)"
     echo "FIRST_QUARANTINED_LAUNCH = $CAP_FIRST_LAUNCH"
     echo "GATEKEEPER_WARNING = $CAP_GK_WARNING"
@@ -530,6 +532,7 @@ wait_for_medivault() { # <timeout_s> <label>
   t0="$(date +%s)"
   MV_PROC="no"; MV_WINDOW="no"; MV_TITLE=""; MV_T_PROC=""; MV_T_WINDOW=""
   MV_BLOCK="no"; MV_T_BLOCK=""; MV_BLOCK_SINCE=""; MV_KEYCHAIN="no"; MV_AUTH="no"
+  FWC0="$(ui_window_count "Finder")"
   local tick=0
   local se_every=2
   note "launch detector [$label]: waiting up to ${timeout}s wall-clock (Gatekeeper assessment may delay exec — launch is never counted failed while macOS is evaluating)"
@@ -575,6 +578,22 @@ wait_for_medivault() { # <timeout_s> <label>
         -1|0|'') : ;;
         *) MV_BLOCK="yes"; MV_T_BLOCK=$(( $(date +%s) - t0 )); MV_BLOCK_SINCE="$(date +%s)"
            probe "detector[$label]: Gatekeeper alert window detected after ${MV_T_BLOCK}s (process hosting it has $gk window(s))" ;;
+      esac
+    fi
+    # macOS 26 "Not Opened" alerts are FINDER-hosted (run 3c) — a rise in the
+    # Finder window count is the cheap live signal for one
+    if [ "$MV_PROC" = "no" ] && [ "$MV_BLOCK" = "no" ]; then
+      local fwc
+      fwc="$(ui_window_count "Finder")"
+      case "$fwc" in
+        ''|-1) : ;;
+        *) case "$FWC0" in
+             ''|*[!0-9]*) : ;;
+             *) if [ "$fwc" -gt "$FWC0" ]; then
+                  MV_BLOCK="yes"; MV_T_BLOCK=$(( $(date +%s) - t0 )); MV_BLOCK_SINCE="$(date +%s)"
+                  probe "detector[$label]: Finder window count rose ($FWC0 -> $fwc) — a Finder-hosted security alert is likely up (macOS 26 'Not Opened' style)"
+                fi ;;
+           esac ;;
       esac
     fi
     # Keychain / auth prompt watch (capture immediately, once)
@@ -1377,18 +1396,25 @@ else
 fi
 
 # =============================== PHASE D ======================================
-# DMG opened by Finder (real GUI mount + window). Run 3b taught us that a
-# plain `open` of a QUARANTINED DMG can block for 68+ minutes (a Gatekeeper
-# assessment of the DMG itself, likely with its own alert, blocks the mount).
-# The open is watchdogged; if the mount stalls, whatever the screen really
-# shows is captured, any real DMG-level Gatekeeper alert is dismissed through
-# its OWN buttons (native alert — AX-accessible, unlike Safari's dialog), and
-# the open is retried once. Nothing is bypassed.
+# DMG opened by Finder (real GUI mount + window). Run 3c proved:
+#   * a plain `open` of the QUARANTINED DMG blocks >90s — the watchdog
+#     bounds it (no more 68-minute hangs)
+#   * macOS 26 Gatekeeper blocks the DMG ITSELF with a real Finder-hosted
+#     alert: '"MediVault-arm64.dmg" — Not Opened — Apple could not verify
+#     "MediVault-arm64.dmg" is free of malware…' and buttons Move to Trash
+#     / Done (22a-dmg-gatekeeper-alert.png is the evidence)
+# The supported zero-cost path for that block is System Settings → Privacy
+# & Security → Open Anyway (for the DMG). v4 exercises it through REAL GUI
+# interaction only: dismiss the alert through its own Done button (NEVER
+# 'Move to Trash' — that would delete the artifact), open Privacy &
+# Security, click the real Open Anyway button, satisfy the admin-auth
+# dialog with the runner's own passwordless account (honest stop if macOS
+# refuses), then retry the mount. Gatekeeper is never disabled or weakened.
 note "=== PHASE D: open the DMG in Finder (watchdogged — the DMG is quarantined) ==="
 hdiutil detach "$VOLUME" -quiet >/dev/null 2>&1 || true
 DMG_OPEN_RC=0
 guarded_open 90 open "$DMG_PATH" || DMG_OPEN_RC=$?
-[ "$DMG_OPEN_RC" -eq 0 ] || probe "guarded_open of the DMG returned $DMG_OPEN_RC (recorded — a Gatekeeper assessment/alert may be blocking the mount)"
+[ "$DMG_OPEN_RC" -eq 0 ] || probe "guarded_open of the DMG returned $DMG_OPEN_RC (recorded — a Gatekeeper assessment/alert is likely blocking the mount)"
 MOUNTED="no"
 for i in $(seq 1 60); do
   [ -d "$VOLUME" ] && MOUNTED="yes" && break
@@ -1397,11 +1423,13 @@ done
 if [ "$MOUNTED" != "yes" ]; then
   # capture what the screen actually shows during the stalled mount
   snap 22a-dmg-gatekeeper-alert || true
+  # scan the hosts that can carry the macOS 26 'Not Opened' alert
+  # (run 3c: it is Finder-hosted — the CoreServicesUIAgent walk sees nothing)
   DMG_ALERT_TEXT=""
   DMG_ALERT_HOST=""
-  for hostproc in CoreServicesUIAgent UserNotificationCenter; do
+  for hostproc in Finder CoreServicesUIAgent UserNotificationCenter; do
     if ui_dialog_texts "$hostproc"; then
-      if [ -n "${OSA_OUT// /}" ]; then
+      if printf '%s' "$OSA_OUT" | grep -qi "could not verify\|malware\|Not Opened\|MediVault"; then
         DMG_ALERT_TEXT="$OSA_OUT"
         DMG_ALERT_HOST="$hostproc"
         break
@@ -1416,33 +1444,155 @@ if [ "$MOUNTED" != "yes" ]; then
       echo "DMG-level Gatekeeper alert (host process: $DMG_ALERT_HOST) — captured while opening the quarantined DMG"
       echo "$DMG_ALERT_TEXT"
     } > "$EVID_DIR/gatekeeper-dmg-alert-text.txt" 2>/dev/null || true
-    CAP_GK_WARNING="OBSERVED (DMG-level Gatekeeper alert during the mount — 22a + gatekeeper-dmg-alert-text.txt)"
-    classify E "quarantined DMG blocked at open with a Gatekeeper alert — the documented zero-cost Gatekeeper contract"
+    CAP_GK_WARNING="OBSERVED (DMG-level Gatekeeper alert on open — 22a + gatekeeper-dmg-alert-text.txt)"
+    classify E "quarantined DMG blocked at open by macOS 26 Gatekeeper ('Not Opened') — the documented zero-cost behavior; the supported path is Open Anyway"
+    # dismiss through its OWN Done button — NEVER 'Move to Trash' (it would
+    # delete the very artifact under test)
     DMG_DISMISS="not-attempted"
-    for hostproc in CoreServicesUIAgent UserNotificationCenter; do
-      for btn in "Done" "OK" "Cancel"; do
-        if ui_click_button_in_windows "$hostproc" "$btn" 15; then
-          if [ "${OSA_OUT#clicked}" != "$OSA_OUT" ]; then
-            DMG_DISMISS="$OSA_OUT"
-            break 2
+    if ui_click_button_in_windows "$DMG_ALERT_HOST" "Done" 15; then
+      if [ "${OSA_OUT#clicked}" != "$OSA_OUT" ]; then
+        DMG_DISMISS="$OSA_OUT"
+      fi
+    fi
+    if [ "$DMG_DISMISS" != "not-attempted" ]; then
+      probe "DMG-level alert dismissed via its own 'Done' button: $DMG_DISMISS (Move to Trash was never touched)"
+    else
+      probe "DMG-level alert could not be dismissed via its own button (recorded honestly — it stays on screen)"
+    fi
+    sleep 2
+    # ---- the supported approval path: Privacy & Security → Open Anyway ----
+    if [ "$UI_AUTOMATION" = "available" ]; then
+      note "=== PHASE D2: the supported DMG approval — System Settings → Privacy & Security → Open Anyway (legitimate GUI automation only) ==="
+      guarded_open 45 open "x-apple.systempreferences:com.apple.settings.privacy.security" 2>/dev/null || true
+      sleep 10
+      snap 26a-dmg-privacy-security-before || true
+      OA_DMG_FOUND="no"
+      OA_DMG_T0="$(date +%s)"
+      while [ $(( $(date +%s) - OA_DMG_T0 )) -lt 120 ]; do
+        osa 'tell application "System Settings" to activate' 10 >/dev/null 2>&1 || true
+        sleep 2
+        if osa 'tell application "System Events"
+  tell (first process whose name is "System Settings")
+    set hits to 0
+    try
+      repeat with el in (entire contents of window 1)
+        try
+          if class of el is button and name of el contains "Open Anyway" then set hits to hits + 1
+        end try
+      end repeat
+    end try
+  end tell
+end tell
+return hits as string' 45; then
+          if [ -n "$OSA_OUT" ] && [ "$OSA_OUT" != "0" ]; then
+            OA_DMG_FOUND="yes"
+            break
           fi
         fi
+        sleep 3
       done
-    done
-    if [ "$DMG_DISMISS" != "not-attempted" ]; then
-      probe "DMG-level alert dismissed via its own button: $DMG_DISMISS"
-      sleep 3
-      note "retrying the DMG open once after the alert was dismissed through its own button"
-      guarded_open 60 open "$DMG_PATH" || probe "retry open returned non-zero or was watchdog-killed (recorded)"
-      for i in $(seq 1 60); do
-        [ -d "$VOLUME" ] && MOUNTED="yes" && break
-        sleep 1
-      done
+      if [ "$OA_DMG_FOUND" = "yes" ]; then
+        CAP_DMG_OA="VISIBLE + CLICKED (the real Open Anyway button for the blocked DMG)"
+        probe "Open Anyway FOUND in the real Privacy & Security UI for the DMG-level block (count: $OSA_OUT)"
+        snap 27a-dmg-open-anyway-visible || true
+        if osa 'tell application "System Events"
+  tell (first process whose name is "System Settings")
+    repeat with el in (entire contents of window 1)
+      try
+        if class of el is button and name of el contains "Open Anyway" then
+          click el
+          return "clicked"
+        end if
+      end try
+    end repeat
+  end tell
+end tell
+return "not-found"' 60; then
+          probe "DMG-level Open Anyway click issued: $OSA_OUT"
+          sleep 5
+          snap 28a-dmg-open-anyway-confirmation || true
+          # the admin-authorization dialog (SecurityAgent) — satisfy it with
+          # the runner's own passwordless account through the REAL dialog,
+          # never a bypass; honest stop if macOS refuses
+          local_sa="$(ui_window_count "SecurityAgent")"
+          if [ "$local_sa" != "-1" ] && [ "$local_sa" != "0" ] && [ -n "$local_sa" ]; then
+            note "the DMG approval raised an admin-authorization dialog — attempting it through the real dialog (runner / empty password)"
+            if ui_dialog_texts "SecurityAgent"; then
+              probe "DMG auth dialog text: $(printf '%s' "$OSA_OUT" | cut -c1-300)"
+            fi
+            if osa 'tell application "System Events"
+  tell process "SecurityAgent"
+    set fields to {}
+    repeat with w in (get windows)
+      try
+        repeat with el in (entire contents of w)
+          try
+            set cl to class of el as string
+            if cl is "text field" or cl is "secure text field" then set end of fields to el
+          end try
+        end repeat
+      end try
+    end repeat
+    if (count of fields) is greater than or equal to 2 then
+      set value of item 1 of fields to "runner"
+      set value of item 2 of fields to ""
+    else if (count of fields) is 1 then
+      set value of item 1 of fields to ""
+    end if
+  end tell
+end tell
+return "fields-filled"' 30; then
+              probe "DMG auth fields filled (runner / empty password): $OSA_OUT"
+            else
+              probe "DMG auth fields could not be set via AX: $OSA_ERR"
+            fi
+            AUTH_CLICKED="no"
+            for btn in "OK" "Allow" "Unlock" "Continue" "Modify Settings"; do
+              if ui_click_button_in_windows "SecurityAgent" "$btn" 15; then
+                if [ "${OSA_OUT#clicked}" != "$OSA_OUT" ]; then
+                  AUTH_CLICKED="yes"
+                  probe "DMG auth dialog action button clicked: $OSA_OUT"
+                  break
+                fi
+              fi
+            done
+            [ "$AUTH_CLICKED" = "yes" ] || probe "no DMG auth action button was clickable (recorded honestly — approval left to the human)"
+            sleep 5
+          fi
+          sleep 3
+          snap 28a-dmg-open-anyway-confirmation || true
+          # verdict: does the mount clear now?
+          note "retrying the DMG open once after the Open Anyway approval"
+          guarded_open 90 open "$DMG_PATH" || probe "retry open returned non-zero or was watchdog-killed (recorded)"
+          for i in $(seq 1 60); do
+            [ -d "$VOLUME" ] && MOUNTED="yes" && break
+            sleep 1
+          done
+          if [ "$MOUNTED" = "yes" ]; then
+            CAP_DMG_OA="GREEN (Open Anyway approved through the real UI; the quarantined DMG then mounted)"
+          else
+            if [ -d "$VOLUME" ]; then MOUNTED="yes"; fi
+            [ "$MOUNTED" = "yes" ] || CAP_DMG_OA="BLOCKED (Open Anyway clicked but the mount did not clear — auth may have been refused; recorded honestly)"
+          fi
+        else
+          CAP_DMG_OA="BLOCKED_BY_OS_AUTOMATION_POLICY (Open Anyway click refused by macOS automation policy: $OSA_ERR)"
+        fi
+      else
+        CAP_DMG_OA="NOT VISIBLE (no Open Anyway row for the DMG-level block within 120s — recorded honestly)"
+        probe "no Open Anyway row found for the DMG-level block (26a screenshot is the evidence)"
+      fi
     else
-      probe "DMG-level alert could not be dismissed via its own buttons (recorded honestly — the mount cannot proceed past a standing alert)"
+      CAP_DMG_OA="NOT PROVEN (assistive access unavailable — 26a screenshot is the human evidence)"
     fi
   else
-    probe "no DMG alert text was reachable via System Events during the stall (22a screenshot shows the real screen)"
+    probe "no DMG-level alert text was reachable via System Events during the stall (22a screenshot shows the real screen)"
+    # no alert found — one plain retry (maybe the assessment simply outlasted the watchdog)
+    note "no alert found — retrying the DMG open once (a slow first assessment may have outlasted the watchdog)"
+    guarded_open 90 open "$DMG_PATH" || probe "plain retry open returned non-zero or was watchdog-killed (recorded)"
+    for i in $(seq 1 60); do
+      [ -d "$VOLUME" ] && MOUNTED="yes" && break
+      sleep 1
+    done
   fi
 fi
 if [ "$MOUNTED" = "yes" ]; then
@@ -1453,8 +1603,8 @@ if [ "$MOUNTED" = "yes" ]; then
   probe "drag layout present: $([ -d "$VOLUME/MediVault.app" ] && echo app && [ -L "$VOLUME/Applications" ] && echo +Applications-symlink)"
 else
   CAP_DMG_FINDER="NOT PROVEN"
-  probe "volume did not appear at $VOLUME after the watchdogged open + alert handling"
-  classify B "Finder DMG mount did not surface on the runner (see 22a-dmg-gatekeeper-alert.png for the real screen state)"
+  probe "volume did not appear at $VOLUME after the watchdogged open + alert handling (see 22a + 26a/27a/28a if present)"
+  classify B "Finder DMG mount did not surface on the runner (Gatekeeper DMG block; see the alert evidence)"
 fi
 
 # =============================== PHASE E ======================================
@@ -1578,13 +1728,29 @@ probe "quarantine on the app about to launch: ${QAPP:-<none>}"
 open_and_detect "first-launch" 120
 snap 24-first-quarantined-launch || true
 
+# run 3c lesson: the macOS 26 "Not Opened" alert is Finder-hosted and the
+# live detector may miss it — one deep scan for the app-level block
+if [ "$MV_PROC" != "yes" ] && [ "$MV_BLOCK" != "yes" ]; then
+  for hostproc in Finder CoreServicesUIAgent UserNotificationCenter; do
+    if ui_dialog_texts "$hostproc"; then
+      if printf '%s' "$OSA_OUT" | grep -qi "could not verify\|malware\|Not Opened"; then
+        MV_BLOCK="yes"
+        probe "app-level Gatekeeper alert found via deep scan (host $hostproc): $(printf '%s' "$OSA_OUT" | cut -c1-300)"
+        break
+      fi
+    else
+      probe "app-level alert deep-scan query failed for $hostproc (kept): $OSA_ERR"
+    fi
+  done
+fi
+
 GK_TEXT=""
 if [ "$MV_BLOCK" = "yes" ]; then
   sleep 2
   snap 25-gatekeeper-warning || true
   CAP_GK_WARNING="OBSERVED (alert detected; screenshots 24/25)"
   probe "Gatekeeper alert: capturing its text via System Events (read-only)"
-  for hostproc in CoreServicesUIAgent UserNotificationCenter; do
+  for hostproc in CoreServicesUIAgent UserNotificationCenter Finder; do
     if ui_dialog_texts "$hostproc"; then
       if [ -n "${OSA_OUT// /}" ]; then GK_TEXT="$OSA_OUT"; break; fi
     fi
@@ -1606,6 +1772,11 @@ if [ "$MV_BLOCK" = "yes" ]; then
   fi
   if [ "$GK_DISMISS" = "not-attempted" ]; then
     if ui_click_button_in_windows "CoreServicesUIAgent" "OK" 15; then
+      if [ "${OSA_OUT#clicked}" != "$OSA_OUT" ]; then GK_DISMISS="$OSA_OUT"; fi
+    fi
+  fi
+  if [ "$GK_DISMISS" = "not-attempted" ]; then
+    if ui_click_button_in_windows "Finder" "Done" 15; then
       if [ "${OSA_OUT#clicked}" != "$OSA_OUT" ]; then GK_DISMISS="$OSA_OUT"; fi
     fi
   fi
