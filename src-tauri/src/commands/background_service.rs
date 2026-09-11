@@ -69,10 +69,13 @@ fn map_status(raw: &str) -> Result<BackgroundServiceStatus, String> {
 /// `<bundle>/Contents/MacOS/medivault` — the Cargo package name, mirrored
 /// by CFBundleExecutable). Fail closed when missing.
 ///
-/// The error surface is fully diagnostic (first-red investigation): the
-/// exact stat error + errno + the current_exe the path was derived from,
-/// because an "is_file() == false" on a file that provably exists must be
-/// diagnosable from the UI message alone.
+/// LOOKUP NOTE (first-red, runs 34650350460 + 34652537170): a plain
+/// `stat()` of the joined path returned ENOENT **while the app's own
+/// readdir of the SAME directory listed the helper as a regular file**
+/// (and bash could stat AND execute it). The lookup therefore uses the
+/// directory entry itself — `read_dir` + exact-name match — and the
+/// command uses the ENTRY's own path (the on-disk name is ground truth,
+/// immune to stat-path divergence). The stat diagnostic is preserved.
 fn helper_path() -> Result<PathBuf, String> {
     if !cfg!(target_os = "macos") {
         return Err("Background service control requires macOS".to_string());
@@ -81,55 +84,75 @@ fn helper_path() -> Result<PathBuf, String> {
         .map_err(|e| format!("cannot resolve the app executable path: {e}"))?;
     let dir = exe
         .parent()
-        .ok_or_else(|| "app executable has no parent directory".to_string())?;
-    let helper = dir.join(HELPER_NAME);
-    match std::fs::metadata(&helper) {
-        Ok(md) if md.is_file() => Ok(helper),
-        Ok(md) => Err(format!(
-            "SMAppService helper is not a regular file: {} (is_dir={}, len={}, mode={:#o}) — current_exe: {}",
-            helper.display(),
-            md.is_dir(),
-            md.len(),
-            {
-                use std::os::unix::fs::PermissionsExt;
-                md.permissions().mode()
-            },
-            exe.display()
-        )),
+        .ok_or_else(|| "app executable has no parent directory".to_string())?
+        .to_path_buf();
+    let joined = dir.join(HELPER_NAME);
+
+    // Ground truth: the directory's own entries.
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries.filter_map(|en| en.ok()).collect::<Vec<_>>(),
         Err(e) => {
-            // First-red investigation (run 34650350460): the app stat()s
-            // ENOENT for a file bash provably sees. Capture THE APP'S OWN
-            // view of the directory (ls -la + readdir) inside the error so
-            // the UI message alone identifies the divergence.
-            let listing = std::fs::read_dir(dir)
-                .map(|entries| {
-                    entries
-                        .filter_map(|en| en.ok())
-                        .map(|en| {
-                            let name = en.file_name().to_string_lossy().into_owned();
-                            let kind = match en.file_type() {
-                                Ok(t) if t.is_dir() => "d",
-                                Ok(t) if t.is_symlink() => "l",
-                                Ok(_) => "f",
-                                Err(_) => "?",
-                            };
-                            format!("{name}[{kind}]")
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                })
-                .unwrap_or_else(|e| format!("<readdir failed: {e}>"));
-            Err(format!(
-                "SMAppService helper missing from the app bundle: {} (installation incomplete? stat error: {} [os error {}]) — current_exe: {} — app-view of {}: {}",
-                helper.display(),
+            return Err(format!(
+                "SMAppService helper lookup failed: cannot read the app bundle directory {} (readdir error: {} [os error {}]) — current_exe: {}",
+                dir.display(),
                 e,
                 e.raw_os_error().unwrap_or(-1),
+                exe.display()
+            ))
+        }
+    };
+    let listing = entries
+        .iter()
+        .map(|en| {
+            let name = en.file_name().to_string_lossy().into_owned();
+            let kind = match en.file_type() {
+                Ok(t) if t.is_dir() => "d",
+                Ok(t) if t.is_symlink() => "l",
+                Ok(_) => "f",
+                Err(_) => "?",
+            };
+            format!("{name}[{kind}]")
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let mut helper: Option<PathBuf> = None;
+    let mut entry_is_regular = false;
+    for en in &entries {
+        if en.file_name().to_string_lossy() == HELPER_NAME {
+            helper = Some(en.path());
+            entry_is_regular = en
+                .file_type()
+                .map(|t| t.is_file())
+                .unwrap_or(false);
+            break;
+        }
+    }
+    let helper = match helper {
+        Some(h) => h,
+        None => {
+            return Err(format!(
+                "SMAppService helper missing from the app bundle: {} (installation incomplete?) — current_exe: {} — app-view of {}: {}",
+                joined.display(),
                 exe.display(),
                 dir.display(),
                 listing
             ))
         }
+    };
+
+    // The entry must be a regular file (entry metadata; NOT a plain stat of
+    // the joined path — see the lookup note).
+    if !entry_is_regular {
+        return Err(format!(
+            "SMAppService helper is not a regular file: {} — app-view of {}: {}",
+            helper.display(),
+            dir.display(),
+            listing
+        ));
     }
+    let _ = joined;
+    Ok(helper)
 }
 
 /// Run the helper with one subcommand and return its stdout. Bounded wait —

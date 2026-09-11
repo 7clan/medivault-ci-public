@@ -869,8 +869,9 @@ fi
 snap "04-first-run-screen" || true
 
 # Error-state detection: the onboarding must show the SETUP CONTROL, not an
-# error card. If an error text is visible, capture the decisive process/
-# filesystem diagnostics before stopping (first-red discipline).
+# error card. If an error text is visible, capture the decisive diagnostics,
+# then click the REAL "Try again" button once (a transient at page-load is a
+# legitimate recovery) before stopping (first-red discipline).
 if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*\(helper missing\|error occurred\|failed\|incomplete\)"; then
   note "--- onboarding ERROR state detected — decisive diagnostics ---"
   probe "running MediVault processes (ACTUAL binary paths):"
@@ -883,7 +884,18 @@ if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*\(helper missing\|error occurred
     sed -n '1,80p' /tmp/mv-direct-launch.log 2>/dev/null | tee -a "$LOG" || true
   fi
   snap "04b-onboarding-error-state" || true
-  product_red FIRST_RUN_SETUP_CONTROL "the onboarding shows an ERROR instead of the setup control — the visible error text is on 04-first-run-screen.png (see the OCR inventory + diagnostics above)"
+  note "--- clicking the real 'Try again' button (one legitimate recovery attempt) ---"
+  if v_click "Try again" "04c-error-retry" "Set up MediVault"; then
+    probe "the retry recovered: the setup control is now visible"
+  else
+    sleep 5
+    ocr_capture || true
+    if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*Set up MediVault"; then
+      probe "the retry recovered (verified on the second OCR pass): the setup control is visible"
+    else
+      product_red FIRST_RUN_SETUP_CONTROL "the onboarding shows an ERROR instead of the setup control and the real Try-again click did not recover it — the visible error text is on 04-first-run-screen.png (see the OCR inventory + diagnostics above)"
+    fi
+  fi
 fi
 
 FIRST_RUN_CONTROL="RED"
