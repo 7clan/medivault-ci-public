@@ -1423,15 +1423,25 @@ done
 if [ "$MOUNTED" != "yes" ]; then
   # capture what the screen actually shows during the stalled mount
   snap 22a-dmg-gatekeeper-alert || true
-  # scan the hosts that can carry the macOS 26 'Not Opened' alert
-  # (run 3c: it is Finder-hosted — the CoreServicesUIAgent walk sees nothing)
+  # VISUAL detection (run 3d: the Finder-hosted 'Not Opened' alert is
+  # VISIBLE on screen but invisible to the System Events entire-contents
+  # walk — the same AX-blindness as Safari's consent dialog)
   DMG_ALERT_TEXT=""
   DMG_ALERT_HOST=""
+  DMG_ALERT_VISUAL="no"
+  if [ "$OCR_STACK" = "yes" ] && ocr_capture; then
+    if printf '%s\n' "$OCR_TEXT" | grep -qi "Not Opened\|could not verify\|malware\|Move to Trash"; then
+      DMG_ALERT_VISUAL="yes"
+      DMG_ALERT_TEXT="$(printf '%s\n' "$OCR_TEXT" | grep -i "Not Opened\|could not verify\|malware\|MediVault\|privacy" | awk -F'|' '{printf "%s / ", $2}' | cut -c1-400)"
+      DMG_ALERT_HOST="screen (Finder-hosted per 3c/3d VLM evidence)"
+      note "DMG-level Gatekeeper alert DETECTED VISUALLY (OCR) — the System Events walk cannot see it (AX-blind, like Safari's consent dialog)"
+    fi
+  fi
+  # AX scan kept for the record (diagnostic evidence of what AX can/cannot see)
   for hostproc in Finder CoreServicesUIAgent UserNotificationCenter; do
     if ui_dialog_texts "$hostproc"; then
       if printf '%s' "$OSA_OUT" | grep -qi "could not verify\|malware\|Not Opened\|MediVault"; then
-        DMG_ALERT_TEXT="$OSA_OUT"
-        DMG_ALERT_HOST="$hostproc"
+        [ "$DMG_ALERT_VISUAL" != "yes" ] && DMG_ALERT_TEXT="$OSA_OUT" && DMG_ALERT_HOST="$hostproc" && note "DMG-level Gatekeeper alert found via System Events ($hostproc)"
         break
       fi
     else
@@ -1439,25 +1449,38 @@ if [ "$MOUNTED" != "yes" ]; then
     fi
   done
   if [ -n "$DMG_ALERT_TEXT" ]; then
-    probe "DMG-level Gatekeeper alert text ($DMG_ALERT_HOST): $(printf '%s' "$DMG_ALERT_TEXT" | cut -c1-400)"
+    probe "DMG-level Gatekeeper alert text ($DMG_ALERT_HOST): $DMG_ALERT_TEXT"
     {
-      echo "DMG-level Gatekeeper alert (host process: $DMG_ALERT_HOST) — captured while opening the quarantined DMG"
+      echo "DMG-level Gatekeeper alert ($DMG_ALERT_HOST) — captured while opening the quarantined DMG"
       echo "$DMG_ALERT_TEXT"
     } > "$EVID_DIR/gatekeeper-dmg-alert-text.txt" 2>/dev/null || true
     CAP_GK_WARNING="OBSERVED (DMG-level Gatekeeper alert on open — 22a + gatekeeper-dmg-alert-text.txt)"
     classify E "quarantined DMG blocked at open by macOS 26 Gatekeeper ('Not Opened') — the documented zero-cost behavior; the supported path is Open Anyway"
     # dismiss through its OWN Done button — NEVER 'Move to Trash' (it would
-    # delete the very artifact under test)
+    # delete the very artifact under test). Visual click on the real button.
     DMG_DISMISS="not-attempted"
-    if ui_click_button_in_windows "$DMG_ALERT_HOST" "Done" 15; then
-      if [ "${OSA_OUT#clicked}" != "$OSA_OUT" ]; then
-        DMG_DISMISS="$OSA_OUT"
+    if [ "$DMG_ALERT_VISUAL" = "yes" ] && ocr_lookup "Done" "first" "exact"; then
+      probe "DMG alert: clicking the REAL 'Done' button at ($OCR_HIT_X,$OCR_HIT_Y) via native CGEvent (Move to Trash is never touched)"
+      if "$MV_MOUSE" "$OCR_HIT_X" "$OCR_HIT_Y" 2>>"$LOG"; then
+        sleep 3
+        if ocr_capture && ! printf '%s\n' "$OCR_TEXT" | grep -qi "Not Opened\|Move to Trash"; then
+          DMG_DISMISS="clicked-Done (visual verification: the alert is GONE)"
+        else
+          DMG_DISMISS="clicked-Done (alert text still visible — recorded honestly)"
+        fi
+      fi
+    fi
+    if [ "$DMG_DISMISS" = "not-attempted" ]; then
+      if ui_click_button_in_windows "Finder" "Done" 15; then
+        if [ "${OSA_OUT#clicked}" != "$OSA_OUT" ]; then
+          DMG_DISMISS="$OSA_OUT (AX)"
+        fi
       fi
     fi
     if [ "$DMG_DISMISS" != "not-attempted" ]; then
-      probe "DMG-level alert dismissed via its own 'Done' button: $DMG_DISMISS (Move to Trash was never touched)"
+      probe "DMG-level alert dismissed: $DMG_DISMISS (Move to Trash was never touched)"
     else
-      probe "DMG-level alert could not be dismissed via its own button (recorded honestly — it stays on screen)"
+      probe "DMG-level alert could not be dismissed (recorded honestly — it stays on screen)"
     fi
     sleep 2
     # ---- the supported approval path: Privacy & Security → Open Anyway ----
@@ -1559,6 +1582,21 @@ return "fields-filled"' 30; then
             [ "$AUTH_CLICKED" = "yes" ] || probe "no DMG auth action button was clickable (recorded honestly — approval left to the human)"
             sleep 5
           fi
+          sleep 3
+          snap 28a-dmg-open-anyway-confirmation || true
+          # plain confirmation sheet inside System Settings (no password on
+          # newer macOS) — click its real Open/Allow button if present
+          CONFIRM_CLICKED="no"
+          for btn in "Open" "Allow" "Confirm"; do
+            if ui_click_button_contains_in_windows "System Settings" "$btn" 20; then
+              if [ "${OSA_OUT#clicked}" != "$OSA_OUT" ]; then
+                CONFIRM_CLICKED="yes"
+                probe "DMG Open Anyway confirmation button clicked: $OSA_OUT"
+                break
+              fi
+            fi
+          done
+          [ "$CONFIRM_CLICKED" = "yes" ] || probe "no in-window confirmation button found (recorded honestly)"
           sleep 3
           snap 28a-dmg-open-anyway-confirmation || true
           # verdict: does the mount clear now?
