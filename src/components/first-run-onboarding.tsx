@@ -78,7 +78,11 @@ export function FirstRunOnboarding() {
       dispatch({ type: 'status', status, now: Date.now() })
     } catch (err) {
       if (mounted.current) {
-        dispatch({ type: 'status-error', message: friendlyMessage(err) })
+        // Tauri command errors reject with STRINGS (Result<_, String>) —
+        // surface the real diagnostic instead of a generic fallback.
+        const message =
+          err instanceof Error ? friendlyMessage(err) : String(err)
+        dispatch({ type: 'status-error', message })
       }
     }
   }, [])

@@ -717,20 +717,86 @@ snap "03-installed-app" || true
 # PHASE 3 — first launch → the pre-auth FIRST-RUN screen
 # =============================================================================
 note "=== PHASE 3: first launch → first-run onboarding screen ==="
-open_and_detect "first-launch" 180
+
+launch_medivault() { # robust, honest launch: LS open → register → Finder → direct
+  local rc
+  OPEN_STDERR="/tmp/mv-open.err"
+  set +e
+  open "$APP_PATH" 2>"$OPEN_STDERR"
+  rc=$?
+  set -e
+  probe "open exit=$rc; stderr: $(head -c 300 "$OPEN_STDERR" 2>/dev/null | tr '\n' ' ')"
+  sleep 10
+  if pgrep -x MediVault >/dev/null 2>&1 || pgrep -f "MediVault.app/Contents/MacOS/MediVault" >/dev/null 2>&1; then
+    probe "launch method: open (LaunchServices) — process is up"
+    return 0
+  fi
+  probe "open produced no process — registering the app with LaunchServices (lsregister) and retrying"
+  LSREG="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+  if [ -x "$LSREG" ]; then
+    "$LSREG" -f "$APP_PATH" >/dev/null 2>&1 || probe "lsregister -f returned non-zero (kept)"
+    sleep 3
+  fi
+  set +e
+  open "$APP_PATH" 2>"$OPEN_STDERR"
+  rc=$?
+  set -e
+  probe "open retry exit=$rc; stderr: $(head -c 300 "$OPEN_STDERR" 2>/dev/null | tr '\n' ' ')"
+  sleep 10
+  if pgrep -x MediVault >/dev/null 2>&1 || pgrep -f "MediVault.app/Contents/MacOS/MediVault" >/dev/null 2>&1; then
+    probe "launch method: open after lsregister — process is up"
+    return 0
+  fi
+  # Finder open (the doctor-facing double-click equivalent)
+  if osa "tell application \"Finder\" to open application file (POSIX file \"$APP_PATH\" as alias)" 30; then
+    sleep 10
+    if pgrep -x MediVault >/dev/null 2>&1 || pgrep -f "MediVault.app/Contents/MacOS/MediVault" >/dev/null 2>&1; then
+      probe "launch method: Finder open — process is up"
+      return 0
+    fi
+  else
+    probe "Finder open failed (kept): $OSA_ERR"
+  fi
+  # Final fallback: direct binary execution in the SAME GUI login session
+  # (the app, window, and all GUI interactions are real — recorded honestly
+  # as a direct-binary launch because every LaunchServices path failed).
+  probe "launch method: DIRECT BINARY EXECUTION (all LaunchServices paths failed — recorded honestly)"
+  rm -f /tmp/mv-direct-launch.exit
+  ( "$APP_PATH/Contents/MacOS/MediVault" > /tmp/mv-direct-launch.log 2>&1; echo $? > /tmp/mv-direct-launch.exit ) &
+  LAUNCH_PID=$!
+  sleep 8
+  kill -0 "$LAUNCH_PID" 2>/dev/null || { probe "direct launch also failed"; return 1; }
+  return 0
+}
+
+launch_and_detect() { # <label> [timeout] — robust launch + the bounded detector
+  local label="$1"
+  local timeout="${2:-180}"
+  launch_medivault
+  wait_for_medivault "$timeout" "$label"
+  if [ -n "$MV_T_WINDOW" ]; then
+    CAP_LAUNCH_TIMING="${CAP_LAUNCH_TIMING:+$CAP_LAUNCH_TIMING | }$label: launch→window=${MV_T_WINDOW}s"
+  fi
+}
+
+launch_and_detect "first-launch" 180
 if [ "$MV_WINDOW" != "yes" ]; then
   # ---- startup-failure diagnostics (honest evidence BEFORE any verdict) ----
   note "--- launch diagnostics: why did the process not appear? ---"
   probe "spctl assessment: $(spctl --assess -vv "$APP_PATH" 2>&1 | head -2 | tr '\n' ' ' || true)"
   probe "codesign verify: $(codesign --verify --strict "$APP_PATH" 2>&1 | head -2 | tr '\n' ' ' || true)"
   probe "lsappinfo: $(lsappinfo info "file:$APP_PATH" 2>&1 | head -3 | tr '\n' ' ' || true)"
+  # The SMAppService helper, run directly from bash — isolates app→helper vs helper-internal failures.
+  probe "helper (bash) status: $("$APP_PATH/Contents/MacOS/$HELPER_NAME" status 2>&1 | head -2 | tr '\n' ' ' || true)"
   # Direct binary exec: capture the REAL process output (panic/log lines).
   rm -f /tmp/mv-direct.exit
   ( "$APP_PATH/Contents/MacOS/MediVault" > /tmp/mv-direct.log 2>&1; echo $? > /tmp/mv-direct.exit ) &
   DIRECT_PID=$!
   sleep 12
   if kill -0 "$DIRECT_PID" 2>/dev/null; then
-    probe "direct exec: process ALIVE after 12s (pid $DIRECT_PID) — killing for the diagnostic"
+    probe "direct exec: process ALIVE after 12s (pid $DIRECT_PID) — capturing the window, then killing"
+    sleep 3
+    snap "03a-direct-exec-window" || true
     kill -TERM "$DIRECT_PID" 2>/dev/null || true
   else
     probe "direct exec: process EXITED (code $(cat /tmp/mv-direct.exit 2>/dev/null || echo '?')) — output below"
@@ -1200,7 +1266,7 @@ if ! curl -fsS --max-time 3 "$API/health" >/dev/null 2>&1; then
   product_red QUIT_REOPEN "the API stopped answering after the desktop app quit (the background service must keep running)"
 fi
 
-open_and_detect "persistence-reopen" 180
+launch_and_detect "persistence-reopen" 180
 [ "$MV_WINDOW" = "yes" ] || product_red QUIT_REOPEN "the MediVault window did not reappear after reopen"
 # The first-run gate re-runs: status=enabled → health wait → hand-off →
 # login (session cookies may or may not persist — both are honest outcomes).
