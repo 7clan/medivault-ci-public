@@ -12,6 +12,11 @@
 #   Contents/Resources/provision/                (provisioner dist + package.json)
 #   Contents/Resources/prisma-cli/node_modules/{prisma,@prisma/engines}
 #   Contents/Resources/prisma/                   (schema.prisma + migrations/)
+#   Contents/Resources/frontend/                 (OPTIONAL: the static-export
+#                                                  frontend the API serves at
+#                                                  its own origin — first-run
+#                                                  fix, FRONT-RUN-ROOT-CAUSE.md;
+#                                                  staged when FRONTEND_DIR is set)
 #   Contents/Library/LaunchAgents/dev.medivault.supervisor.plist
 #   Contents/MacOS/medivault-launchagent          (SMAppService control helper,
 #                                                  production-readiness phase)
@@ -51,6 +56,11 @@ LAUNCHAGENT_SRC="${LAUNCHAGENT_SRC:?LAUNCHAGENT_SRC (plist source) is required}"
 # leave it unset → byte-identical legacy staging (they write their own
 # CI config afterwards, exactly as their frozen contracts prescribe).
 SMAPPSERVICE_BIN="${SMAPPSERVICE_BIN:-}"
+# OPTIONAL: the built static-export frontend (out/) to stage at
+# Contents/Resources/frontend — the first-run fix's API-served copy.
+# Absent (frozen historical shapes) → nothing staged, shipped config
+# keeps the pre-fix shape (no frontend_dir).
+FRONTEND_DIR="${FRONTEND_DIR:-}"
 
 die() { echo "::error::stage-app-bundle: $*" >&2; exit 1; }
 
@@ -106,6 +116,19 @@ test -f "$RES/prisma/schema.prisma"
 MIGRATIONS="$(find "$RES/prisma/migrations" -maxdepth 1 -mindepth 1 -type d | grep -v migration_lock | wc -l | tr -d ' ')"
 echo "  migrations packaged: $MIGRATIONS"
 
+# First-run fix (acceptance/FIRST-RUN-ROOT-CAUSE.md D2): the static-export
+# frontend the API serves at its own origin. Staged ONLY when FRONTEND_DIR
+# is provided (the production shape); frozen historical shapes leave it
+# unset → nothing staged, shipped config keeps the pre-fix shape.
+if [ -n "$FRONTEND_DIR" ]; then
+  test -f "$FRONTEND_DIR/index.html" || die "FRONTEND_DIR has no index.html: $FRONTEND_DIR (build the static export first)"
+  echo "[frontend] copying the static export → Contents/Resources/frontend"
+  rm -rf "$RES/frontend"
+  cp -R "$FRONTEND_DIR" "$RES/frontend"
+  test -f "$RES/frontend/index.html"
+  echo "  frontend files: $(find "$RES/frontend" -type f | wc -l | tr -d ' ')"
+fi
+
 echo "[launchagent] copying the plist"
 mkdir -p "$APP_ROOT/Contents/Library/LaunchAgents"
 cp "$LAUNCHAGENT_SRC" "$APP_ROOT/Contents/Library/LaunchAgents/dev.medivault.supervisor.plist"
@@ -141,10 +164,10 @@ if [ -n "$SMAPPSERVICE_BIN" ]; then
   # Production defaults (macos/supervisor/config.production.example.json):
   # PG 127.0.0.1:55432, API 127.0.0.1:3001, keychain secrets. Every bundle
   # path is Contents/ — relative; app_support/log dirs are ABSENT (the
-  # supervisor applies the per-user ~/Library defaults at load). The
-  # desktop webview origin is tauri://localhost (Tauri 2 macOS custom
-  # scheme); http://localhost:3000 stays allowed for the static-export
-  # dev shape.
+  # supervisor applies the per-user ~/Library defaults at load). Origins:
+  # tauri://localhost is the embedded first-run page; http://127.0.0.1:3001
+  # is the API-served frontend origin (first-run fix); http://localhost:3000
+  # stays allowed for the static-export dev shape.
   cat > "$APP_ROOT/Contents/Resources/supervisor-config.json" <<'EOF'
 {
   "version": 1,
@@ -152,7 +175,8 @@ if [ -n "$SMAPPSERVICE_BIN" ]; then
     "pg_bundle": "Contents/Resources/runtime/postgresql/17",
     "node_binary": "Contents/Resources/runtime/nodejs/bin/node",
     "api_entry": "Contents/Resources/api/dist/index.js",
-    "api_working_dir": "Contents/Resources/api"
+    "api_working_dir": "Contents/Resources/api",
+    "frontend_dir": "Contents/Resources/frontend"
   },
   "postgres": {
     "host": "127.0.0.1",
@@ -165,7 +189,7 @@ if [ -n "$SMAPPSERVICE_BIN" ]; then
   "api": {
     "host": "127.0.0.1",
     "port": 3001,
-    "allowed_origins": "tauri://localhost,http://localhost:3000"
+    "allowed_origins": "tauri://localhost,http://127.0.0.1:3001,http://localhost:3000"
   },
   "secrets": { "source": "keychain" },
   "provisioner": {
@@ -187,18 +211,28 @@ if [ -n "$SMAPPSERVICE_BIN" ]; then
   }
 }
 EOF
-  python3 - "$APP_ROOT/Contents/Resources/supervisor-config.json" <<'PYEOF'
+  python3 - "$APP_ROOT/Contents/Resources/supervisor-config.json" "$FRONTEND_DIR" <<'PYEOF'
 import json, sys
-with open(sys.argv[1]) as f:
+config_path, frontend_dir = sys.argv[1], sys.argv[2]
+with open(config_path) as f:
     cfg = json.load(f)
+if not frontend_dir:
+    # Frozen historical shape: no frontend staged → the shipped config must
+    # not reference it (the supervisor fails closed on a missing dir).
+    cfg["paths"].pop("frontend_dir", None)
 paths = cfg["paths"]
 for key in ("pg_bundle", "node_binary", "api_entry"):
     assert paths[key].startswith("Contents/"), f"{key} must be bundle-relative"
+if "frontend_dir" in paths:
+    assert paths["frontend_dir"].startswith("Contents/"), "frontend_dir must be bundle-relative"
 assert "app_support_dir" not in paths and "log_dir" not in paths, \
     "shipped config must not embed user identity"
-blob = open(sys.argv[1]).read()
+blob = open(config_path).read()
 for bad in ("/Applications/", "/Users/", "/private/var", "/tmp/", "RUNNER_TEMP"):
     assert bad not in blob, f"shipped config must not contain {bad!r}"
+with open(config_path, "w") as f:
+    json.dump(cfg, f, indent=2)
+    f.write("\n")
 print("SHIPPED-CONFIG-RELOCATABLE-OK")
 PYEOF
 else

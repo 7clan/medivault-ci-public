@@ -1,11 +1,12 @@
 {
-  "_comment": "Reference for the SHIPPED production supervisor-config.json (written by macos/scripts/stage-app-bundle.sh). Every bundle path is Contents/ — relative (resolved against the installed app bundle derived from the supervisor's own executable — install-location independent); app_support_dir/log_dir are ABSENT (the supervisor applies the per-user ~/Library defaults at load). The desktop webview origin is tauri://localhost (Tauri 2 macOS custom scheme). CI harnesses may pass an explicit --config with absolute paths — both forms are supported by config.rs.",
+  "_comment": "Reference for the SHIPPED production supervisor-config.json (written by macos/scripts/stage-app-bundle.sh). Every bundle path is Contents/ \u2014 relative (resolved against the installed app bundle derived from the supervisor's own executable \u2014 install-location independent); app_support_dir/log_dir are ABSENT (the supervisor applies the per-user ~/Library defaults at load). Origins: tauri://localhost is the embedded first-run page origin; http://127.0.0.1:3001 is the API-served frontend origin (first-run fix, acceptance/FIRST-RUN-ROOT-CAUSE.md); http://localhost:3000 is the static-export dev shape. frontend_dir is the static export the API serves at its own origin (MEDIVAULT_STATIC_DIR). CI harnesses may pass an explicit --config with absolute paths \u2014 both forms are supported by config.rs.",
   "version": 1,
   "paths": {
     "pg_bundle": "Contents/Resources/runtime/postgresql/17",
     "node_binary": "Contents/Resources/runtime/nodejs/bin/node",
     "api_entry": "Contents/Resources/api/dist/index.js",
-    "api_working_dir": "Contents/Resources/api"
+    "api_working_dir": "Contents/Resources/api",
+    "frontend_dir": "Contents/Resources/frontend"
   },
   "postgres": {
     "host": "127.0.0.1",
@@ -18,7 +19,7 @@
   "api": {
     "host": "127.0.0.1",
     "port": 3001,
-    "allowed_origins": "tauri://localhost,http://localhost:3000"
+    "allowed_origins": "tauri://localhost,http://127.0.0.1:3001,http://localhost:3000"
   },
   "secrets": {
     "source": "keychain"

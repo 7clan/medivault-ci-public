@@ -16,6 +16,11 @@ import { Stethoscope, Heart, Shield, Keyboard, Github, MessageCircle, Newspaper,
 import { QuickActionsFab } from '@/components/quick-actions-fab'
 import { useKeyboardShortcuts } from '@/hooks/use-keyboard-shortcuts'
 import { motion, AnimatePresence } from 'framer-motion'
+import { FirstRunOnboarding } from '@/components/first-run-onboarding'
+import { isDesktopFirstRun } from '@/lib/local-backend'
+// CSRF double-submit bootstrap — completes the API's own cookie model
+// (attaches x-csrf-token on mutating /api requests; no-ops outside http).
+import '@/lib/fetch-csrf'
 
 // Heartbeat SVG path for loading screen
 const HeartbeatPath = () => (
@@ -85,12 +90,25 @@ export default function Home() {
   const setCurrentView = useAppStore((s) => s.setCurrentView)
   const setDoctorInfo = useAppStore((s) => s.setDoctorInfo)
   const [sessionChecked, setSessionChecked] = useState(false)
+  const [firstRun, setFirstRun] = useState(false)
 
   // Enable keyboard shortcuts in app views
   const isAppView = currentView !== 'login' && currentView !== 'setup'
   useKeyboardShortcuts(isAppView)
 
   useEffect(() => {
+    const init = async () => {
+      // Desktop first-run: the embedded Tauri page cannot reach the API
+      // (asset-origin /api 404 — FIRST-RUN-ROOT-CAUSE.md D2). The pre-auth
+      // onboarding gate registers the background service and hands off to
+      // the API-served app before any session check makes sense.
+      if (isDesktopFirstRun()) {
+        setFirstRun(true)
+        setSessionChecked(true)
+        return
+      }
+      await checkSession()
+    }
     const checkSession = async () => {
       try {
         const res = await fetch('/api/auth/setup')
@@ -121,8 +139,13 @@ export default function Home() {
       setSessionChecked(true)
     }
 
-    checkSession()
+    void init()
   }, [setCurrentView, setDoctorInfo])
+
+  // Pre-auth first-run onboarding (embedded desktop page only).
+  if (firstRun) {
+    return <FirstRunOnboarding />
+  }
 
   // Enhanced Loading / Splash Screen
   if (!sessionChecked) {

@@ -14,6 +14,7 @@ import { fastifyAuthPlugin } from './plugins/auth.js'
 import { corsPlugin } from './plugins/cors.js'
 import { errorHandlerPlugin } from './plugins/error-handler.js'
 import { multipartPlugin } from './plugins/multipart.js'
+import { staticFrontendPlugin } from './plugins/static-frontend.js'
 import { runStartupCleanup } from './services/startup-cleanup.js'
 import { registerRoutes } from './routes/index.js'
 
@@ -102,6 +103,10 @@ async function start(): Promise<void> {
 
   // 5. Register all application routes
   await registerRoutes(server as unknown as import('fastify').FastifyInstance)
+
+  // 5b. Static frontend (desktop-local only: MEDIVAULT_STATIC_DIR set by
+  // the supervisor; no-ops in dev and non-desktop deployments)
+  await server.register(staticFrontendPlugin)
 
   // 6. Startup cleanup (best-effort, non-blocking)
   runStartupCleanup(db, server.log as unknown as import('pino').Logger).catch((err) => {

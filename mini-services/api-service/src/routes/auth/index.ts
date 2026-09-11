@@ -40,10 +40,28 @@ import {
   type AccessTokenPayload,
 } from '@medivault/auth'
 import { setAuthCookies, clearAuthCookies, getCookieValue } from '../../lib/cookie-helpers.js'
+import { shouldUseSecureCookies } from '../../lib/https-enforcement.js'
 
 const CHALLENGE_TTL_MS = 2 * 60 * 1000 // 2 minutes
 
 export async function registerAuthRoutes(server: FastifyInstance): Promise<void> {
+  // ─── CSRF bootstrap (browser, pre-login) ─────────────
+  // Issues the double-submit pair (`mvlt_csrf` cookie + the same token in
+  // the body) BEFORE any session exists. The API's CSRF model requires
+  // the cookie+header pair on every mutating request, and the first
+  // browser login previously had no way to obtain the pair — the D3
+  // finding of acceptance/FIRST-RUN-ROOT-CAUSE.md. GET is safe (no
+  // state change); the token is random per issuance.
+  server.get('/api/auth/csrf', async (_request, reply) => {
+    const csrfToken = generateCsrfToken()
+    const secure = shouldUseSecureCookies()
+    const secureFlag = secure ? '; Secure' : ''
+    reply.header('Set-Cookie', [
+      `mvlt_csrf=${csrfToken}; Path=/; SameSite=Lax; Max-Age=3600${secureFlag}`,
+    ])
+    return reply.status(200).send({ csrfToken })
+  })
+
   // ─── Login (browser, cookie-based) ──────────────────
   server.post('/api/auth/login', async (request, reply) => {
     try {

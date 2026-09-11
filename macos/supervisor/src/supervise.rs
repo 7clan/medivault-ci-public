@@ -189,7 +189,7 @@ impl Supervisor {
 
     fn spawn_api(&mut self) -> Result<(), String> {
         let database_url = secrets::database_url(&self.resolved, &self.secrets);
-        let envs: Vec<(String, String)> = vec![
+        let mut envs: Vec<(String, String)> = vec![
             ("PORT".into(), self.resolved.api_port.to_string()),
             ("HOST".into(), self.resolved.api_host.clone()),
             ("DATABASE_URL".into(), database_url),
@@ -217,6 +217,14 @@ impl Supervisor {
             ("MEDIVAULT_LOCALHOST_ONLY".into(), "true".into()),
             ("NODE_ENV".into(), "production".into()),
         ];
+        // First-run fix (acceptance/FIRST-RUN-ROOT-CAUSE.md D2): the API
+        // serves the static-export frontend at its own origin so the
+        // desktop webview's relative /api calls become same-origin.
+        // Injected ONLY when the config provides the directory (absent =
+        // the pre-fix behavior: serve no frontend).
+        if let Some(dir) = &self.resolved.api_static_dir {
+            envs.push(("MEDIVAULT_STATIC_DIR".into(), dir.display().to_string()));
+        }
         let handle = proc::spawn_api(
             &self.resolved.node_bin,
             &self.resolved.api_entry,

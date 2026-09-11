@@ -80,6 +80,14 @@ pub struct PathsConfig {
     /// `~/Library/Logs/MediVault` — same contract as app_support_dir.
     #[serde(default)]
     pub log_dir: Option<String>,
+    /// The static-export frontend directory the API serves at its own
+    /// origin (`Contents/Resources/frontend` in the shipped bundle) —
+    /// absolute, `Contents/`-relative, or ABSENT (pre-first-run-fix
+    /// behavior: the API serves no frontend). When present the supervisor
+    /// injects it as `MEDIVAULT_STATIC_DIR` into the API child (see
+    /// acceptance/FIRST-RUN-ROOT-CAUSE.md — the D2 fix).
+    #[serde(default)]
+    pub frontend_dir: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -169,7 +177,13 @@ fn default_pgdata_rel() -> String {
     "PostgreSQL/17/data".to_string()
 }
 fn default_allowed_origins() -> String {
-    "http://localhost:3000".to_string()
+    // First-run fix (acceptance/FIRST-RUN-ROOT-CAUSE.md): the API now
+    // serves the SAME frontend at its own origin, so the webview's
+    // post-navigation origin (http://127.0.0.1:3001 — a local origin the
+    // Model A gate explicitly permits) joins the allowlist alongside the
+    // embedded first-run page origin (tauri://localhost) and the
+    // static-export dev shape (http://localhost:3000).
+    "tauri://localhost,http://127.0.0.1:3001,http://localhost:3000".to_string()
 }
 fn default_pg_start_timeout() -> u64 {
     120
@@ -238,6 +252,9 @@ pub struct Resolved {
     pub api_host: String,
     pub api_port: u16,
     pub api_allowed_origins: String,
+    /// The frontend directory injected as `MEDIVAULT_STATIC_DIR` when
+    /// configured (first-run fix; None = serve no frontend).
+    pub api_static_dir: Option<PathBuf>,
 
     pub secrets_source: String,
     pub limits: LimitsConfig,
@@ -402,6 +419,24 @@ impl Config {
                 .to_path_buf(),
         };
 
+        // First-run fix: the optional frontend dir the API serves at its
+        // own origin (MEDIVAULT_STATIC_DIR). When configured it must EXIST
+        // (fail closed BEFORE any process is spawned — same discipline as
+        // every other resolved path).
+        let api_static_dir = match &cfg.paths.frontend_dir {
+            Some(d) => {
+                let dir = resolve_path("frontend_dir", d, bundle_root)?;
+                if !dir.is_dir() {
+                    return Err(format!(
+                        "config error: frontend_dir does not exist: {}",
+                        dir.display()
+                    ));
+                }
+                Some(dir)
+            }
+            None => None,
+        };
+
         let runtime_state_dir = app_support.join("runtime-state");
         let storage_dir = app_support.join("storage");
         let pgdata = app_support.join(&cfg.postgres.pgdata_rel);
@@ -497,6 +532,7 @@ impl Config {
             api_host: cfg.api.host,
             api_port: cfg.api.port,
             api_allowed_origins: cfg.api.allowed_origins,
+            api_static_dir,
 
             secrets_source: cfg.secrets.source,
             limits: cfg.limits,
@@ -549,7 +585,14 @@ mod tests {
         assert_eq!(cfg.postgres.superuser, "postgres");
         assert_eq!(cfg.postgres.pgdata_rel, "PostgreSQL/17/data");
         assert_eq!(cfg.api.host, "127.0.0.1");
-        assert_eq!(cfg.api.allowed_origins, "http://localhost:3000");
+        // First-run fix: the default allowlist now includes the API-served
+        // frontend origin (http://127.0.0.1:3001) alongside the embedded
+        // first-run page (tauri://localhost) and the dev web shape.
+        assert_eq!(
+            cfg.api.allowed_origins,
+            "tauri://localhost,http://127.0.0.1:3001,http://localhost:3000"
+        );
+        assert_eq!(cfg.paths.frontend_dir, None);
         assert_eq!(cfg.limits.max_restarts_per_child, 5);
     }
 
@@ -683,7 +726,8 @@ mod tests {
         "pg_bundle": "Contents/Resources/runtime/postgresql/17",
         "node_binary": "Contents/Resources/runtime/nodejs/bin/node",
         "api_entry": "Contents/Resources/api/dist/index.js",
-        "api_working_dir": "Contents/Resources/api"
+        "api_working_dir": "Contents/Resources/api",
+        "frontend_dir": "Contents/Resources/frontend"
       },
       "postgres": { "port": 55432, "app_user": "medivault", "app_database": "medivault" },
       "api": { "port": 3001, "allowed_origins": "tauri://localhost,http://localhost:3000" },
@@ -705,6 +749,43 @@ mod tests {
             "Contents/Resources/runtime/postgresql/17"
         );
         assert_eq!(cfg.secrets.source, "keychain");
+    }
+
+    #[test]
+    fn frontend_dir_is_optional_and_parsed() {
+        // Present in the shipped shape:
+        let cfg: Config = serde_json::from_str(RELOCATABLE).unwrap();
+        assert_eq!(
+            cfg.paths.frontend_dir.as_deref(),
+            Some("Contents/Resources/frontend")
+        );
+        // Absent in the legacy/frozen shapes (deny_unknown_fields still
+        // accepts the field being simply missing):
+        let legacy = RELOCATABLE.replace(
+            ",\n        \"frontend_dir\": \"Contents/Resources/frontend\"",
+            "",
+        );
+        let cfg2: Config = serde_json::from_str(&legacy).unwrap();
+        assert_eq!(cfg2.paths.frontend_dir, None);
+    }
+
+    #[test]
+    fn frontend_dir_fails_closed_when_missing_on_disk() {
+        let cfg: Config = serde_json::from_str(RELOCATABLE).unwrap();
+        let err = Config::resolve_with_bundle_root(
+            cfg,
+            std::path::Path::new("/tmp/any.json"),
+            std::path::Path::new("/tmp/Synthetic.app"),
+        )
+        .unwrap_err();
+        // The synthetic bundle has no frontend dir: resolution must fail
+        // closed on frontend_dir BEFORE any process is spawned (the check
+        // runs before the binary-existence loop).
+        assert!(
+            err.contains("frontend_dir"),
+            "expected the frontend_dir fail-closed error, got: {err}"
+        );
+        assert!(err.starts_with("config error:"), "error was: {err}");
     }
 
     #[test]
@@ -783,6 +864,13 @@ mod tests {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(&p, b"placeholder").unwrap();
         }
+        // frontend_dir (first-run fix) — a DIRECTORY in the bundle.
+        std::fs::create_dir_all(app.join("Contents/Resources/frontend")).unwrap();
+        std::fs::write(
+            app.join("Contents/Resources/frontend/index.html"),
+            b"placeholder",
+        )
+        .unwrap();
 
         let cfg: Config = serde_json::from_str(RELOCATABLE).unwrap();
         let config_doc = base.join("supervisor-config.json");
@@ -823,6 +911,12 @@ mod tests {
         assert_eq!(
             resolved.provisioner_entry,
             Some(app.join("Contents/Resources/provision/dist/index.js"))
+        );
+        // First-run fix: the frontend dir resolves into the bundle and is
+        // surfaced for MEDIVAULT_STATIC_DIR injection.
+        assert_eq!(
+            resolved.api_static_dir,
+            Some(app.join("Contents/Resources/frontend"))
         );
         // user dirs default to the per-user locations (NOT inside the bundle)
         let home = std::env::var("HOME").unwrap();

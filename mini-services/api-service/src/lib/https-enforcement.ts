@@ -158,8 +158,23 @@ export function shouldTrustProxy(): boolean | string {
   return false
 }
 
-/** Whether cookies should use the Secure flag */
+/**
+ * Whether cookies should use the Secure flag
+ *
+ * Model A (localhost-production) is the ONE documented exception: the
+ * desktop-local transport is plain loopback HTTP BY DESIGN (no TLS
+ * terminator exists — see the contract). The `Secure` attribute there
+ * adds no security (the bind is loopback-only and Origin-allowlisted)
+ * but DOES prevent the webview from storing the cookie at all — WebKit
+ * refuses `Secure` cookies over plain HTTP. The localhost-security
+ * contract §8 itself flagged this exact contradiction ("NODE_ENV=production
+ * forces Secure") as an unresolved interactive proof item; first-run
+ * authentication is impossible with it. Every other deployment (Windows
+ * trusted TLS termination, general production) keeps the exact previous
+ * behavior.
+ */
 export function shouldUseSecureCookies(): boolean {
+  if (isLocalhostProductionMode()) return false
   return (
     process.env.NODE_ENV === 'production' ||
     process.env.TRUSTED_LOCAL_TLS_TERMINATION === 'true'

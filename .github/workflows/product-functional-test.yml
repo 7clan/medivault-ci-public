@@ -1,0 +1,494 @@
+# ==============================================================================
+# MediVault Product Functional Test — the FIRST-RUN FIX proof (ARM64 first)
+# ==============================================================================
+# Dispatch-only. Builds a test DMG FROM THE FIX COMMIT (this workflow, NOT the
+# frozen v0.1.0-zero-cost-rc1 release — that one is never rebuilt) and runs the
+# real-GUI product functional test against it.
+#
+# HONEST LABEL: PRODUCT_FUNCTIONAL_TEST_INSTALL
+#   The DMG is hash-verified and installed non-quarantined (it was never
+#   browser-downloaded). This is PRODUCT testing, NOT proof of the public
+#   distribution path — Gatekeeper / Open Anyway / natural quarantine remain
+#   the separate frozen gui-acceptance-ci campaign. Do not conflate the two.
+#
+# What this proves (acceptance/FIRST-RUN-ROOT-CAUSE.md — the P1 fix):
+#   clean first-run → pre-auth "Set up MediVault" control → real SMAppService
+#   registration → supervisor → PostgreSQL (127.0.0.1:55432) → API
+#   (127.0.0.1:3001) → hand-off to the API-served frontend → account creation
+#   → logout/login/wrong-password → three synthetic patients (create/open/
+#   edit/save/search + data isolation) → quit/reopen persistence →
+#   loopback-only security checks.
+#
+# Run outcome semantics:
+#   green = every product capability above was proven through the real GUI
+#   red   = the first real product bug (class A, first-red discipline) or a
+#           class-D harness bug — the log states which
+# ==============================================================================
+
+name: Product Functional Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: 'Target architecture (arm64 only for now — Intel waits for a stable ARM64 path)'
+        required: true
+        default: 'arm64'
+        type: choice
+        options:
+          - arm64
+
+permissions:
+  contents: read
+
+env:
+  PG_VERSION: '17.11'
+  PG_SHA256: '5367f6fb2ec97efe1eb2e0c7926bb33438e51b0bd3a9733b88498056a7dc9a7e'
+  PG_TARBALL_URL: 'https://ftp.postgresql.org/pub/source/v17.11/postgresql-17.11.tar.gz'
+  PG_INSTALL: '/Users/runner/pg17-install-dt13'
+  MACOSX_DEPLOYMENT_TARGET: '13.0'
+  NODE_VERSION: '22.23.2'
+  NODE_DIST_URL: 'https://nodejs.org/dist'
+
+jobs:
+  build-test-dmg:
+    name: "Build the first-run-fix test DMG (arm64)"
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      EXPECTED_UNAME: arm64
+      NODE_ARCH: arm64
+      NODE_SHA256: '61130f394c1630d211dd50aecc4353d379480f36d3ac913cd85dbba1aed585c6'
+      DMG_OUT: '/Users/runner/work/_temp/MediVault-0.1.1-firstrun-arm64.dmg'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Preflight — native runner architecture proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "uname -m: $(uname -m) (expected $EXPECTED_UNAME)"
+          test "$(uname -m)" = "$EXPECTED_UNAME"
+          echo "sw_vers: $(sw_vers -productVersion)"
+          T=$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)
+          echo "sysctl.proc_translated: ${T}"
+          test "$T" = "0"
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            mini-services/api-service/node_modules
+            packages/*/node_modules
+          key: macos-deps-arm64-${{ hashFiles('bun.lock', 'package.json', 'packages/*/package.json', 'mini-services/api-service/package.json') }}
+          restore-keys: |
+            macos-deps-arm64-
+
+      - name: Install dependencies
+        run: bun install
+
+      # ---- FIRST-RUN FIX targeted tests (run BEFORE the build: the fix's
+      # own regression suite — machine + reducer + API plugin + secure-cookie
+      # model; none need a database) -----------------------------------------
+      - name: First-run fix targeted tests (state machine + CSRF bootstrap + static frontend + Model A cookies)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./node_modules/.bin/vitest run tests/first-run-frontend.test.ts tests/first-run-api.test.ts tests/m4-https-enforcement.test.ts tests/model-a-localhost-production.test.ts 2>&1 | tee /tmp/firstrun-tests.log
+          grep -Eq 'Test Files[ ]+[0-9]+ passed' /tmp/firstrun-tests.log || { echo "::error::first-run targeted test failure"; exit 1; }
+          echo "first-run targeted tests: GREEN"
+
+      - name: Frontend typecheck (tsc --noEmit)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./node_modules/.bin/tsc --noEmit
+
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+          cd macos/supervisor
+          rustup toolchain install --profile minimal "$(grep -oE 'channel = "[^"]+"' ../../rust-toolchain.toml | cut -d'"' -f2)"
+          cargo --version
+
+      - name: Cache tauri-cli + cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/.crates.toml
+            ~/.cargo/.crates2.json
+          key: macos-tauri-cli-arm64-tauri2
+
+      - name: Install tauri-cli (v2, cargo, cached)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -x "$HOME/.cargo/bin/cargo-tauri" ]; then
+            cargo tauri --version
+          else
+            cargo install tauri-cli --locked --version '^2.11'
+            cargo tauri --version
+          fi
+
+      - name: Supervisor unit tests (config resolution incl. the first-run frontend_dir contract)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd macos/supervisor
+          cargo test --locked 2>&1 | tee /tmp/pft-supervisor-tests.log
+          test "$(grep -c 'test result: ok' /tmp/pft-supervisor-tests.log)" -ge 1
+          grep -q 'frontend_dir_fails_closed_when_missing_on_disk' /tmp/pft-supervisor-tests.log
+          grep -q 'frontend_dir_is_optional_and_parsed' /tmp/pft-supervisor-tests.log
+
+      - name: Build the frontend (NEXT_OUTPUT=export)
+        shell: bash
+        run: |
+          set -euo pipefail
+          NEXT_OUTPUT=export bunx next build
+          test -f out/index.html || { echo "::error::static export missing out/index.html"; exit 1; }
+          echo "out/ entries: $(find out -type f | wc -l | tr -d ' ')"
+
+      - name: Generate icon.icns (sips + iconutil, from the committed PNGs)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ICONSET="src-tauri/icons/MediVault.iconset"
+          rm -rf "$ICONSET"; mkdir -p "$ICONSET"
+          SRC="src-tauri/icons"
+          sips -z 16 16    "$SRC/32x32.png"     --out "$ICONSET/icon_16x16.png"    >/dev/null
+          sips -z 32 32    "$SRC/32x32.png"     --out "$ICONSET/icon_16x16@2x.png" >/dev/null
+          sips -z 32 32    "$SRC/32x32.png"     --out "$ICONSET/icon_32x32.png"    >/dev/null
+          sips -z 64 64    "$SRC/128x128.png"   --out "$ICONSET/icon_32x32@2x.png" >/dev/null
+          sips -z 128 128  "$SRC/128x128.png"   --out "$ICONSET/icon_128x128.png"  >/dev/null
+          sips -z 256 256  "$SRC/128x128@2x.png" --out "$ICONSET/icon_128x128@2x.png" >/dev/null
+          sips -z 256 256  "$SRC/256x256.png"   --out "$ICONSET/icon_256x256.png"  >/dev/null
+          sips -z 512 512  "$SRC/icon.png"      --out "$ICONSET/icon_256x256@2x.png" >/dev/null
+          sips -z 512 512  "$SRC/icon.png"      --out "$ICONSET/icon_512x512.png"  >/dev/null
+          sips -z 1024 1024 "$SRC/icon.png"    --out "$ICONSET/icon_512x512@2x.png" >/dev/null
+          iconutil -c icns "$ICONSET" -o src-tauri/icons/icon.icns
+          ls -la src-tauri/icons/icon.icns
+
+      - name: Tauri build (app bundle — compiles the SMAppService commands)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd src-tauri
+          cargo tauri build --bundles app 2>&1 | tee /tmp/pft-tauri-build.log
+          APP="target/release/bundle/macos/MediVault.app"
+          test -x "$APP/Contents/MacOS/MediVault" || {
+            echo "::error::Tauri desktop binary missing"
+            tail -40 /tmp/pft-tauri-build.log
+            exit 1
+          }
+          echo "APP=$PWD/$APP" | tee /tmp/pft-tauri-app.env
+          file "$APP/Contents/MacOS/MediVault"
+
+      - name: Desktop unit tests (SMAppService status mapping, fail-closed parsing)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd src-tauri
+          cargo test --bins --locked 2>&1 | tee /tmp/pft-desktop-tests.log
+          test "$(grep -c 'test result: ok' /tmp/pft-desktop-tests.log)" -ge 1
+
+      - name: Build the supervisor + provisioner + API runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          export MACOSX_DEPLOYMENT_TARGET=13.0
+          cd macos/supervisor
+          cargo build --release --locked
+          codesign --force --sign - target/release/mediavault-supervisor
+          cd ../provision
+          bun install
+          bun run build
+          test -f dist/index.js
+          cd ../..
+          ./node_modules/.bin/prisma generate --schema packages/db/prisma/schema.prisma 2>&1 | tail -2
+          ./node_modules/.bin/tsc --project mini-services/api-service/tsconfig.json
+          test -f mini-services/api-service/dist/mini-services/api-service/src/index.js
+
+      - name: Stage the API runtime tree + prisma CLI closure + Node runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="$RUNNER_TEMP/pft-api"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE/api/dist" "$STAGE/api/node_modules/@medivault"/{auth,crypto,db}
+          cp -R mini-services/api-service/dist/mini-services/api-service/src/. "$STAGE/api/dist/"
+          cp mini-services/api-service/package.json "$STAGE/api/package.json"
+          ( cd "$STAGE/api" && npm install --omit=dev --no-audit --no-fund --loglevel=error )
+          cp -R mini-services/api-service/dist/packages/auth/src/.    "$STAGE/api/node_modules/@medivault/auth/"
+          cp -R mini-services/api-service/dist/packages/crypto/src/. "$STAGE/api/node_modules/@medivault/crypto/"
+          cp -R mini-services/api-service/dist/packages/db/src/.     "$STAGE/api/node_modules/@medivault/db/"
+          printf '{"name":"@medivault/auth","version":"1.0.0","type":"module","main":"./index.js"}\n'   > "$STAGE/api/node_modules/@medivault/auth/package.json"
+          printf '{"name":"@medivault/crypto","version":"1.0.0","type":"module","main":"./index.js"}\n' > "$STAGE/api/node_modules/@medivault/crypto/package.json"
+          printf '{"name":"@medivault/db","version":"1.0.0","type":"module","main":"./client.js"}\n'    > "$STAGE/api/node_modules/@medivault/db/package.json"
+          rm -rf "$STAGE/api/node_modules/.prisma"
+          cp -R node_modules/.prisma "$STAGE/api/node_modules/.prisma"
+          echo "STAGE=$STAGE" | tee /tmp/pft-api-stage.env
+
+          PRISMA_STAGE="$RUNNER_TEMP/pft-prisma-cli"
+          rm -rf "$PRISMA_STAGE"
+          mkdir -p "$PRISMA_STAGE"
+          PRISMA_VERSION="$(node -p "require('$PWD/node_modules/prisma/package.json').version")"
+          printf '{"name":"mv-prisma-cli","private":true,"dependencies":{"prisma":"%s"}}\n' "$PRISMA_VERSION" > "$PRISMA_STAGE/package.json"
+          ( cd "$PRISMA_STAGE" && npm install --omit=dev --no-audit --no-fund --loglevel=error )
+          test -d "$PRISMA_STAGE/node_modules/effect"
+          echo "PRISMA_STAGE=$PRISMA_STAGE" | tee /tmp/pft-prisma-stage.env
+
+          TARBALL="node-v$NODE_VERSION-darwin-${NODE_ARCH}.tar.gz"
+          curl -fsSL --retry 3 -o "/tmp/$TARBALL" "$NODE_DIST_URL/v$NODE_VERSION/$TARBALL"
+          echo "$NODE_SHA256  /tmp/$TARBALL" | shasum -a 256 --check --strict
+          echo "NODE_TARBALL=/tmp/$TARBALL" | tee /tmp/pft-node-tarball.env
+
+      - name: Cache PostgreSQL ${{ env.PG_VERSION }} build (MACOSX_DEPLOYMENT_TARGET=13.0)
+        id: pg-cache
+        uses: actions/cache@v4
+        with:
+          path: '/Users/runner/pg17-install-dt13'
+          key: macos-pg17-dt13-arm64-${{ env.PG_VERSION }}-${{ env.PG_SHA256 }}
+
+      - name: Build PostgreSQL ${{ env.PG_VERSION }} from source (MACOSX_DEPLOYMENT_TARGET=13.0)
+        if: steps.pg-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export MACOSX_DEPLOYMENT_TARGET=13.0
+          curl -fsSL --retry 3 -o /tmp/postgresql-$PG_VERSION.tar.gz "$PG_TARBALL_URL"
+          echo "$PG_SHA256  /tmp/postgresql-$PG_VERSION.tar.gz" | shasum -a 256 --check --strict
+          rm -rf "/tmp/postgresql-$PG_VERSION"
+          tar -xzf "/tmp/postgresql-$PG_VERSION.tar.gz" -C /tmp
+          cd "/tmp/postgresql-$PG_VERSION"
+          ./configure --prefix="$PG_INSTALL" --without-icu --without-readline
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+
+      - name: Compile the SMAppService helper (swiftc, minOS 13.0)
+        shell: bash
+        run: |
+          set -euo pipefail
+          export MACOSX_DEPLOYMENT_TARGET=13.0
+          HELPER_OUT="$RUNNER_TEMP/pft-mediavault-launchagent"
+          swiftc -O macos/smappservice/medivault-launchagent.swift \
+            -target arm64-apple-macos13.0 \
+            -o "$HELPER_OUT"
+          file "$HELPER_OUT"
+          if otool -l "$HELPER_OUT" | grep -q 'path /usr/lib/swift'; then
+            install_name_tool -delete_rpath /usr/lib/swift "$HELPER_OUT"
+          fi
+          codesign --force --sign - "$HELPER_OUT"
+          MACHO_RECORDS=/tmp/pft-macho-gate-helper.txt \
+            bash macos/scripts/macho-gate.sh "$HELPER_OUT" "arm64" 13.0
+          echo "HELPER_OUT=$HELPER_OUT" | tee /tmp/pft-smappservice-bin.env
+
+      - name: Merge the backend into the Tauri MediVault.app (relocatable shape + FIRST-RUN frontend)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/pft-tauri-app.env
+          . /tmp/pft-node-tarball.env
+          . /tmp/pft-api-stage.env
+          . /tmp/pft-prisma-stage.env
+          . /tmp/pft-smappservice-bin.env
+
+          PG_INSTALL="$PG_INSTALL" BUNDLE="$APP/Contents/Resources/runtime/postgresql/17" PG_VERSION="$PG_VERSION" \
+            SUPERVISOR_BIN="$PWD/macos/supervisor/target/release/mediavault-supervisor" \
+            bash macos/scripts/stage-pg-bundle.sh
+
+          # FIRST-RUN FIX: the static export is ALSO staged at
+          # Contents/Resources/frontend — the API serves it at its own origin
+          # (127.0.0.1:3001) so the webview's relative /api calls become
+          # same-origin. FRONTEND_DIR is the new staging input.
+          APP_ROOT="$APP" \
+            NODE_TARBALL="$NODE_TARBALL" \
+            API_STAGE="$STAGE" \
+            PROVISION_DIR="$PWD/macos/provision" \
+            PRISMA_MODULES="$PRISMA_STAGE/node_modules" \
+            PRISMA_SCHEMA_DIR="$PWD/packages/db/prisma" \
+            LAUNCHAGENT_SRC="$PWD/macos/launchagent/dev.medivault.supervisor.plist" \
+            SMAPPSERVICE_BIN="$HELPER_OUT" \
+            FRONTEND_DIR="$PWD/out" \
+            bash macos/scripts/stage-app-bundle.sh
+
+          echo "APP_ROOT=$APP" | tee /tmp/pft-app-root.env
+          echo "--- shipped supervisor-config.json (RELOCATABLE, production ports, first-run origins):"
+          cat "$APP/Contents/Resources/supervisor-config.json"
+          test -f "$APP/Contents/Resources/frontend/index.html" || { echo "::error::frontend not staged in the bundle"; exit 1; }
+          grep -q 'http://127.0.0.1:3001' "$APP/Contents/Resources/supervisor-config.json" || { echo "::error::shipped config lacks the API-served frontend origin"; exit 1; }
+          grep -q 'frontend_dir' "$APP/Contents/Resources/supervisor-config.json" || { echo "::error::shipped config lacks frontend_dir"; exit 1; }
+
+      - name: Prisma engine install-ID hygiene (scrub build-machine paths)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/pft-app-root.env
+          APP="$APP_ROOT"
+          find "$APP/Contents/Resources/api/node_modules/.prisma" -name 'schema.prisma' -exec sed -i '' 's|'"$PWD"'/packages/db/prisma|/dev/null/in-bundle|g' {} + 2>/dev/null || true
+          PRISMA_ENGINES_DIR="$(dirname "$(find "$APP/Contents/Resources/api/node_modules/.prisma" -name 'libquery_engine*' | head -1)")"
+          ls "$PRISMA_ENGINES_DIR" 2>/dev/null || true
+
+      - name: Mach-O gates on the merged bundle (all binaries incl. the helper)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/pft-app-root.env
+          APP="$APP_ROOT"
+          MACHO_RECORDS=/tmp/pft-macho-gate-1.txt bash macos/scripts/macho-gate.sh "$APP/Contents/MacOS/MediVault" "arm64" 13.0
+          MACHO_RECORDS=/tmp/pft-macho-gate-2.txt bash macos/scripts/macho-gate.sh "$APP/Contents/MacOS/mediavault-supervisor" "arm64" 13.0
+          MACHO_RECORDS=/tmp/pft-macho-gate-3.txt bash macos/scripts/macho-gate.sh "$APP/Contents/MacOS/mediavault-launchagent" "arm64" 13.0
+          MACHO_RECORDS=/tmp/pft-macho-gate-4.txt bash macos/scripts/macho-gate.sh "$APP/Contents/Resources/runtime/nodejs/bin/node" "arm64" 13.0
+          MACHO_RECORDS=/tmp/pft-macho-gate-5.txt bash macos/scripts/macho-gate.sh "$APP/Contents/Resources/runtime/postgresql/17" "arm64" 13.0
+
+      - name: Ad-hoc release signing (Hardened Runtime, inside-out)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/pft-app-root.env
+          APP_ROOT="$APP_ROOT" MV_ADHOC_RELEASE=1 MV_SIGN_IDENTITY=- MV_NODE_ALLOW_JIT=0 \
+            bash macos/scripts/sign-production.sh 2>&1 | tee /tmp/pft-sign-release.log
+          grep -q 'SIGN-ZERO-COST-RELEASE-GREEN' /tmp/pft-sign-release.log
+
+      - name: Node JIT proof (strictest-first, hardened Node, NO entitlements)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/pft-app-root.env
+          NODE="$APP_ROOT/Contents/Resources/runtime/nodejs/bin/node"
+          cat > /tmp/pft-jit-proof.js <<'EOF'
+          function hot(n) {
+            let acc = 0;
+            for (let i = 0; i < n; i++) {
+              acc += (i ^ 0x5f) * 31 + (i >>> 3);
+            }
+            return acc;
+          }
+          let total = 0;
+          for (let round = 0; round < 3000; round++) total += hot(20000);
+          if (!Number.isFinite(total) || total === 0) throw new Error('bad result');
+          console.log('JIT-WORKLOAD-OK ' + total);
+          EOF
+          set +e
+          "$NODE" /tmp/pft-jit-proof.js > /tmp/pft-jit-strict.out 2>&1
+          STRICT_RC=$?
+          set -e
+          echo "strict (no entitlement) exit: $STRICT_RC"
+          cat /tmp/pft-jit-strict.out || true
+          if [ "$STRICT_RC" -eq 0 ] && grep -q 'JIT-WORKLOAD-OK' /tmp/pft-jit-strict.out; then
+            echo "NODE_ALLOW_JIT=not-needed" | tee /tmp/pft-node-allowjit.env
+          else
+            echo "NODE_ALLOW_JIT=needed" | tee /tmp/pft-node-allowjit.env
+            APP_ROOT="$APP_ROOT" MV_ADHOC_RELEASE=1 MV_SIGN_IDENTITY=- MV_NODE_ALLOW_JIT=1 \
+              bash macos/scripts/sign-production.sh 2>&1 | tee /tmp/pft-sign-allowjit.log
+            grep -q 'SIGN-ZERO-COST-RELEASE-GREEN' /tmp/pft-sign-allowjit.log
+            set +e
+            "$NODE" /tmp/pft-jit-proof.js > /tmp/pft-jit-allowjit.out 2>&1
+            AJ_RC=$?
+            set -e
+            [ "$AJ_RC" -eq 0 ] && grep -q 'JIT-WORKLOAD-OK' /tmp/pft-jit-allowjit.out || {
+              echo "::error::Node failed EVEN WITH allow-jit"
+              exit 1
+            }
+          fi
+          cat /tmp/pft-node-allowjit.env
+
+      - name: Recursive signature verification (fail-closed, final state)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/pft-app-root.env
+          . /tmp/pft-node-allowjit.env
+          FINAL_ALLOW_JIT=0
+          [ "$NODE_ALLOW_JIT" = "needed" ] && FINAL_ALLOW_JIT=1
+          APP_ROOT="$APP_ROOT" EXPECTED_ARCH="arm64" \
+            MV_NODE_ALLOW_JIT="$FINAL_ALLOW_JIT" \
+            bash macos/scripts/verify-signatures.sh 2>&1 | tee /tmp/pft-verify-signatures.log
+          grep -q 'VERIFY-SIGNATURES-GREEN' /tmp/pft-verify-signatures.log
+
+      - name: Build the test DMG (drag layout + shipped disclosure)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/pft-app-root.env
+          APP_ROOT="$APP_ROOT" DMG_OUT="$DMG_OUT" \
+            RELEASE_DOCS_DIR="$PWD/macos/release" \
+            bash macos/scripts/build-release-dmg.sh 2>&1 | tee /tmp/pft-build-dmg.log
+          grep -q 'BUILD-RELEASE-DMG-GREEN' /tmp/pft-build-dmg.log
+          test -f "$DMG_OUT.sha256"
+          shasum -a 256 "$DMG_OUT"
+
+      - name: Upload the test DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: product-test-dmg-arm64
+          retention-days: 7
+          path: |
+            /Users/runner/work/_temp/MediVault-0.1.1-firstrun-arm64.dmg
+            /Users/runner/work/_temp/MediVault-0.1.1-firstrun-arm64.dmg.sha256
+
+  product-functional-test:
+    name: "Product functional test (real GUI, arm64)"
+    needs: build-test-dmg
+    runs-on: macos-26
+    timeout-minutes: 75
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download the test DMG
+        uses: actions/download-artifact@v4
+        with:
+          name: product-test-dmg-arm64
+          path: ${{ runner.temp }}/dmg
+
+      - name: Run the product functional test (real GUI, honest stops)
+        shell: bash
+        env:
+          EXPECTED_ARCH: arm64
+          DMG_PATH: ${{ runner.temp }}/dmg/MediVault-0.1.1-firstrun-arm64.dmg
+          DMG_SHA256_FILE: ${{ runner.temp }}/dmg/MediVault-0.1.1-firstrun-arm64.dmg.sha256
+        run: bash macos/scripts/product-functional-test.sh
+
+      - name: Job summary — capability report
+        if: always()
+        shell: bash
+        run: |
+          if [ -f gui-evidence/capability-report.md ]; then
+            {
+              echo "## Product Functional Test (arm64) — capability report"
+              echo '```'
+              cat gui-evidence/capability-report.md
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload GUI evidence (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: product-test-evidence-arm64
+          retention-days: 7
+          path: |
+            gui-evidence/
+          if-no-files-found: warn
