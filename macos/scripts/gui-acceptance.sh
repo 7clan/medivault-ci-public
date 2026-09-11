@@ -724,6 +724,337 @@ else
   classify C "assistive access (System Events) denied for the runner host process: $OSA_ERR"
 fi
 
+
+# =============================== PHASE A2 =====================================
+# The visual interaction stack — built ONCE, used by the browser-consent
+# flow (Phase B) and the MediVault UI flow (Phase H).
+# Run 3a (34598708570) proved two things this stack answers:
+#   * Safari's genuine download-permission dialog is VISIBLE on screen but
+#     INVISIBLE to System Events AX (the walk returns nothing) — OCR on the
+#     real screenshot is the honest detector, and a native CGEvent click on
+#     the OCR-located real button is the honest answer.
+#   * `open -a <browser> <url>` can BLOCK indefinitely (Chrome hung for the
+#     whole 72 minutes before the job timeout) — every browser launch is
+#     watchdogged.
+# Product code is never touched; nothing is injected; nothing is bypassed.
+note "=== PHASE A2: visual interaction stack (Vision OCR + native CGEvent input) ==="
+MV_OCR="/tmp/mv-ocr"
+MV_MOUSE="/tmp/mv-mouse"
+MV_SHOT="/tmp/mv-shot.png"
+MV_LINES="/tmp/mv-ocr-lines.txt"
+MV_SCALE="1"
+OCR_TEXT=""
+OCR_HIT_X=""
+OCR_HIT_Y=""
+OCR_HIT_W=""
+OCR_HIT_H=""
+LAST_OCR_HASH=""
+OCR_STACK="no"
+cat > /tmp/mv-ocr.swift <<'SWIFT'
+import Foundation
+import AppKit
+import Vision
+
+// mv-ocr — Vision OCR for the visual interaction stack (iteration 3).
+// Usage: mv-ocr <image.png>
+// Prints:  IMG <px_w> <px_h> <display_pt_w> <display_pt_h>
+// then:    LINE|<text>|<center_x_px>|<center_y_px_top_left>|<w_px>|<h_px>
+let args = CommandLine.arguments
+guard args.count >= 2 else { print("ERR usage mv-ocr <image>"); exit(2) }
+guard let img = NSImage(contentsOfFile: args[1]),
+      let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+  print("ERR cannot load \(args[1])"); exit(3)
+}
+let pw = Double(cg.width)
+let ph = Double(cg.height)
+let db = CGDisplayBounds(CGMainDisplayID())
+print("IMG \(Int(pw)) \(Int(ph)) \(Int(db.width)) \(Int(db.height))")
+let req = VNRecognizeTextRequest()
+req.recognitionLevel = .accurate
+req.usesLanguageCorrection = false
+let handler = VNImageRequestHandler(cgImage: cg, options: [:])
+do { try handler.perform([req]) } catch { print("ERR vision \(error)"); exit(4) }
+guard let results = req.results else { print("ERR no results"); exit(5) }
+for obs in results {
+  guard let cand = obs.topCandidates(1).first else { continue }
+  let box = obs.boundingBox
+  let cx = (box.origin.x + box.width / 2) * pw
+  let cy = ph - (box.origin.y + box.height / 2) * ph
+  let w = box.width * pw
+  let h = box.height * ph
+  let text = cand.string.replacingOccurrences(of: "|", with: "/")
+  print("LINE|\(text)|\(Int(cx))|\(Int(cy))|\(Int(w))|\(Int(h))")
+}
+SWIFT
+cat > /tmp/mv-mouse.swift <<'SWIFT'
+import Foundation
+import CoreGraphics
+
+// mv-mouse — posts a REAL left click (native CGEvent) at screen coordinates.
+// Usage: mv-mouse <x_points> <y_points>
+let args = CommandLine.arguments
+guard args.count >= 3, let x = Double(args[1]), let y = Double(args[2]) else {
+  print("ERR usage mv-mouse <x> <y>"); exit(2)
+}
+let pt = CGPoint(x: x, y: y)
+let src = CGEventSource(stateID: .combinedSessionState)
+func post(_ t: CGEventType) {
+  let e = CGEvent(mouseEventSource: src, mouseType: t, mouseCursorPosition: pt, mouseButton: .left)
+  e?.post(tap: .cghidEventTap)
+}
+post(.mouseMoved)
+usleep(150_000)
+post(.leftMouseDown)
+usleep(120_000)
+post(.leftMouseUp)
+print("CLICKED \(x) \(y)")
+SWIFT
+if swiftc -O -o "$MV_OCR" /tmp/mv-ocr.swift 2>>"$LOG" && swiftc -O -o "$MV_MOUSE" /tmp/mv-mouse.swift 2>>"$LOG"; then
+  OCR_STACK="yes"
+  probe "visual stack compiled on the runner: mv-ocr (Vision text recognition) + mv-mouse (native CGEvent clicks) — product code untouched"
+else
+  probe "visual stack compile FAILED (swiftc) — visual interaction unavailable this run (recorded honestly)"
+  classify C "swiftc unavailable/failed on the runner — the OCR/CGEvent visual stack could not be built"
+fi
+
+# guarded_open — `open` can BLOCK (run 3a: Chrome hung 72 min at open). Every
+# browser launch goes through this watchdog.
+guarded_open() { # <timeout_s> <open-args...>
+  local t="$1"
+  shift
+  local t0 pid rc
+  ( "$@" ) &
+  pid=$!
+  t0="$(date +%s)"
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ $(( $(date +%s) - t0 )) -ge "$t" ]; then
+      kill -9 "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      probe "guarded_open: '$*' exceeded ${t}s — killed (the app may still have launched; recorded honestly)"
+      return 124
+    fi
+    sleep 1
+  done
+  wait "$pid"
+  rc=$?
+  return $rc
+}
+
+ocr_capture() { # full-screen capture + OCR; sets OCR_TEXT / MV_SCALE / LAST_OCR_HASH
+  if ! screencapture -x "$MV_SHOT" 2>>"$LOG"; then
+    probe "ocr_capture: screencapture FAILED"
+    return 1
+  fi
+  if ! "$MV_OCR" "$MV_SHOT" > "$MV_LINES" 2>>"$LOG"; then
+    probe "ocr_capture: mv-ocr FAILED"
+    return 1
+  fi
+  local hdr pxw ptw
+  hdr="$(sed -n '1p' "$MV_LINES")"
+  pxw="$(printf '%s' "$hdr" | awk '{print $2}')"
+  ptw="$(printf '%s' "$hdr" | awk '{print $4}')"
+  if [ -n "$pxw" ] && [ -n "$ptw" ] && [ "$ptw" -gt 0 ] 2>/dev/null; then
+    MV_SCALE="$(awk -v a="$pxw" -v b="$ptw" 'BEGIN{printf "%.4f", a/b}')"
+  fi
+  OCR_TEXT="$(grep '^LINE|' "$MV_LINES" 2>/dev/null || true)"
+  LAST_OCR_HASH="$(shasum -a 256 "$MV_SHOT" 2>/dev/null | awk '{print $1}')"
+  probe "ocr: $(printf '%s\n' "$OCR_TEXT" | grep -c '^LINE|') lines, scale=$MV_SCALE — inventory: $(printf '%s' "$OCR_TEXT" | awk -F'|' '{printf "[%s] ", $2}' | cut -c1-500)"
+  return 0
+}
+
+ocr_lookup() { # <needle> [first|last] [exact|any] → OCR_HIT_X/Y/W/H (screen POINTS)
+  local needle="$1"
+  local which="${2:-first}"
+  local mode="${3:-any}"
+  OCR_HIT_X=""; OCR_HIT_Y=""; OCR_HIT_W=""; OCR_HIT_H=""
+  local hits px py w h
+  hits="$(printf '%s\n' "$OCR_TEXT" | grep -i -- "|${needle}|" || true)"
+  if [ -z "$hits" ] && [ "$mode" != "exact" ]; then
+    hits="$(printf '%s\n' "$OCR_TEXT" | grep -i -- "|[^|]*${needle}[^|]*|" || true)"
+  fi
+  [ -n "$hits" ] || return 1
+  if [ "$which" = "last" ]; then
+    hits="$(printf '%s\n' "$hits" | tail -1)"
+  else
+    hits="$(printf '%s\n' "$hits" | head -1)"
+  fi
+  px="$(printf '%s' "$hits" | awk -F'|' '{print $3}')"
+  py="$(printf '%s' "$hits" | awk -F'|' '{print $4}')"
+  w="$(printf '%s' "$hits" | awk -F'|' '{print $5}')"
+  h="$(printf '%s' "$hits" | awk -F'|' '{print $6}')"
+  [ -n "$px" ] && [ -n "$py" ] || return 1
+  OCR_HIT_X="$(awk -v a="$px" -v s="$MV_SCALE" 'BEGIN{printf "%.0f", a/s}')"
+  OCR_HIT_Y="$(awk -v a="$py" -v s="$MV_SCALE" 'BEGIN{printf "%.0f", a/s}')"
+  OCR_HIT_W="$(awk -v a="${w:-0}" -v s="$MV_SCALE" 'BEGIN{printf "%.0f", a/s}')"
+  OCR_HIT_H="$(awk -v a="${h:-0}" -v s="$MV_SCALE" 'BEGIN{printf "%.0f", a/s}')"
+  return 0
+}
+
+v_click() { # <needle> <stem> <expect-text> [first|last] [y-offset-points]
+  # Visual click protocol: BEFORE screenshot → OCR-locate the REAL label →
+  # record intended target + screen coordinates → native CGEvent click →
+  # AFTER screenshot → verify the visible state change. Never a blind guess.
+  local needle="$1"
+  local stem="$2"
+  local expect="$3"
+  local which="${4:-first}"
+  local yoff="${5:-0}"
+  if [ "$OCR_STACK" != "yes" ]; then
+    probe "vclick[$stem]: visual stack unavailable — skipped"
+    return 1
+  fi
+  ocr_capture || return 1
+  local before_hash="$LAST_OCR_HASH"
+  snap_file "$MV_SHOT" "${stem}-before" || true
+  if ! ocr_lookup "$needle" "$which"; then
+    probe "vclick[$stem]: target '$needle' NOT FOUND on screen — no click is attempted (never a guessed coordinate)"
+    return 1
+  fi
+  local tx ty
+  tx="$OCR_HIT_X"
+  ty=$(( OCR_HIT_Y + yoff ))
+  probe "vclick[$stem]: intended target='$needle' → screen point ($tx,$ty) (yoff ${yoff}, scale $MV_SCALE) — clicking via native CGEvent"
+  if ! "$MV_MOUSE" "$tx" "$ty" 2>>"$LOG"; then
+    probe "vclick[$stem]: mv-mouse FAILED"
+    return 1
+  fi
+  sleep 2
+  ocr_capture || return 1
+  snap_file "$MV_SHOT" "${stem}-after" || true
+  local verified="no" why=""
+  if [ -n "$expect" ] && printf '%s\n' "$OCR_TEXT" | grep -qi -- "|[^|]*${expect}"; then
+    verified="yes"
+    why="expected text '$expect' is now visible on screen"
+  elif [ "$LAST_OCR_HASH" != "$before_hash" ]; then
+    verified="yes"
+    why="visible screen change (hash-diff)"
+  else
+    why="NO visible change after the click (CGEvent may have been dropped by macOS input policy, or the target is not interactive at that point)"
+  fi
+  probe "vclick[$stem]: verification: $verified — $why"
+  [ "$verified" = "yes" ] && return 0
+  return 1
+}
+
+v_type_into() { # <label-needle> <text> <stem> [secret yes/no]
+  # Click the REAL on-screen label (an HTML label focuses its own input —
+  # works for floating AND stacked layouts), then type the text via System
+  # Events keystrokes into the focused field. Verified visually for
+  # non-masked fields. One retry with a deeper offset (Cmd+A replace).
+  local label="$1"
+  local text="$2"
+  local stem="$3"
+  local secret="${4:-no}"
+  if [ "$OCR_STACK" != "yes" ]; then
+    probe "vtype[$stem]: visual stack unavailable — skipped"
+    return 1
+  fi
+  ocr_capture || return 1
+  snap_file "$MV_SHOT" "${stem}-before" || true
+  if ! ocr_lookup "$label" "first"; then
+    probe "vtype[$stem]: label '$label' NOT FOUND on screen — no click attempted"
+    return 1
+  fi
+  local lx ly tx ty
+  lx="$OCR_HIT_X"
+  ly="$OCR_HIT_Y"
+  tx="$lx"
+  ty=$(( ly + 6 ))
+  probe "vtype[$stem]: label='$label' at ($lx,$ly) → clicking the REAL label itself at ($tx,$ty), then typing the real text"
+  if ! "$MV_MOUSE" "$tx" "$ty" 2>>"$LOG"; then
+    probe "vtype[$stem]: mv-mouse FAILED"
+    return 1
+  fi
+  sleep 1
+  if osa "tell application \"System Events\" to tell process \"MediVault\" to keystroke \"$text\"" 15; then
+    sleep 1
+    ocr_capture || return 1
+    snap_file "$MV_SHOT" "${stem}-after" || true
+    if [ "$secret" = "yes" ]; then
+      probe "vtype[$stem]: typed into the masked field (not visually verifiable by design — the outcome of the real flow is the proof)"
+      return 0
+    fi
+    if printf '%s\n' "$OCR_TEXT" | grep -qi -- "|[^|]*${text}"; then
+      probe "vtype[$stem]: typed text is now VISIBLE on screen (verified)"
+      return 0
+    fi
+    probe "vtype[$stem]: typed text not visible — one retry with a deeper offset (Cmd+A replaces the field content)"
+    ty=$(( ly + 40 ))
+    if "$MV_MOUSE" "$tx" "$ty" 2>>"$LOG"; then
+      sleep 1
+      osa 'tell application "System Events" to tell process "MediVault" to keystroke "a" using command down' 10 || true
+      sleep 1
+      if osa "tell application \"System Events\" to tell process \"MediVault\" to keystroke \"$text\"" 15; then
+        sleep 1
+        ocr_capture || return 1
+        snap_file "$MV_SHOT" "${stem}-after" || true
+        if printf '%s\n' "$OCR_TEXT" | grep -qi -- "|[^|]*${text}"; then
+          probe "vtype[$stem]: retry verified — typed text visible"
+          return 0
+        fi
+      else
+        probe "vtype[$stem]: retry keystroke FAILED (kept): $OSA_ERR"
+      fi
+    fi
+    probe "vtype[$stem]: typing could NOT be verified visually — recorded honestly (field state is on the screenshot)"
+    return 1
+  else
+    probe "vtype[$stem]: keystroke FAILED (kept, not discarded): $OSA_ERR"
+    return 1
+  fi
+}
+
+# visual_consent_click — answer Safari's genuine download-permission dialog
+# by OCR-locating the REAL Allow button on a real screenshot and clicking it
+# with a native CGEvent. Run 3a proved the dialog is on screen while being
+# invisible to System Events AX, so OCR is the detector. Merged OCR lines
+# ("Cancel Allow") are handled by clicking the right-hand portion. The
+# result is VERIFIED visually (dialog text gone); misses retry next tick.
+visual_consent_click() { # returns 0 only when the dialog is confirmed gone
+  [ "$OCR_STACK" = "yes" ] || return 1
+  if ! ocr_capture; then return 1; fi
+  if ! printf '%s\n' "$OCR_TEXT" | grep -qi "allow downloads"; then
+    return 1  # no consent dialog on screen right now
+  fi
+  CONSENT_ROUNDS=$((CONSENT_ROUNDS + 1))
+  CAP_CONSENT="OBSERVED"
+  note "Safari download-permission dialog DETECTED VISUALLY (OCR; the System Events AX tree cannot see it — run 3a finding) — capturing BEFORE any interaction"
+  snap_file "$MV_SHOT" 18-safari-download-consent || true
+  # one AX attempt for the record (diagnostic evidence of AX blindness)
+  ui_click_button_in_windows "Safari" "Allow" 10 || true
+  local hit_x hit_y
+  if ocr_lookup "Allow" "first" "exact"; then
+    hit_x="$OCR_HIT_X"
+    hit_y="$OCR_HIT_Y"
+    probe "consent: REAL 'Allow' button located by OCR at ($hit_x,$hit_y)"
+  elif ocr_lookup "Cancel" "first" "any" && printf '%s' "$(printf '%s\n' "$OCR_TEXT" | grep -i -- '|[^|]*Cancel[^|]*|' | head -1)" | grep -qi "allow"; then
+    # OCR merged "Cancel Allow" into one line: Allow is the right-hand button
+    hit_x=$(( OCR_HIT_X + OCR_HIT_W / 3 ))
+    hit_y="$OCR_HIT_Y"
+    probe "consent: OCR merged the button row into one line — clicking its right third at ($hit_x,$hit_y) where the real Allow button sits"
+  else
+    probe "consent: Allow button text not isolable by OCR — dialog evidence preserved in 18-safari-download-consent.png; retrying next tick"
+    return 1
+  fi
+  if ! "$MV_MOUSE" "$hit_x" "$hit_y" 2>>"$LOG"; then
+    probe "consent: mv-mouse FAILED (kept): retry next tick"
+    return 1
+  fi
+  sleep 3
+  if ocr_capture; then
+    snap_file "$MV_SHOT" 19-safari-download-started || true
+    if printf '%s\n' "$OCR_TEXT" | grep -qi "allow downloads"; then
+      probe "consent: dialog STILL visible after the click — the click may have missed; retrying next tick (round $CONSENT_ROUNDS)"
+      return 1
+    fi
+    note "consent: the genuine 'Allow' button was clicked and the dialog is GONE (visual verification) — Safari may now download"
+    CONSENT_VISUAL_DONE="yes"
+    return 0
+  fi
+  return 1
+}
+
+
 # =============================== PHASE B ======================================
 # REAL browser download of the frozen release, with FULL diagnostics.
 # Iteration 3: navigation through the browser's own address bar (visible
@@ -744,6 +1075,7 @@ BROWSER_USED="none"    # Safari | Google Chrome | … | curl-fallback (NOT a bro
 DL_PREFIX=""
 BROWSER_POLL_SNAPS=0
 CONSENT_ROUNDS=0
+CONSENT_VISUAL_DONE="no"
 
 # --- diagnostics: one poll tick for the active browser (nothing discarded) ----
 browser_diag() { # <app-name>
@@ -785,42 +1117,6 @@ return out" 12; then
   fi
 }
 
-# --- Safari's genuine download-permission dialog (scan only; errors kept) -----
-safari_consent_scan() {
-  CONSENT_FOUND="no"
-  if osa 'tell application "System Events"
-  tell process "Safari"
-    set found to "none"
-    repeat with w in (get windows)
-      try
-        set hasAllow to false
-        set hasText to false
-        repeat with el in (entire contents of w)
-          try
-            if class of el is button and (name of el) as string is "Allow" then set hasAllow to true
-          end try
-          try
-            if class of el is static text then
-              set t to (value of el) as string
-              if t contains "allow downloads" or t contains "release-assets" then set hasText to true
-            end if
-          end try
-        end repeat
-        if hasAllow and hasText then
-          set found to "consent-dialog"
-          exit repeat
-        end if
-      end try
-    end repeat
-  end tell
-end tell
-return found' 20; then
-    [ "$OSA_OUT" = "consent-dialog" ] && CONSENT_FOUND="yes"
-  else
-    probe "safari consent scan FAILED (kept, not discarded): $OSA_ERR"
-  fi
-}
-
 # --- one full bounded browser attempt ------------------------------------------
 attempt_browser_download() { # <app-name> <slug> <is-safari yes/no>
   local app="$1"
@@ -829,13 +1125,20 @@ attempt_browser_download() { # <app-name> <slug> <is-safari yes/no>
   BROWSER_USED="$app"
   DL_PREFIX="$slug"
   note "browser attempt [$app]: LaunchServices open + address-bar navigation through the browser's own GUI"
-  if ! open -a "$app" "$RELEASE_URL" 2>>"$LOG"; then
-    probe "open -a $app returned non-zero (recorded; the address-bar navigation follows)"
+  if guarded_open 60 open -a "$app" "$RELEASE_URL"; then
+    probe "open -a $app returned (watchdogged — run 3a taught us that a plain 'open' can block for 72+ minutes)"
+  else
+    probe "open -a $app returned non-zero or was watchdog-killed (recorded; the address-bar navigation follows)"
   fi
   sleep 4
   snap "${slug}-poll-00" || true
   BROWSER_POLL_SNAPS=$((BROWSER_POLL_SNAPS + 1))
   browser_diag "$app"
+  # Safari's consent dialog can already be up seconds after the LaunchServices
+  # navigation (run 3a: visible by ~15s) — answer it BEFORE typing anything
+  if [ "$is_safari" = "yes" ]; then
+    visual_consent_click || true
+  fi
   if osa "tell application \"$app\" to activate" 10; then
     sleep 1
     if osa "tell application \"System Events\" to tell process \"$app\" to keystroke \"l\" using command down" 10; then
@@ -856,53 +1159,51 @@ attempt_browser_download() { # <app-name> <slug> <is-safari yes/no>
   else
     probe "activate $app FAILED (kept, not discarded): $OSA_ERR"
   fi
-  # poll window: 150s at 5s cadence; scheduled poll screenshots; consent watch
+  # poll window: 150s; consent is answered VISUALLY (OCR + native CGEvent —
+  # run 3a proved Safari's dialog is invisible to the System Events AX walk)
   local t0 elapsed shot sz dsz
   local shots_taken=""
+  local nav_retried="no"
   t0="$(date +%s)"
   while :; do
     elapsed=$(( $(date +%s) - t0 ))
     [ "$elapsed" -ge 150 ] && break
-    if [ "$is_safari" = "yes" ] && [ "$UI_AUTOMATION" = "available" ]; then
-      safari_consent_scan
-      if [ "$CONSENT_FOUND" = "yes" ]; then
-        CONSENT_ROUNDS=$((CONSENT_ROUNDS + 1))
-        CAP_CONSENT="OBSERVED"
-        note "Safari download-permission dialog DETECTED (round $CONSENT_ROUNDS) — capturing BEFORE any interaction"
-        snap 18-safari-download-consent || true
-        sleep 1
-        # exact-name match: "Don't Allow" CONTAINS "Allow" — an exact match cannot click the wrong button
-        if ui_click_button_in_windows "Safari" "Allow" 25; then
-          if [ "${OSA_OUT#clicked}" != "$OSA_OUT" ]; then
-            probe "consent dialog: clicked the genuine 'Allow' button (legitimate System Events automation; TCC untouched)"
-            sleep 4
-            snap 19-safari-download-started || true
-          else
-            probe "consent dialog: no exact 'Allow' button found ($OSA_OUT) — dialog stays up; recorded"
-            classify C "Safari consent dialog present but no exact Allow button reachable: $OSA_OUT"
+    # progress first: leave the poll the moment real download activity exists
+    sz="$(stat -f%z "$DMG_PATH" 2>/dev/null || echo 0)"
+    dsz="$(stat -f%z "$DMG_PATH.download" 2>/dev/null || echo 0)"
+    if [ "$sz" = "$EXPECTED_SIZE" ]; then break; fi
+    if [ "${dsz:-0}" -gt 0 ] 2>/dev/null; then break; fi
+    # Safari: answer the genuine download-permission dialog visually
+    if [ "$is_safari" = "yes" ] && [ "${CONSENT_VISUAL_DONE:-no}" != "yes" ]; then
+      visual_consent_click || true
+    fi
+    # fallback browsers: one address-bar navigation retry (~35s in) — first-run
+    # Chrome/Edge/Firefox can be slow to present a ready window
+    if [ "$is_safari" != "yes" ] && [ "$nav_retried" = "no" ] && [ "$elapsed" -ge 35 ]; then
+      nav_retried="yes"
+      probe "navigation retry for $app (first-run browsers can be slow to present the address bar)"
+      osa "tell application \"$app\" to activate" 10 || probe "activate retry FAILED (kept): $OSA_ERR"
+      sleep 1
+      osa "tell application \"System Events\" to tell process \"$app\" to keystroke \"l\" using command down" 10 || true
+      sleep 1
+      osa "tell application \"System Events\" to tell process \"$app\" to keystroke \"$RELEASE_URL\"" 20 || true
+      sleep 1
+      osa "tell application \"System Events\" to tell process \"$app\" to key code 36" 10 || true
+      sleep 2
+    fi
+    # fallback browsers: watch for the browser's own download warning (e.g.
+    # Chrome's "…dmg may be dangerous" bubble) — click its real Keep button
+    # ONLY when the warning text is actually on screen (visual detection)
+    if [ "$is_safari" != "yes" ] && [ "$OCR_STACK" = "yes" ]; then
+      if ocr_capture && printf '%s\n' "$OCR_TEXT" | grep -qi "dangerous\|discard"; then
+        if ocr_lookup "Keep" "first" "exact"; then
+          probe "$app download-warning 'Keep' located by OCR at ($OCR_HIT_X,$OCR_HIT_Y) — clicking the real button"
+          if "$MV_MOUSE" "$OCR_HIT_X" "$OCR_HIT_Y" 2>>"$LOG"; then
+            sleep 3
           fi
         else
-          probe "consent dialog: clicking Allow FAILED (kept, not discarded): $OSA_ERR"
-          classify C "Safari consent dialog present but System Events could not click Allow: $OSA_ERR"
-          snap 19-safari-download-started || true
+          probe "$app warning text visible but 'Keep' not isolable by OCR — recorded (poll screenshot is the evidence)"
         fi
-      fi
-    fi
-    if [ "$is_safari" != "yes" ] && [ "$UI_AUTOMATION" = "available" ]; then
-      # watch for the fallback browser's own download warning (e.g. Chrome's
-      # "…dmg may be dangerous" bubble) — click its real Keep button ONLY when
-      # the dialog text actually references the DMG or a dangerous-file warning
-      if ui_dialog_texts "$app"; then
-        if printf '%s' "$OSA_OUT" | grep -qi "dangerous\|discard\|$DMG_NAME"; then
-          if ui_click_button_contains_in_windows "$app" "Keep" 20; then
-            probe "$app download-warning 'Keep' clicked: $OSA_OUT"
-            sleep 3
-          else
-            probe "$app 'Keep' click FAILED (kept, not discarded): $OSA_ERR"
-          fi
-        fi
-      else
-        probe "$app dialog-text scan FAILED (kept, not discarded): $OSA_ERR"
       fi
     fi
     browser_diag "$app"
@@ -913,10 +1214,6 @@ attempt_browser_download() { # <app-name> <slug> <is-safari yes/no>
         BROWSER_POLL_SNAPS=$((BROWSER_POLL_SNAPS + 1))
       fi
     done
-    sz="$(stat -f%z "$DMG_PATH" 2>/dev/null || echo 0)"
-    dsz="$(stat -f%z "$DMG_PATH.download" 2>/dev/null || echo 0)"
-    if [ "$sz" = "$EXPECTED_SIZE" ]; then break; fi
-    if [ "${dsz:-0}" -gt 0 ] 2>/dev/null; then break; fi
     sleep 5
   done
   snap "${slug}-poll-end" || true
@@ -1488,243 +1785,10 @@ fi
 
 note "=== PHASE H: MediVault product checks (app IS running) ==="
 
-# --- H0: build the visual interaction stack (compiled on the runner) ----------
-note "=== PHASE H0: visual interaction stack (Vision OCR + native CGEvent input) ==="
-MV_OCR="/tmp/mv-ocr"
-MV_MOUSE="/tmp/mv-mouse"
-MV_SHOT="/tmp/mv-shot.png"
-MV_LINES="/tmp/mv-ocr-lines.txt"
-MV_SCALE="1"
-OCR_TEXT=""
-OCR_HIT_X=""
-OCR_HIT_Y=""
-LAST_OCR_HASH=""
-OCR_STACK="no"
-cat > /tmp/mv-ocr.swift <<'SWIFT'
-import Foundation
-import AppKit
-import Vision
-
-// mv-ocr — Vision OCR for the visual interaction stack (iteration 3).
-// Usage: mv-ocr <image.png>
-// Prints:  IMG <px_w> <px_h> <display_pt_w> <display_pt_h>
-// then:    LINE|<text>|<center_x_px>|<center_y_px_top_left>|<w_px>|<h_px>
-let args = CommandLine.arguments
-guard args.count >= 2 else { print("ERR usage mv-ocr <image>"); exit(2) }
-guard let img = NSImage(contentsOfFile: args[1]),
-      let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-  print("ERR cannot load \(args[1])"); exit(3)
-}
-let pw = Double(cg.width)
-let ph = Double(cg.height)
-let db = CGDisplayBounds(CGMainDisplayID())
-print("IMG \(Int(pw)) \(Int(ph)) \(Int(db.width)) \(Int(db.height))")
-let req = VNRecognizeTextRequest()
-req.recognitionLevel = .accurate
-req.usesLanguageCorrection = false
-let handler = VNImageRequestHandler(cgImage: cg, options: [:])
-do { try handler.perform([req]) } catch { print("ERR vision \(error)"); exit(4) }
-guard let results = req.results else { print("ERR no results"); exit(5) }
-for obs in results {
-  guard let cand = obs.topCandidates(1).first else { continue }
-  let box = obs.boundingBox
-  let cx = (box.origin.x + box.width / 2) * pw
-  let cy = ph - (box.origin.y + box.height / 2) * ph
-  let w = box.width * pw
-  let h = box.height * ph
-  let text = cand.string.replacingOccurrences(of: "|", with: "/")
-  print("LINE|\(text)|\(Int(cx))|\(Int(cy))|\(Int(w))|\(Int(h))")
-}
-SWIFT
-cat > /tmp/mv-mouse.swift <<'SWIFT'
-import Foundation
-import CoreGraphics
-
-// mv-mouse — posts a REAL left click (native CGEvent) at screen coordinates.
-// Usage: mv-mouse <x_points> <y_points>
-let args = CommandLine.arguments
-guard args.count >= 3, let x = Double(args[1]), let y = Double(args[2]) else {
-  print("ERR usage mv-mouse <x> <y>"); exit(2)
-}
-let pt = CGPoint(x: x, y: y)
-let src = CGEventSource(stateID: .combinedSessionState)
-func post(_ t: CGEventType) {
-  let e = CGEvent(mouseEventSource: src, mouseType: t, mouseCursorPosition: pt, mouseButton: .left)
-  e?.post(tap: .cghidEventTap)
-}
-post(.mouseMoved)
-usleep(150_000)
-post(.leftMouseDown)
-usleep(120_000)
-post(.leftMouseUp)
-print("CLICKED \(x) \(y)")
-SWIFT
-if swiftc -O -o "$MV_OCR" /tmp/mv-ocr.swift 2>>"$LOG" && swiftc -O -o "$MV_MOUSE" /tmp/mv-mouse.swift 2>>"$LOG"; then
-  OCR_STACK="yes"
-  probe "visual stack compiled on the runner: mv-ocr (Vision text recognition) + mv-mouse (native CGEvent clicks) — product code untouched"
-else
-  probe "visual stack compile FAILED (swiftc) — visual interaction unavailable this run (recorded honestly)"
-  classify C "swiftc unavailable/failed on the runner — the OCR/CGEvent visual stack could not be built"
-fi
-
-# --- visual helpers -------------------------------------------------------------
-ocr_capture() { # full-screen capture + OCR; sets OCR_TEXT / MV_SCALE / LAST_OCR_HASH
-  if ! screencapture -x "$MV_SHOT" 2>>"$LOG"; then
-    probe "ocr_capture: screencapture FAILED"
-    return 1
-  fi
-  if ! "$MV_OCR" "$MV_SHOT" > "$MV_LINES" 2>>"$LOG"; then
-    probe "ocr_capture: mv-ocr FAILED"
-    return 1
-  fi
-  local hdr pxw ptw
-  hdr="$(sed -n '1p' "$MV_LINES")"
-  pxw="$(printf '%s' "$hdr" | awk '{print $2}')"
-  ptw="$(printf '%s' "$hdr" | awk '{print $4}')"
-  if [ -n "$pxw" ] && [ -n "$ptw" ] && [ "$ptw" -gt 0 ] 2>/dev/null; then
-    MV_SCALE="$(awk -v a="$pxw" -v b="$ptw" 'BEGIN{printf "%.4f", a/b}')"
-  fi
-  OCR_TEXT="$(grep '^LINE|' "$MV_LINES" 2>/dev/null || true)"
-  LAST_OCR_HASH="$(shasum -a 256 "$MV_SHOT" 2>/dev/null | awk '{print $1}')"
-  probe "ocr: $(printf '%s\n' "$OCR_TEXT" | grep -c '^LINE|') lines, scale=$MV_SCALE — inventory: $(printf '%s' "$OCR_TEXT" | awk -F'|' '{printf "[%s] ", $2}' | cut -c1-500)"
-  return 0
-}
-
-ocr_lookup() { # <needle> [first|last] → OCR_HIT_X/OCR_HIT_Y (screen POINTS)
-  local needle="$1"
-  local which="${2:-first}"
-  OCR_HIT_X=""
-  OCR_HIT_Y=""
-  local hits px py
-  # exact text match first (the "Background" TAB, not "Background Service")
-  hits="$(printf '%s\n' "$OCR_TEXT" | grep -i -- "|${needle}|" || true)"
-  [ -n "$hits" ] || hits="$(printf '%s\n' "$OCR_TEXT" | grep -i -- "|[^|]*${needle}[^|]*|" || true)"
-  [ -n "$hits" ] || return 1
-  if [ "$which" = "last" ]; then
-    hits="$(printf '%s\n' "$hits" | tail -1)"
-  else
-    hits="$(printf '%s\n' "$hits" | head -1)"
-  fi
-  px="$(printf '%s' "$hits" | awk -F'|' '{print $3}')"
-  py="$(printf '%s' "$hits" | awk -F'|' '{print $4}')"
-  [ -n "$px" ] && [ -n "$py" ] || return 1
-  OCR_HIT_X="$(awk -v a="$px" -v s="$MV_SCALE" 'BEGIN{printf "%.0f", a/s}')"
-  OCR_HIT_Y="$(awk -v a="$py" -v s="$MV_SCALE" 'BEGIN{printf "%.0f", a/s}')"
-  return 0
-}
-
-v_click() { # <needle> <stem> <expect-text> [first|last] [y-offset-points]
-  # Visual click protocol: BEFORE screenshot → OCR-locate the REAL label →
-  # record intended target + screen coordinates → native CGEvent click →
-  # AFTER screenshot → verify the visible state change. Never a blind guess.
-  local needle="$1"
-  local stem="$2"
-  local expect="$3"
-  local which="${4:-first}"
-  local yoff="${5:-0}"
-  if [ "$OCR_STACK" != "yes" ]; then
-    probe "vclick[$stem]: visual stack unavailable — skipped"
-    return 1
-  fi
-  ocr_capture || return 1
-  local before_hash="$LAST_OCR_HASH"
-  snap_file "$MV_SHOT" "${stem}-before" || true
-  if ! ocr_lookup "$needle" "$which"; then
-    probe "vclick[$stem]: target '$needle' NOT FOUND on screen — no click is attempted (never a guessed coordinate)"
-    return 1
-  fi
-  local tx ty
-  tx="$OCR_HIT_X"
-  ty=$(( OCR_HIT_Y + yoff ))
-  probe "vclick[$stem]: intended target='$needle' → screen point ($tx,$ty) (yoff ${yoff}, scale $MV_SCALE) — clicking via native CGEvent"
-  if ! "$MV_MOUSE" "$tx" "$ty" 2>>"$LOG"; then
-    probe "vclick[$stem]: mv-mouse FAILED"
-    return 1
-  fi
-  sleep 2
-  ocr_capture || return 1
-  snap_file "$MV_SHOT" "${stem}-after" || true
-  local verified="no" why=""
-  if [ -n "$expect" ] && printf '%s\n' "$OCR_TEXT" | grep -qi -- "|[^|]*${expect}"; then
-    verified="yes"
-    why="expected text '$expect' is now visible on screen"
-  elif [ "$LAST_OCR_HASH" != "$before_hash" ]; then
-    verified="yes"
-    why="visible screen change (hash-diff)"
-  else
-    why="NO visible change after the click (CGEvent may have been dropped by macOS input policy, or the target is not interactive at that point)"
-  fi
-  probe "vclick[$stem]: verification: $verified — $why"
-  [ "$verified" = "yes" ] && return 0
-  return 1
-}
-
-v_type_into() { # <label-needle> <text> <stem> [secret yes/no]
-  # Click the input below the REAL on-screen label, then type the text via
-  # System Events keystrokes into the focused field. Verified visually for
-  # non-masked fields. One retry with a deeper offset (Cmd+A replace).
-  local label="$1"
-  local text="$2"
-  local stem="$3"
-  local secret="${4:-no}"
-  if [ "$OCR_STACK" != "yes" ]; then
-    probe "vtype[$stem]: visual stack unavailable — skipped"
-    return 1
-  fi
-  ocr_capture || return 1
-  snap_file "$MV_SHOT" "${stem}-before" || true
-  if ! ocr_lookup "$label" "first"; then
-    probe "vtype[$stem]: label '$label' NOT FOUND on screen — no click attempted"
-    return 1
-  fi
-  local lx ly tx ty
-  lx="$OCR_HIT_X"
-  ly="$OCR_HIT_Y"
-  tx="$lx"
-  ty=$(( ly + 6 ))
-  probe "vtype[$stem]: label='$label' at ($lx,$ly) → clicking the REAL label itself at ($tx,$ty) (an HTML label focuses its own input — works for floating AND stacked layouts), then typing the real text"
-  if ! "$MV_MOUSE" "$tx" "$ty" 2>>"$LOG"; then
-    probe "vtype[$stem]: mv-mouse FAILED"
-    return 1
-  fi
-  sleep 1
-  if osa "tell application \"System Events\" to tell process \"MediVault\" to keystroke \"$text\"" 15; then
-    sleep 1
-    ocr_capture || return 1
-    snap_file "$MV_SHOT" "${stem}-after" || true
-    if [ "$secret" = "yes" ]; then
-      probe "vtype[$stem]: typed into the masked field (not visually verifiable by design — the outcome of the real flow is the proof)"
-      return 0
-    fi
-    if printf '%s\n' "$OCR_TEXT" | grep -qi -- "|[^|]*${text}"; then
-      probe "vtype[$stem]: typed text is now VISIBLE on screen (verified)"
-      return 0
-    fi
-    probe "vtype[$stem]: typed text not visible — one retry with a deeper offset (Cmd+A replaces the field content)"
-    ty=$(( ly + 40 ))
-    if "$MV_MOUSE" "$tx" "$ty" 2>>"$LOG"; then
-      sleep 1
-      osa 'tell application "System Events" to tell process "MediVault" to keystroke "a" using command down' 10 || true
-      sleep 1
-      if osa "tell application \"System Events\" to tell process \"MediVault\" to keystroke \"$text\"" 15; then
-        sleep 1
-        ocr_capture || return 1
-        snap_file "$MV_SHOT" "${stem}-after" || true
-        if printf '%s\n' "$OCR_TEXT" | grep -qi -- "|[^|]*${text}"; then
-          probe "vtype[$stem]: retry verified — typed text visible"
-          return 0
-        fi
-      else
-        probe "vtype[$stem]: retry keystroke FAILED (kept): $OSA_ERR"
-      fi
-    fi
-    probe "vtype[$stem]: typing could NOT be verified visually — recorded honestly (field state is on the screenshot)"
-    return 1
-  else
-    probe "vtype[$stem]: keystroke FAILED (kept, not discarded): $OSA_ERR"
-    return 1
-  fi
-}
+# --- H0 (moved to PHASE A2): the visual stack was built before Phase B so the
+# browser-consent flow could use it. Here we only re-verify it is alive. -----
+note "=== PHASE H0: visual interaction stack (built in Phase A2 — re-verifying) ==="
+probe "visual stack: OCR_STACK=$OCR_STACK (mv-ocr=$([ -x "$MV_OCR" ] && echo present || echo MISSING), mv-mouse=$([ -x "$MV_MOUSE" ] && echo present || echo MISSING))"
 
 # Bring MediVault front + widen the window so the ≥lg tab labels render
 if osa 'tell application "MediVault" to activate' 10; then :; fi
