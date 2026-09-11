@@ -718,7 +718,37 @@ snap "03-installed-app" || true
 # =============================================================================
 note "=== PHASE 3: first launch → first-run onboarding screen ==="
 open_and_detect "first-launch" 180
-[ "$MV_WINDOW" = "yes" ] || product_red FIRST_LAUNCH "the MediVault window never appeared (proc=$MV_PROC)"
+if [ "$MV_WINDOW" != "yes" ]; then
+  # ---- startup-failure diagnostics (honest evidence BEFORE any verdict) ----
+  note "--- launch diagnostics: why did the process not appear? ---"
+  probe "spctl assessment: $(spctl --assess -vv "$APP_PATH" 2>&1 | head -2 | tr '\n' ' ' || true)"
+  probe "codesign verify: $(codesign --verify --strict "$APP_PATH" 2>&1 | head -2 | tr '\n' ' ' || true)"
+  probe "lsappinfo: $(lsappinfo info "file:$APP_PATH" 2>&1 | head -3 | tr '\n' ' ' || true)"
+  # Direct binary exec: capture the REAL process output (panic/log lines).
+  rm -f /tmp/mv-direct.exit
+  ( "$APP_PATH/Contents/MacOS/MediVault" > /tmp/mv-direct.log 2>&1; echo $? > /tmp/mv-direct.exit ) &
+  DIRECT_PID=$!
+  sleep 12
+  if kill -0 "$DIRECT_PID" 2>/dev/null; then
+    probe "direct exec: process ALIVE after 12s (pid $DIRECT_PID) — killing for the diagnostic"
+    kill -TERM "$DIRECT_PID" 2>/dev/null || true
+  else
+    probe "direct exec: process EXITED (code $(cat /tmp/mv-direct.exit 2>/dev/null || echo '?')) — output below"
+  fi
+  sleep 2
+  probe "--- direct-exec output (first 60 lines) ---"
+  sed -n '1,60p' /tmp/mv-direct.log 2>/dev/null | tee -a "$LOG" || probe "(no output captured)"
+  # macOS crash reports (the runner's own record of the death).
+  probe "--- crash reports (newest 5) ---"
+  ls -t "$HOME/Library/Logs/DiagnosticReports" 2>/dev/null | head -5 | tee -a "$LOG" || probe "(none)"
+  NEWEST_IPS="$(ls -t "$HOME/Library/Logs/DiagnosticReports"/MediVault*.ips 2>/dev/null | head -1 || true)"
+  if [ -n "$NEWEST_IPS" ]; then
+    probe "--- newest MediVault crash report (first 80 lines) ---"
+    sed -n '1,80p' "$NEWEST_IPS" 2>/dev/null | tee -a "$LOG" || true
+  fi
+  snap "03a-launch-failure" || true
+  product_red FIRST_LAUNCH "the MediVault window never appeared (proc=$MV_PROC; direct-exec diagnostics above)"
+fi
 cap MEDIVAULT_PROCESS "GREEN (process after ${MV_T_PROC:-?}s)"
 cap MEDIVAULT_WINDOW "GREEN (window after ${MV_T_WINDOW:-?}s — title: $MV_TITLE)"
 

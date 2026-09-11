@@ -448,6 +448,43 @@ jobs:
             bash macos/scripts/verify-signatures.sh 2>&1 | tee /tmp/pft-verify-signatures.log
           grep -q 'VERIFY-SIGNATURES-GREEN' /tmp/pft-verify-signatures.log
 
+      - name: Launch smoke — desktop binary starts, lives, terminates
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/pft-app-root.env
+          APP="$APP_ROOT"
+          rm -f /tmp/pft-desktop.exit
+          ( "$APP/Contents/MacOS/MediVault" > /tmp/pft-desktop.log 2>&1; echo $? > /tmp/pft-desktop.exit ) &
+          DESKTOP_PID=$!
+          echo "desktop pid: $DESKTOP_PID"
+          sleep 15
+          if ! kill -0 "$DESKTOP_PID" 2>/dev/null; then
+            echo "::error::desktop binary did not stay alive for 15s (the DMG is NOT built from a broken app)"
+            echo "--- desktop.log:"; tail -40 /tmp/pft-desktop.log 2>/dev/null || true
+            echo "--- exit file:"; cat /tmp/pft-desktop.exit 2>/dev/null || true
+            echo "--- crash reports:"; ls -t "$HOME/Library/Logs/DiagnosticReports" 2>/dev/null | head -5 || true
+            exit 1
+          fi
+          echo "alive after 15s: yes"
+          ps -p "$DESKTOP_PID" -o pid,etime,comm
+          echo "--- desktop.log (first 20 lines):"
+          sed -n '1,20p' /tmp/pft-desktop.log 2>/dev/null || true
+          kill -TERM "$DESKTOP_PID"
+          EXITED=0
+          for i in $(seq 1 30); do
+            [ -f /tmp/pft-desktop.exit ] && { EXITED=1; break; }
+            sleep 1
+          done
+          if [ "$EXITED" != "1" ]; then
+            echo "::warning::desktop did not exit within 30s of SIGTERM — hard-stopping"
+            kill -9 "$DESKTOP_PID" 2>/dev/null || true
+          else
+            echo "desktop exited after SIGTERM (code $(cat /tmp/pft-desktop.exit))"
+          fi
+          echo "LAUNCH-SMOKE-GREEN (binary starts, stays alive, terminates)"
+          pkill -f 'MediVault.app/Contents/MacOS/MediVault' 2>/dev/null || true
+
       - name: Build the test DMG (drag layout + shipped disclosure)
         shell: bash
         run: |
