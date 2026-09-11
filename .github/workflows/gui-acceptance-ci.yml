@@ -63,9 +63,10 @@ jobs:
   gui-acceptance:
     name: "GUI acceptance (${{ inputs.arch }})"
     runs-on: ${{ inputs.arch == 'x86_64' && 'macos-26-intel' || 'macos-26' }}
-    # iteration 2: robust 120s launch detectors + consent/Open-Anyway/product
-    # phases add real wall-clock — 60 min keeps every honest-stop path green.
-    timeout-minutes: 60
+    # iteration 3: browser diagnostic polls + fallback browser + the OCR/CGEvent
+    # visual-interaction stack add real wall-clock — 75 min keeps every
+    # honest-stop path green.
+    timeout-minutes: 75
 
     env:
       EXPECTED_ARCH: ${{ inputs.arch }}

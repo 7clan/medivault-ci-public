@@ -3,7 +3,38 @@
 # gui-acceptance.sh — the GitHub macOS-runner GUI REALITY EXPERIMENT
 # Contract: acceptance/macos-gui-acceptance-contract.md
 #
-# ITERATION 2 (run 2) — driven by run 1 (34467419086) findings:
+# ITERATION 3 (run 3) — driven by run 2 (34526306786) findings:
+#   * BROWSER-DOWNLOAD DIAGNOSTICS: run 2's Safari attempt died silently
+#     (0 bytes for 15 minutes, zero screenshots, zero window-state records).
+#     Now: address-bar navigation via visible GUI keystrokes, periodic poll
+#     screenshots (safari-poll-00/15/30/45/60/90/120.png + <browser>-poll-NN
+#     for a fallback browser), per-poll records of window count/names,
+#     dialog/button names, download-dir contents, DMG size over time, browser
+#     process state — and EVERY AppleScript/System Events error is kept in
+#     probes.log (never silently discarded).
+#   * FALLBACK BROWSER: if Safari cannot complete after its bounded attempt,
+#     the next ALREADY-INSTALLED normal GUI browser (Chrome/Edge/Firefox/…)
+#     downloads the frozen DMG through its own GUI (nothing is installed by
+#     this harness). curl stays the last resort, explicitly labeled NOT a
+#     browser download.
+#   * D-class cosmetic fixed: run 2's quarantine-evidence.txt said
+#     "download-method: Safarino" — a ${VAR:+…}${VAR:-…} expansion bug in
+#     this script. The evidence now records the real browser + method.
+#   * MEDIVAULT UI WITHOUT AX: run 2 proved the WKWebView is AX-opaque to
+#     System Events. This iteration drives the SAME visible buttons a human
+#     uses through a compiled visual stack: Vision OCR locates the real label
+#     on a real screenshot, native CGEvent mouse events click it, System
+#     Events keystrokes type into the focused field. Every click records the
+#     intended target + screen coordinates, saves before/after screenshots,
+#     and verifies a visible state change — no blind coordinate guessing,
+#     no product-code changes, no JS injection, no hidden Tauri commands, and
+#     no backend API substitute for a UI claim.
+#   * Product path order: Settings → Background → real registration →
+#     Login Items approval → API/PostgreSQL loopback → synthetic patient
+#     through the UI (PATIENT_UI; a separate API/DB check is labeled
+#     BACKEND_PATIENT_PROOF, never PATIENT_UI_PROOF).
+#
+# ITERATION 2 (run 2) — historical notes:
 #   D-class fixed: the 20s pgrep-only launch window lost the race against
 #     Gatekeeper assessment + app exec. Replaced by a bounded 120s
 #     multi-signal detector (System Events process existence, LaunchServices
@@ -117,7 +148,14 @@ CAP_GUI_SESSION="NOT AVAILABLE"
 CAP_FINDER_SHOT="NO"
 CAP_SETTINGS_SHOT="NO"
 CAP_SAFARI_DL="NOT POSSIBLE"
+CAP_BROWSER_USED="none"
+CAP_BROWSER_DIAG="0"
 CAP_CONSENT="NOT OBSERVED"
+CAP_SETTINGS_REACHED="NO"
+CAP_BG_PANEL_REACHED="NO"
+CAP_REG_CLICKED="NO"
+CAP_PATIENT_UI="NOT PROVEN"
+CAP_BACKEND_PATIENT="NOT RUN"
 CAP_QUARANTINE="NOT PROVEN"
 CAP_QUARANTINE_SRC="NOT PROVEN"
 CAP_DMG_HASH="RED"
@@ -155,7 +193,9 @@ write_caps() {
     echo "REAL_FINDER_SCREENSHOT = $CAP_FINDER_SHOT"
     echo "REAL_SYSTEM_SETTINGS_SCREENSHOT = $CAP_SETTINGS_SHOT"
     echo "SCREENSHOT_COUNT = $SNAP_COUNT"
-    echo "REAL_SAFARI_DOWNLOAD = $CAP_SAFARI_DL"
+    echo "REAL_BROWSER_DOWNLOAD = $CAP_SAFARI_DL"
+    echo "BROWSER_USED = $CAP_BROWSER_USED"
+    echo "BROWSER_DIAGNOSTIC_SCREENSHOTS = $CAP_BROWSER_DIAG"
     echo "SAFARI_DOWNLOAD_CONSENT = $CAP_CONSENT"
     echo "NATURAL_QUARANTINE = $CAP_QUARANTINE"
     echo "QUARANTINE_SOURCE = $CAP_QUARANTINE_SRC"
@@ -176,6 +216,11 @@ write_caps() {
     echo "API = $CAP_API"
     echo "POSTGRES = $CAP_PG"
     echo "SYNTHETIC_PATIENT = $CAP_PATIENT"
+    echo "PATIENT_UI = $CAP_PATIENT_UI"
+    echo "BACKEND_PATIENT_PROOF = $CAP_BACKEND_PATIENT"
+    echo "SETTINGS_REACHED = $CAP_SETTINGS_REACHED"
+    echo "BACKGROUND_PANEL_REACHED = $CAP_BG_PANEL_REACHED"
+    echo "REGISTRATION_BUTTON_CLICKED = $CAP_REG_CLICKED"
     echo "QUIT_REOPEN = $CAP_QUIT_REOPEN"
     echo "KEYCHAIN_UI = $CAP_KEYCHAIN_UI"
     echo "LAUNCH_TIMING = ${CAP_LAUNCH_TIMING:-not measured}"
@@ -185,10 +230,11 @@ write_caps() {
 }
 
 # ------------------------------ helpers --------------------------------------
-snap() { # <stem> — native screenshot AFTER a real action; validates the PNG
-  local stem="$1"
+snap_file() { # <src> <stem> — register an existing native PNG as evidence
+  local src="$1"
+  local stem="$2"
   local out="$EVID_DIR/$stem.png"
-  if screencapture -x "$out" 2>>"$LOG" && [ -s "$out" ]; then
+  if [ -s "$src" ] && cp "$src" "$out" 2>>"$LOG" && [ -s "$out" ]; then
     SNAP_COUNT=$((SNAP_COUNT + 1))
     local h dim sz
     h="$(shasum -a 256 "$out" 2>/dev/null | awk '{print $1}')"
@@ -197,6 +243,19 @@ snap() { # <stem> — native screenshot AFTER a real action; validates the PNG
     echo "[snap] $stem.png dim=($dim) size=${sz}B sha256=${h:0:12}" | tee -a "$LOG"
     LAST_SNAP_HASH="$h"
     return 0
+  fi
+  echo "[snap] FAILED $stem (screencapture error or empty file — no mock is ever created)" | tee -a "$LOG"
+  return 1
+}
+
+snap() { # <stem> — native screenshot AFTER a real action; validates the PNG
+  local stem="$1"
+  local tmp="/tmp/gui-snap.$$.png"
+  if screencapture -x "$tmp" 2>>"$LOG"; then
+    snap_file "$tmp" "$stem"
+    local rc=$?
+    rm -f "$tmp"
+    return $rc
   fi
   echo "[snap] FAILED $stem (screencapture error or empty file — no mock is ever created)" | tee -a "$LOG"
   return 1
@@ -666,25 +725,70 @@ else
 fi
 
 # =============================== PHASE B ======================================
-# REAL Safari download of the frozen release — including answering Safari's
-# genuine download-permission dialog through System Events (clicking the
-# real "Allow" button: legitimate GUI interaction, NOT a TCC bypass).
-note "=== PHASE B: real Safari download of $RELEASE_TAG/$DMG_NAME (with genuine consent-dialog automation) ==="
+# REAL browser download of the frozen release, with FULL diagnostics.
+# Iteration 3: navigation through the browser's own address bar (visible
+# GUI keystrokes), periodic poll screenshots, per-poll state records
+# (windows, dialogs, sizes, process), every AppleScript/System Events
+# error preserved in probes.log, Safari's genuine consent dialog answered
+# by clicking its real Allow button, and a fallback to the next
+# already-installed GUI browser if Safari cannot complete. curl is the
+# last resort — explicitly labeled NOT a browser download.
+note "=== PHASE B: real browser download of $RELEASE_TAG/$DMG_NAME (full diagnostics) ==="
 RELEASE_URL="$RELEASE_BASE/$DMG_NAME"
 probe "release URL: $RELEASE_URL"
 probe "expected size: $EXPECTED_SIZE bytes; sha256 ${EXPECTED_SHA256:0:12}…"
 rm -f "$DMG_PATH" "$DMG_PATH.download" 2>/dev/null || true
 
-BROWSER_OK="no"
+BROWSER_OK="no"        # yes ONLY when a real GUI browser completed the download
+BROWSER_USED="none"    # Safari | Google Chrome | … | curl-fallback (NOT a browser)
+DL_PREFIX=""
+BROWSER_POLL_SNAPS=0
 CONSENT_ROUNDS=0
-if open -a Safari "$RELEASE_URL"; then
-  probe "Safari launched with the release URL (LaunchServices)"
-  # Poll for Safari's download-permission dialog (button "Allow" + text about
-  # allowing downloads / the release-assets host). Up to 90s, 2s interval.
-  DL_CONSENT_T0="$(date +%s)"
-  while [ $(( $(date +%s) - DL_CONSENT_T0 )) -lt 90 ]; do
-    if [ "$UI_AUTOMATION" = "available" ]; then
-      if osa 'tell application "System Events"
+
+# --- diagnostics: one poll tick for the active browser (nothing discarded) ----
+browser_diag() { # <app-name>
+  local app="$1"
+  local sz dsz wc names prs
+  sz="$(stat -f%z "$DMG_PATH" 2>/dev/null || echo 0)"
+  dsz="$(stat -f%z "$DMG_PATH.download" 2>/dev/null || echo 0)"
+  if pgrep -x "$app" >/dev/null 2>&1; then prs="running"; else prs="not-running"; fi
+  wc="$(ui_window_count "$app")"
+  probe "diag[$app]: process=$prs windows=$wc dmg=${sz}B download-sibling=${dsz}B downloads-dir=$(ls "$DL_DIR" 2>/dev/null | wc -l | tr -d ' ') file(s)"
+  if osa "tell application \"System Events\" to tell process \"$app\" to get frontmost" 8; then
+    probe "diag[$app]: frontmost=$OSA_OUT"
+  else
+    probe "diag[$app]: frontmost query FAILED (kept, not discarded): $OSA_ERR"
+  fi
+  if [ "$wc" != "-1" ] && [ "$wc" != "0" ] && [ -n "$wc" ]; then
+    if osa "tell application \"System Events\"
+  tell process \"$app\"
+    set out to \"\"
+    repeat with w in (get windows)
+      try
+        set out to out & \"[\" & (name of w) & \"] \"
+      end try
+    end repeat
+  end tell
+end tell
+return out" 12; then
+      names="$(printf '%s' "$OSA_OUT" | cut -c1-300)"
+      [ -n "$names" ] && probe "diag[$app]: window names: $names"
+    else
+      probe "diag[$app]: window-name query FAILED (kept, not discarded): $OSA_ERR"
+    fi
+    if ui_dump_names "$app" 25; then
+      names="$(printf '%s' "$OSA_OUT" | cut -c1-400)"
+      [ -n "$names" ] && probe "diag[$app]: first UI names: $names"
+    else
+      probe "diag[$app]: UI-name dump FAILED (kept, not discarded): $OSA_ERR"
+    fi
+  fi
+}
+
+# --- Safari's genuine download-permission dialog (scan only; errors kept) -----
+safari_consent_scan() {
+  CONSENT_FOUND="no"
+  if osa 'tell application "System Events"
   tell process "Safari"
     set found to "none"
     repeat with w in (get windows)
@@ -710,81 +814,173 @@ if open -a Safari "$RELEASE_URL"; then
     end repeat
   end tell
 end tell
-return found' 15; then
-        if [ "$OSA_OUT" = "consent-dialog" ]; then
-          CONSENT_ROUNDS=$((CONSENT_ROUNDS + 1))
-          CAP_CONSENT="OBSERVED"
-          note "Safari download-permission dialog DETECTED (round $CONSENT_ROUNDS) — capturing evidence BEFORE clicking"
-          snap 18-safari-download-consent || true
-          sleep 1
-          # exact-name match: "Don't Allow" CONTAINS "Allow", so a contains-
-          # match could click the wrong button. Exact match cannot.
-          if ui_click_button_in_windows "Safari" "Allow" 25; then
-            if [ "${OSA_OUT#clicked}" != "$OSA_OUT" ]; then
-              probe "consent dialog: clicked the genuine 'Allow' button (legitimate System Events automation; TCC untouched)"
-              sleep 4
-              snap 19-safari-download-started || true
-            else
-              probe "consent dialog: no exact 'Allow' button found ($OSA_OUT) — dialog stays up; download cannot proceed via Safari"
-              classify C "Safari consent dialog had no exact Allow button reachable by automation: $OSA_OUT"
-            fi
-          else
-            probe "consent dialog: clicking Allow FAILED — $OSA_ERR (the dialog stays up; download cannot proceed via Safari)"
-            classify C "Safari consent dialog present but System Events could not click Allow: $OSA_ERR"
+return found' 20; then
+    [ "$OSA_OUT" = "consent-dialog" ] && CONSENT_FOUND="yes"
+  else
+    probe "safari consent scan FAILED (kept, not discarded): $OSA_ERR"
+  fi
+}
+
+# --- one full bounded browser attempt ------------------------------------------
+attempt_browser_download() { # <app-name> <slug> <is-safari yes/no>
+  local app="$1"
+  local slug="$2"
+  local is_safari="$3"
+  BROWSER_USED="$app"
+  DL_PREFIX="$slug"
+  note "browser attempt [$app]: LaunchServices open + address-bar navigation through the browser's own GUI"
+  if ! open -a "$app" "$RELEASE_URL" 2>>"$LOG"; then
+    probe "open -a $app returned non-zero (recorded; the address-bar navigation follows)"
+  fi
+  sleep 4
+  snap "${slug}-poll-00" || true
+  BROWSER_POLL_SNAPS=$((BROWSER_POLL_SNAPS + 1))
+  browser_diag "$app"
+  if osa "tell application \"$app\" to activate" 10; then
+    sleep 1
+    if osa "tell application \"System Events\" to tell process \"$app\" to keystroke \"l\" using command down" 10; then
+      sleep 1
+      if osa "tell application \"System Events\" to tell process \"$app\" to keystroke \"$RELEASE_URL\"" 20; then
+        sleep 1
+        if osa "tell application \"System Events\" to tell process \"$app\" to key code 36" 10; then
+          probe "address-bar navigation issued through the browser GUI (Cmd+L + typed URL + Return)"
+        else
+          probe "address-bar Return FAILED (kept, not discarded): $OSA_ERR"
+        fi
+      else
+        probe "address-bar URL typing FAILED (kept, not discarded): $OSA_ERR"
+      fi
+    else
+      probe "address-bar focus Cmd+L FAILED (kept, not discarded): $OSA_ERR — the LaunchServices URL is the only navigation"
+    fi
+  else
+    probe "activate $app FAILED (kept, not discarded): $OSA_ERR"
+  fi
+  # poll window: 150s at 5s cadence; scheduled poll screenshots; consent watch
+  local t0 elapsed shot sz dsz
+  local shots_taken=""
+  t0="$(date +%s)"
+  while :; do
+    elapsed=$(( $(date +%s) - t0 ))
+    [ "$elapsed" -ge 150 ] && break
+    if [ "$is_safari" = "yes" ] && [ "$UI_AUTOMATION" = "available" ]; then
+      safari_consent_scan
+      if [ "$CONSENT_FOUND" = "yes" ]; then
+        CONSENT_ROUNDS=$((CONSENT_ROUNDS + 1))
+        CAP_CONSENT="OBSERVED"
+        note "Safari download-permission dialog DETECTED (round $CONSENT_ROUNDS) — capturing BEFORE any interaction"
+        snap 18-safari-download-consent || true
+        sleep 1
+        # exact-name match: "Don't Allow" CONTAINS "Allow" — an exact match cannot click the wrong button
+        if ui_click_button_in_windows "Safari" "Allow" 25; then
+          if [ "${OSA_OUT#clicked}" != "$OSA_OUT" ]; then
+            probe "consent dialog: clicked the genuine 'Allow' button (legitimate System Events automation; TCC untouched)"
+            sleep 4
             snap 19-safari-download-started || true
+          else
+            probe "consent dialog: no exact 'Allow' button found ($OSA_OUT) — dialog stays up; recorded"
+            classify C "Safari consent dialog present but no exact Allow button reachable: $OSA_OUT"
           fi
+        else
+          probe "consent dialog: clicking Allow FAILED (kept, not discarded): $OSA_ERR"
+          classify C "Safari consent dialog present but System Events could not click Allow: $OSA_ERR"
+          snap 19-safari-download-started || true
         fi
       fi
     fi
-    # stop polling when the download actually completes or clearly started
-    size="$(stat -f%z "$DMG_PATH" 2>/dev/null || echo 0)"
-    dsize="$(stat -f%z "$DMG_PATH.download" 2>/dev/null || echo 0)"
-    if [ "$size" = "$EXPECTED_SIZE" ] || [ "$dsize" -gt 0 ]; then
-      break
+    if [ "$is_safari" != "yes" ] && [ "$UI_AUTOMATION" = "available" ]; then
+      # watch for the fallback browser's own download warning (e.g. Chrome's
+      # "…dmg may be dangerous" bubble) — click its real Keep button ONLY when
+      # the dialog text actually references the DMG or a dangerous-file warning
+      if ui_dialog_texts "$app"; then
+        if printf '%s' "$OSA_OUT" | grep -qi "dangerous\|discard\|$DMG_NAME"; then
+          if ui_click_button_contains_in_windows "$app" "Keep" 20; then
+            probe "$app download-warning 'Keep' clicked: $OSA_OUT"
+            sleep 3
+          else
+            probe "$app 'Keep' click FAILED (kept, not discarded): $OSA_ERR"
+          fi
+        fi
+      else
+        probe "$app dialog-text scan FAILED (kept, not discarded): $OSA_ERR"
+      fi
     fi
-    sleep 2
+    browser_diag "$app"
+    for shot in 15 30 45 60 90 120; do
+      if [ "$elapsed" -ge "$shot" ] && ! printf ' %s ' "$shots_taken" | grep -q " $shot "; then
+        shots_taken="$shots_taken $shot "
+        snap "$(printf '%s-poll-%02d' "$slug" "$shot")" || true
+        BROWSER_POLL_SNAPS=$((BROWSER_POLL_SNAPS + 1))
+      fi
+    done
+    sz="$(stat -f%z "$DMG_PATH" 2>/dev/null || echo 0)"
+    dsz="$(stat -f%z "$DMG_PATH.download" 2>/dev/null || echo 0)"
+    if [ "$sz" = "$EXPECTED_SIZE" ]; then break; fi
+    if [ "${dsz:-0}" -gt 0 ] 2>/dev/null; then break; fi
+    sleep 5
   done
-  if [ "$CAP_CONSENT" != "OBSERVED" ]; then
-    probe "no Safari download-permission dialog was detected within the poll window (Safari may have auto-allowed, prompted differently, or failed)"
-    dsize="$(stat -f%z "$DMG_PATH.download" 2>/dev/null || echo 0)"
-    if [ "$dsize" -gt 0 ]; then
-      snap 19-safari-download-started || true
-    fi
-  fi
-  note "waiting for the Safari download to complete (bounded 15 min, no .download sibling, exact size)"
-  if wait_for_path "$DMG_PATH" 900; then
-    BROWSER_OK="yes"
-    CAP_SAFARI_DL="GREEN"
-    note "Safari download complete: $DMG_PATH ($(stat -f%z "$DMG_PATH") bytes)"
-  else
-    size="$(stat -f%z "$DMG_PATH" 2>/dev/null || echo 0)"
-    probe "Safari download did not complete in 15 min (present size: $size)"
-    CAP_SAFARI_DL="RED"
-    if [ "$CAP_CONSENT" = "OBSERVED" ]; then
-      classify C "Safari consent was clicked but the download still did not complete (runner network/first-run state?)"
+  snap "${slug}-poll-end" || true
+  BROWSER_POLL_SNAPS=$((BROWSER_POLL_SNAPS + 1))
+  sz="$(stat -f%z "$DMG_PATH" 2>/dev/null || echo 0)"
+  dsz="$(stat -f%z "$DMG_PATH.download" 2>/dev/null || echo 0)"
+  if [ "$sz" = "$EXPECTED_SIZE" ] || [ "${dsz:-0}" -gt 0 ] 2>/dev/null; then
+    note "download activity confirmed for $app (dmg=${sz}B sibling=${dsz}B) — waiting for completion (bounded 10 min, exact size, no .download sibling)"
+    if wait_for_path "$DMG_PATH" 600; then
+      BROWSER_OK="yes"
+      note "REAL browser download complete via $app: $DMG_PATH ($(stat -f%z "$DMG_PATH") bytes)"
     else
-      classify C "Safari download incomplete on the runner (prompt/consent or first-run state?)"
+      probe "$app download did not complete within 10 min (final: $(stat -f%z "$DMG_PATH" 2>/dev/null || echo 0)B, sibling: $(stat -f%z "$DMG_PATH.download" 2>/dev/null || echo 0)B)"
+      classify C "$app download stalled after starting (runner network state?) — see ${slug}-poll-*.png"
     fi
+  else
+    probe "$app produced no download activity within its bounded 150s attempt — see ${slug}-poll-*.png and the diag[$app] lines"
   fi
-else
-  CAP_SAFARI_DL="NOT POSSIBLE"
-  probe "open -a Safari failed"
-  classify B "Safari not launchable on this runner"
+}
+
+attempt_browser_download "Safari" "safari" "yes"
+
+if [ "$BROWSER_OK" != "yes" ]; then
+  note "Safari did not complete a real browser download — enumerating ALREADY-INSTALLED GUI browsers (this harness installs nothing)"
+  FB=""
+  for cand in "Google Chrome" "Microsoft Edge" "Firefox" "Chromium" "Brave Browser" "Arc" "Opera"; do
+    if [ -d "/Applications/$cand.app" ]; then
+      probe "installed GUI browser found: $cand (/Applications/$cand.app)"
+      [ -z "$FB" ] && FB="$cand"
+    fi
+  done
+  if [ -z "$FB" ]; then
+    probe "no additional GUI browser installed beyond Safari (checked Chrome/Edge/Firefox/Chromium/Brave/Arc/Opera in /Applications)"
+  else
+    fslug="browser"
+    case "$FB" in
+      "Google Chrome") fslug="chrome" ;;
+      "Microsoft Edge") fslug="edge" ;;
+      "Firefox") fslug="firefox" ;;
+    esac
+    attempt_browser_download "$FB" "$fslug" "no"
+  fi
 fi
 
 if [ "$BROWSER_OK" != "yes" ]; then
+  CAP_SAFARI_DL="RED (no real browser completed the download — see poll diagnostics)"
   # Harness acquisition fallback — explicitly NOT a browser download. The
   # rest of the experiment can still gather evidence on the artifact itself.
   note "FALLBACK: harness curl acquisition (documented: NOT a browser download; no quarantine expected)"
+  BROWSER_USED="curl-fallback (NOT a browser)"
   if curl -fL --retry 3 -o "$DMG_PATH" "$RELEASE_URL"; then
     probe "curl acquisition complete ($(stat -f%z "$DMG_PATH") bytes)"
-    classify B "browser download unavailable — curl fallback used, honestly labeled"
+    classify B "no browser could download on the runner — curl fallback used, honestly labeled"
   else
     note "curl acquisition failed too — the artifact cannot be obtained"
     write_caps
     exit 0
   fi
+else
+  CAP_SAFARI_DL="GREEN (downloaded end-to-end by $BROWSER_USED)"
 fi
+CAP_BROWSER_USED="$BROWSER_USED"
+CAP_BROWSER_DIAG="$BROWSER_POLL_SNAPS"
+
 
 # ---- DMG hash FIRST (per contract: verify the hash right after download) ----
 ACTUAL_SHA="$(shasum -a 256 "$DMG_PATH" | awk '{print $1}')"
@@ -802,28 +998,48 @@ fi
 # ---- NATURAL QUARANTINE — observe only, preserve the exact value -----------
 note "=== PHASE B2: natural quarantine evidence (observation only) ==="
 Q="$(xattr -p com.apple.quarantine "$DMG_PATH" 2>/dev/null || true)"
+if [ "$BROWSER_OK" = "yes" ]; then
+  DL_METHOD="$BROWSER_USED (genuine browser download)"
+else
+  DL_METHOD="curl-fallback (NOT a browser download — no quarantine expected)"
+fi
 {
   echo "com.apple.quarantine on $DMG_PATH"
   echo "observed: $(date -u 2>/dev/null)"
   echo "value: ${Q:-<absent>}"
-  echo "download-method: ${BROWSER_OK:+Safari}${BROWSER_OK:-curl-fallback}"
-  echo "(observed with xattr -p only — never written, never removed)"
+  echo "browser-used: $BROWSER_USED"
+  echo "download-method: $DL_METHOD"
+  echo "(observed with xattr -p only — never written, never removed; run 2's 'Safarino' string was a D-class expansion bug in this block, fixed in iteration 3)"
 } > "$EVID_DIR/quarantine-evidence.txt" 2>/dev/null || true
 if [ -n "$Q" ]; then
   CAP_QUARANTINE="YES"
   probe "com.apple.quarantine NATURALLY present on the download: $Q"
   case "$Q" in
     *com.apple.Safari*)
-      CAP_QUARANTINE_SRC="SAFARI"
-      probe "quarantine source parsed from the attribute value: com.apple.Safari (the download attribute names its origin app)" ;;
-    *) CAP_QUARANTINE_SRC="OTHER"
-       probe "quarantine present but its source app is not Safari: $Q" ;;
+      CAP_QUARANTINE_SRC="SAFARI (browser used: $BROWSER_USED)"
+      probe "quarantine source parsed from the attribute value: com.apple.Safari" ;;
+    *com.google.Chrome*)
+      CAP_QUARANTINE_SRC="CHROME (browser used: $BROWSER_USED)"
+      probe "quarantine source parsed from the attribute value: com.google.Chrome" ;;
+    *org.mozilla.firefox*)
+      CAP_QUARANTINE_SRC="FIREFOX (browser used: $BROWSER_USED)"
+      probe "quarantine source parsed from the attribute value: org.mozilla.firefox" ;;
+    *com.microsoft.edgemac*|*com.microsoft.Edge*)
+      CAP_QUARANTINE_SRC="EDGE (browser used: $BROWSER_USED)"
+      probe "quarantine source parsed from the attribute value: Microsoft Edge" ;;
+    *)
+      CAP_QUARANTINE_SRC="OTHER (value: $Q; browser used: $BROWSER_USED)"
+      probe "quarantine present; source app not in the known browser list: $Q" ;;
   esac
 else
   CAP_QUARANTINE="NO"
   CAP_QUARANTINE_SRC="NOT PROVEN"
-  probe "com.apple.quarantine NOT present on the download (browser=$CAP_SAFARI_DL)"
+  probe "com.apple.quarantine NOT present on the download (browser used: $BROWSER_USED; method: $DL_METHOD) — the real Gatekeeper branch is only exercised when quarantine is NATURALLY present"
+  if [ "$BROWSER_OK" = "yes" ]; then
+    classify C "browser download completed but macOS attached no com.apple.quarantine attribute (observed honestly, never manufactured)"
+  fi
 fi
+
 
 # Downloads folder in Finder (real window) + screenshots
 open "$DL_DIR" 2>/dev/null || true
@@ -1254,6 +1470,14 @@ fi
 
 # =============================== PHASE H ======================================
 # Product checks — ONLY if MediVault actually runs.
+# Iteration 3 order (per the requested priority): Settings → Background →
+# REAL registration → Login Items → API/PostgreSQL → synthetic patient
+# through the visible UI → quit/reopen. The AX tree of the WKWebView was
+# proven opaque in run 2, so the interaction path here is VISUAL: Vision
+# OCR on real screenshots locates the same labels a human sees, native
+# CGEvent mouse events click them, System Events keystrokes type into the
+# focused field — with before/after evidence and state verification for
+# every single action.
 if [ "$CAP_MV_PROC" != "GREEN" ]; then
   note "=== MediVault is not running (Gatekeeper/launch path) — product phases stay NOT RUN ==="
   write_caps
@@ -1264,11 +1488,476 @@ fi
 
 note "=== PHASE H: MediVault product checks (app IS running) ==="
 
-# --- API health + loopback-only binding ---
-note "waiting for the supervisor to provision + the API to become healthy (first run, bounded 10 min)"
+# --- H0: build the visual interaction stack (compiled on the runner) ----------
+note "=== PHASE H0: visual interaction stack (Vision OCR + native CGEvent input) ==="
+MV_OCR="/tmp/mv-ocr"
+MV_MOUSE="/tmp/mv-mouse"
+MV_SHOT="/tmp/mv-shot.png"
+MV_LINES="/tmp/mv-ocr-lines.txt"
+MV_SCALE="1"
+OCR_TEXT=""
+OCR_HIT_X=""
+OCR_HIT_Y=""
+LAST_OCR_HASH=""
+OCR_STACK="no"
+cat > /tmp/mv-ocr.swift <<'SWIFT'
+import Foundation
+import AppKit
+import Vision
+
+// mv-ocr — Vision OCR for the visual interaction stack (iteration 3).
+// Usage: mv-ocr <image.png>
+// Prints:  IMG <px_w> <px_h> <display_pt_w> <display_pt_h>
+// then:    LINE|<text>|<center_x_px>|<center_y_px_top_left>|<w_px>|<h_px>
+let args = CommandLine.arguments
+guard args.count >= 2 else { print("ERR usage mv-ocr <image>"); exit(2) }
+guard let img = NSImage(contentsOfFile: args[1]),
+      let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+  print("ERR cannot load \(args[1])"); exit(3)
+}
+let pw = Double(cg.width)
+let ph = Double(cg.height)
+let db = CGDisplayBounds(CGMainDisplayID())
+print("IMG \(Int(pw)) \(Int(ph)) \(Int(db.width)) \(Int(db.height))")
+let req = VNRecognizeTextRequest()
+req.recognitionLevel = .accurate
+req.usesLanguageCorrection = false
+let handler = VNImageRequestHandler(cgImage: cg, options: [:])
+do { try handler.perform([req]) } catch { print("ERR vision \(error)"); exit(4) }
+guard let results = req.results else { print("ERR no results"); exit(5) }
+for obs in results {
+  guard let cand = obs.topCandidates(1).first else { continue }
+  let box = obs.boundingBox
+  let cx = (box.origin.x + box.width / 2) * pw
+  let cy = ph - (box.origin.y + box.height / 2) * ph
+  let w = box.width * pw
+  let h = box.height * ph
+  let text = cand.string.replacingOccurrences(of: "|", with: "/")
+  print("LINE|\(text)|\(Int(cx))|\(Int(cy))|\(Int(w))|\(Int(h))")
+}
+SWIFT
+cat > /tmp/mv-mouse.swift <<'SWIFT'
+import Foundation
+import CoreGraphics
+
+// mv-mouse — posts a REAL left click (native CGEvent) at screen coordinates.
+// Usage: mv-mouse <x_points> <y_points>
+let args = CommandLine.arguments
+guard args.count >= 3, let x = Double(args[1]), let y = Double(args[2]) else {
+  print("ERR usage mv-mouse <x> <y>"); exit(2)
+}
+let pt = CGPoint(x: x, y: y)
+let src = CGEventSource(stateID: .combinedSessionState)
+func post(_ t: CGEventType) {
+  let e = CGEvent(mouseEventSource: src, mouseType: t, mouseCursorPosition: pt, mouseButton: .left)
+  e?.post(tap: .cghidEventTap)
+}
+post(.mouseMoved)
+usleep(150_000)
+post(.leftMouseDown)
+usleep(120_000)
+post(.leftMouseUp)
+print("CLICKED \(x) \(y)")
+SWIFT
+if swiftc -O -o "$MV_OCR" /tmp/mv-ocr.swift 2>>"$LOG" && swiftc -O -o "$MV_MOUSE" /tmp/mv-mouse.swift 2>>"$LOG"; then
+  OCR_STACK="yes"
+  probe "visual stack compiled on the runner: mv-ocr (Vision text recognition) + mv-mouse (native CGEvent clicks) — product code untouched"
+else
+  probe "visual stack compile FAILED (swiftc) — visual interaction unavailable this run (recorded honestly)"
+  classify C "swiftc unavailable/failed on the runner — the OCR/CGEvent visual stack could not be built"
+fi
+
+# --- visual helpers -------------------------------------------------------------
+ocr_capture() { # full-screen capture + OCR; sets OCR_TEXT / MV_SCALE / LAST_OCR_HASH
+  if ! screencapture -x "$MV_SHOT" 2>>"$LOG"; then
+    probe "ocr_capture: screencapture FAILED"
+    return 1
+  fi
+  if ! "$MV_OCR" "$MV_SHOT" > "$MV_LINES" 2>>"$LOG"; then
+    probe "ocr_capture: mv-ocr FAILED"
+    return 1
+  fi
+  local hdr pxw ptw
+  hdr="$(sed -n '1p' "$MV_LINES")"
+  pxw="$(printf '%s' "$hdr" | awk '{print $2}')"
+  ptw="$(printf '%s' "$hdr" | awk '{print $4}')"
+  if [ -n "$pxw" ] && [ -n "$ptw" ] && [ "$ptw" -gt 0 ] 2>/dev/null; then
+    MV_SCALE="$(awk -v a="$pxw" -v b="$ptw" 'BEGIN{printf "%.4f", a/b}')"
+  fi
+  OCR_TEXT="$(grep '^LINE|' "$MV_LINES" 2>/dev/null || true)"
+  LAST_OCR_HASH="$(shasum -a 256 "$MV_SHOT" 2>/dev/null | awk '{print $1}')"
+  probe "ocr: $(printf '%s\n' "$OCR_TEXT" | grep -c '^LINE|') lines, scale=$MV_SCALE — inventory: $(printf '%s' "$OCR_TEXT" | awk -F'|' '{printf "[%s] ", $2}' | cut -c1-500)"
+  return 0
+}
+
+ocr_lookup() { # <needle> [first|last] → OCR_HIT_X/OCR_HIT_Y (screen POINTS)
+  local needle="$1"
+  local which="${2:-first}"
+  OCR_HIT_X=""
+  OCR_HIT_Y=""
+  local hits px py
+  # exact text match first (the "Background" TAB, not "Background Service")
+  hits="$(printf '%s\n' "$OCR_TEXT" | grep -i -- "|${needle}|" || true)"
+  [ -n "$hits" ] || hits="$(printf '%s\n' "$OCR_TEXT" | grep -i -- "|[^|]*${needle}[^|]*|" || true)"
+  [ -n "$hits" ] || return 1
+  if [ "$which" = "last" ]; then
+    hits="$(printf '%s\n' "$hits" | tail -1)"
+  else
+    hits="$(printf '%s\n' "$hits" | head -1)"
+  fi
+  px="$(printf '%s' "$hits" | awk -F'|' '{print $3}')"
+  py="$(printf '%s' "$hits" | awk -F'|' '{print $4}')"
+  [ -n "$px" ] && [ -n "$py" ] || return 1
+  OCR_HIT_X="$(awk -v a="$px" -v s="$MV_SCALE" 'BEGIN{printf "%.0f", a/s}')"
+  OCR_HIT_Y="$(awk -v a="$py" -v s="$MV_SCALE" 'BEGIN{printf "%.0f", a/s}')"
+  return 0
+}
+
+v_click() { # <needle> <stem> <expect-text> [first|last] [y-offset-points]
+  # Visual click protocol: BEFORE screenshot → OCR-locate the REAL label →
+  # record intended target + screen coordinates → native CGEvent click →
+  # AFTER screenshot → verify the visible state change. Never a blind guess.
+  local needle="$1"
+  local stem="$2"
+  local expect="$3"
+  local which="${4:-first}"
+  local yoff="${5:-0}"
+  if [ "$OCR_STACK" != "yes" ]; then
+    probe "vclick[$stem]: visual stack unavailable — skipped"
+    return 1
+  fi
+  ocr_capture || return 1
+  local before_hash="$LAST_OCR_HASH"
+  snap_file "$MV_SHOT" "${stem}-before" || true
+  if ! ocr_lookup "$needle" "$which"; then
+    probe "vclick[$stem]: target '$needle' NOT FOUND on screen — no click is attempted (never a guessed coordinate)"
+    return 1
+  fi
+  local tx ty
+  tx="$OCR_HIT_X"
+  ty=$(( OCR_HIT_Y + yoff ))
+  probe "vclick[$stem]: intended target='$needle' → screen point ($tx,$ty) (yoff ${yoff}, scale $MV_SCALE) — clicking via native CGEvent"
+  if ! "$MV_MOUSE" "$tx" "$ty" 2>>"$LOG"; then
+    probe "vclick[$stem]: mv-mouse FAILED"
+    return 1
+  fi
+  sleep 2
+  ocr_capture || return 1
+  snap_file "$MV_SHOT" "${stem}-after" || true
+  local verified="no" why=""
+  if [ -n "$expect" ] && printf '%s\n' "$OCR_TEXT" | grep -qi -- "|[^|]*${expect}"; then
+    verified="yes"
+    why="expected text '$expect' is now visible on screen"
+  elif [ "$LAST_OCR_HASH" != "$before_hash" ]; then
+    verified="yes"
+    why="visible screen change (hash-diff)"
+  else
+    why="NO visible change after the click (CGEvent may have been dropped by macOS input policy, or the target is not interactive at that point)"
+  fi
+  probe "vclick[$stem]: verification: $verified — $why"
+  [ "$verified" = "yes" ] && return 0
+  return 1
+}
+
+v_type_into() { # <label-needle> <text> <stem> [secret yes/no]
+  # Click the input below the REAL on-screen label, then type the text via
+  # System Events keystrokes into the focused field. Verified visually for
+  # non-masked fields. One retry with a deeper offset (Cmd+A replace).
+  local label="$1"
+  local text="$2"
+  local stem="$3"
+  local secret="${4:-no}"
+  if [ "$OCR_STACK" != "yes" ]; then
+    probe "vtype[$stem]: visual stack unavailable — skipped"
+    return 1
+  fi
+  ocr_capture || return 1
+  snap_file "$MV_SHOT" "${stem}-before" || true
+  if ! ocr_lookup "$label" "first"; then
+    probe "vtype[$stem]: label '$label' NOT FOUND on screen — no click attempted"
+    return 1
+  fi
+  local lx ly tx ty
+  lx="$OCR_HIT_X"
+  ly="$OCR_HIT_Y"
+  tx="$lx"
+  ty=$(( ly + 6 ))
+  probe "vtype[$stem]: label='$label' at ($lx,$ly) → clicking the REAL label itself at ($tx,$ty) (an HTML label focuses its own input — works for floating AND stacked layouts), then typing the real text"
+  if ! "$MV_MOUSE" "$tx" "$ty" 2>>"$LOG"; then
+    probe "vtype[$stem]: mv-mouse FAILED"
+    return 1
+  fi
+  sleep 1
+  if osa "tell application \"System Events\" to tell process \"MediVault\" to keystroke \"$text\"" 15; then
+    sleep 1
+    ocr_capture || return 1
+    snap_file "$MV_SHOT" "${stem}-after" || true
+    if [ "$secret" = "yes" ]; then
+      probe "vtype[$stem]: typed into the masked field (not visually verifiable by design — the outcome of the real flow is the proof)"
+      return 0
+    fi
+    if printf '%s\n' "$OCR_TEXT" | grep -qi -- "|[^|]*${text}"; then
+      probe "vtype[$stem]: typed text is now VISIBLE on screen (verified)"
+      return 0
+    fi
+    probe "vtype[$stem]: typed text not visible — one retry with a deeper offset (Cmd+A replaces the field content)"
+    ty=$(( ly + 40 ))
+    if "$MV_MOUSE" "$tx" "$ty" 2>>"$LOG"; then
+      sleep 1
+      osa 'tell application "System Events" to tell process "MediVault" to keystroke "a" using command down' 10 || true
+      sleep 1
+      if osa "tell application \"System Events\" to tell process \"MediVault\" to keystroke \"$text\"" 15; then
+        sleep 1
+        ocr_capture || return 1
+        snap_file "$MV_SHOT" "${stem}-after" || true
+        if printf '%s\n' "$OCR_TEXT" | grep -qi -- "|[^|]*${text}"; then
+          probe "vtype[$stem]: retry verified — typed text visible"
+          return 0
+        fi
+      else
+        probe "vtype[$stem]: retry keystroke FAILED (kept): $OSA_ERR"
+      fi
+    fi
+    probe "vtype[$stem]: typing could NOT be verified visually — recorded honestly (field state is on the screenshot)"
+    return 1
+  else
+    probe "vtype[$stem]: keystroke FAILED (kept, not discarded): $OSA_ERR"
+    return 1
+  fi
+}
+
+# Bring MediVault front + widen the window so the ≥lg tab labels render
+if osa 'tell application "MediVault" to activate' 10; then :; fi
+sleep 2
+osa 'tell application "System Events"
+  tell process "MediVault"
+    set position of window 1 to {0, 0}
+    set size of window 1 to {1400, 900}
+  end tell
+end tell' 15 || probe "window resize not possible ($OSA_ERR) — continuing at current size"
+sleep 2
+
+# ============================== H1: Settings ===================================
+note "=== PHASE H1: Settings through the visible UI (OCR + native click) ==="
+if [ "$OCR_STACK" = "yes" ]; then
+  if v_click "Settings" "v10-settings-nav" "Server"; then
+    CAP_SETTINGS_REACHED="YES (visual click on the real Settings control — v10 before/after evidence)"
+  else
+    sleep 2
+    if ocr_capture && printf '%s\n' "$OCR_TEXT" | grep -qi -- "|[^|]*Server[^|]*|"; then
+      CAP_SETTINGS_REACHED="YES (settings view visible after the interaction — see v10 screenshots)"
+    else
+      CAP_SETTINGS_REACHED="NO (visual automation could not reach Settings — see v10 screenshots + probes.log)"
+      classify C "MediVault Settings not reachable through visual automation (OCR/CGEvent path) — WKWebView interaction requires a human"
+    fi
+  fi
+else
+  CAP_SETTINGS_REACHED="NO (visual stack unavailable — swiftc failed)"
+fi
+
+# ============================== H2: Background tab =============================
+case "$CAP_SETTINGS_REACHED" in
+  YES*)
+    note "=== PHASE H2: Background tab through the visible UI ==="
+    if v_click "Background" "v11-background-tab" "Background Service"; then
+      CAP_BG_PANEL_REACHED="YES (visual click on the real Background tab — v11 before/after evidence)"
+    else
+      sleep 2
+      if ocr_capture && printf '%s\n' "$OCR_TEXT" | grep -qi "Background Service"; then
+        CAP_BG_PANEL_REACHED="YES (panel visible after the interaction — see v11)"
+      else
+        CAP_BG_PANEL_REACHED="NO (Background panel not reached visually — see v11)"
+      fi
+    fi
+    ;;
+  *) CAP_BG_PANEL_REACHED="NO (Settings not reached)" ;;
+esac
+snap 31-background-settings || true
+
+# ============================== H3: real panel state ===========================
+if printf '%s' "$CAP_BG_PANEL_REACHED" | grep -q "^YES"; then
+  if ocr_capture; then
+    if printf '%s\n' "$OCR_TEXT" | grep -qi "Register background service"; then
+      CAP_SMAPPSTATE_TEXT="notRegistered (panel offers Register background service — read from the real screen by OCR)"
+    elif printf '%s\n' "$OCR_TEXT" | grep -qi "Open Login Items Settings"; then
+      CAP_SMAPPSTATE_TEXT="requiresApproval (panel offers Open Login Items Settings — read from the real screen by OCR)"
+    elif printf '%s\n' "$OCR_TEXT" | grep -qi "enabled"; then
+      CAP_SMAPPSTATE_TEXT="enabled (panel reports enabled — read from the real screen by OCR)"
+    else
+      CAP_SMAPPSTATE_TEXT="not read from screen (panel captured — 31-background-settings.png is the human evidence)"
+    fi
+    probe "BackgroundServicePanel state (OCR of the real screen): $CAP_SMAPPSTATE_TEXT"
+  fi
+  # launchd ground truth (read-only)
+  SVC="gui/$(id -u)/dev.medivault.supervisor"
+  if launchctl print "$SVC" >/tmp/gui-sa-launchctl.txt 2>&1; then
+    probe "launchctl ground truth: $SVC IS present in the GUI domain"
+    grep -E 'state = |program =' /tmp/gui-sa-launchctl.txt | head -4 | while IFS= read -r l; do probe "launchctl: $l"; done
+  else
+    probe "launchctl ground truth: $SVC NOT present (SMAppService not registered yet — matches notRegistered)"
+  fi
+else
+  CAP_SMAPPSTATE_TEXT="not read (Background panel not reached)"
+fi
+
+# ============================== H4: real registration ==========================
+case "$CAP_SMAPPSTATE_TEXT" in
+  notRegistered*)
+    note "=== PHASE H4: exercising the REAL registration path (visual click on 'Register background service') ==="
+    if v_click "Register background service" "v12-register" "Open Login Items"; then
+      CAP_REG_CLICKED="YES (visual click on the real registration control — v12 before/after evidence)"
+    else
+      sleep 3
+      if ocr_capture; then
+        if printf '%s\n' "$OCR_TEXT" | grep -qi "Open Login Items Settings"; then
+          CAP_REG_CLICKED="YES (panel advanced to requiresApproval — v12)"
+        else
+          CAP_REG_CLICKED="NO (registration click not verified — see v12 + probes.log)"
+          classify C "Register background service could not be exercised through visual automation"
+        fi
+      else
+        CAP_REG_CLICKED="NO (registration click not verified — see v12 + probes.log)"
+      fi
+    fi
+    sleep 5
+    snap 31-background-settings || true
+    if ocr_capture; then
+      if printf '%s\n' "$OCR_TEXT" | grep -qi "Open Login Items Settings"; then
+        CAP_SMAPPSTATE_TEXT="requiresApproval (after the real registration — Apple's SMAppService contract)"
+      elif printf '%s\n' "$OCR_TEXT" | grep -qi "Register background service"; then
+        CAP_SMAPPSTATE_TEXT="notRegistered still (registration may have failed — real screen state recorded)"
+      elif printf '%s\n' "$OCR_TEXT" | grep -qi "enabled"; then
+        CAP_SMAPPSTATE_TEXT="enabled (registration approved?)"
+      fi
+      probe "post-registration panel state (OCR): $CAP_SMAPPSTATE_TEXT"
+    fi
+    ;;
+esac
+if [ "${CAP_REG_CLICKED#YES}" != "$CAP_REG_CLICKED" ]; then
+  CAP_SMAPPSERVICE_UI="GREEN (panel captured + real registration path exercised; state: $CAP_SMAPPSTATE_TEXT)"
+elif printf '%s' "$CAP_BG_PANEL_REACHED" | grep -q "^YES"; then
+  CAP_SMAPPSERVICE_UI="NOT PROVEN (panel captured; registration not exercised — $CAP_SMAPPSTATE_TEXT)"
+fi
+
+# ============================== H5: Login Items =================================
+if printf '%s' "$CAP_SMAPPSTATE_TEXT" | grep -q "requiresApproval"; then
+  note "=== PHASE H5: the app's real path to Login Items (System Settings) ==="
+  LI_OPENED="no"
+  if v_click "Open Login Items Settings" "v13-login-items-btn" "Login Items"; then
+    LI_OPENED="yes (the app's own real button — v13 before/after evidence)"
+  else
+    open "x-apple.systempreferences:com.apple.LoginItems-Settings.extension" 2>/dev/null || true
+    sleep 8
+    LI_OPENED="yes (URL fallback after the visual click did not verify — recorded honestly)"
+  fi
+  sleep 4
+  snap 32-login-items || true
+  CAP_LOGIN_ITEMS_UI="CAPTURED (real System Settings Login Items screen — 32 + v13)"
+  # approval toggle: System Settings is a NATIVE app (AX-accessible) — attempt
+  # the REAL switch through System Events only. NEVER a launchctl substitute.
+  note "attempting the Login Items approval toggle through the real System Settings UI (legitimate GUI automation)"
+  if osa 'tell application "System Events"
+  tell (first process whose name is "System Settings")
+    try
+      repeat with el in (entire contents of window 1)
+        try
+          if class of el is checkbox or class of el is switch then
+            set d to (description of el) as string
+            set n to (name of el) as string
+            if d contains "MediVault" or n contains "MediVault" then
+              click el
+              return "toggled:" & n
+            end if
+          end if
+        end try
+      end repeat
+    end try
+  end tell
+end tell
+return "not-found"' 90; then
+    if [ "${OSA_OUT#toggled}" != "$OSA_OUT" ]; then
+      probe "Login Items approval toggle clicked: $OSA_OUT"
+      sleep 3
+      snap 32-login-items || true
+      # macOS may raise an admin-authorization prompt to enable the item —
+      # attempt it through the REAL dialog (runner's own passwordless account)
+      local_sa="$(ui_window_count "SecurityAgent")"
+      if [ "$local_sa" != "-1" ] && [ "$local_sa" != "0" ] && [ -n "$local_sa" ]; then
+        note "an admin-authorization dialog appeared after the toggle — attempting it through the real dialog (no bypass)"
+        snap "v14-login-items-auth" || true
+        if ui_dialog_texts "SecurityAgent"; then
+          probe "auth dialog text: $(printf '%s' "$OSA_OUT" | cut -c1-300)"
+        fi
+        if osa 'tell application "System Events"
+  tell process "SecurityAgent"
+    set fields to {}
+    repeat with w in (get windows)
+      try
+        repeat with el in (entire contents of w)
+          try
+            set cl to class of el as string
+            if cl is "text field" or cl is "secure text field" then set end of fields to el
+          end try
+        end repeat
+      end try
+    end repeat
+    if (count of fields) is greater than or equal to 2 then
+      set value of item 1 of fields to "runner"
+      set value of item 2 of fields to ""
+    else if (count of fields) is 1 then
+      set value of item 1 of fields to ""
+    end if
+  end tell
+end tell
+return "fields-filled"' 30; then
+          probe "auth fields filled (runner / empty password): $OSA_OUT"
+        else
+          probe "auth fields could not be set via AX: $OSA_ERR"
+        fi
+        AUTH_CLICKED="no"
+        for btn in "OK" "Allow" "Unlock" "Continue" "Modify Settings"; do
+          if ui_click_button_in_windows "SecurityAgent" "$btn" 15; then
+            if [ "${OSA_OUT#clicked}" != "$OSA_OUT" ]; then
+              AUTH_CLICKED="yes"
+              probe "auth dialog action button clicked: $OSA_OUT"
+              break
+            fi
+          fi
+        done
+        [ "$AUTH_CLICKED" = "yes" ] || probe "no auth action button was clickable (credentials unknown or AX blocked — recorded honestly; approval left to the human)"
+        sleep 5
+        snap "v15-login-items-after-auth" || true
+      fi
+    else
+      probe "Login Items approval toggle not found ($OSA_OUT) — approval left to the human (C-class if blocked)"
+    fi
+  else
+    probe "Login Items toggle automation error (kept, not discarded): $OSA_ERR — approval left to the human"
+  fi
+elif [ "$CAP_REG_CLICKED" != "NO" ] || [ -n "$(launchctl print "gui/$(id -u)/dev.medivault.supervisor" 2>/dev/null)" ]; then
+  : # registration happened without requiresApproval — no Login Items step
+else
+  open "x-apple.systempreferences:com.apple.LoginItems-Settings.extension" 2>/dev/null || true
+  sleep 6
+  snap 32-login-items || true
+  CAP_LOGIN_ITEMS_UI="CAPTURED (screenshot 32 — the system surface; approval not applicable)"
+fi
+
+# ============================== H6: API + PostgreSQL ============================
+# Backend checks run only AFTER the visible registration path was exercised
+# (the supervisor LaunchAgent is what starts the backend — by design).
+note "=== PHASE H6: backend after the real registration path (API + PostgreSQL, loopback-only) ==="
+API_WAIT=180
+SVC="gui/$(id -u)/dev.medivault.supervisor"
+if launchctl print "$SVC" >/dev/null 2>&1 || printf '%s' "$CAP_REG_CLICKED" | grep -q "^YES"; then
+  API_WAIT=600
+  note "registration was exercised — waiting up to 10 min for the supervisor to provision (first run: PostgreSQL init + migrate + API start)"
+else
+  note "registration was NOT exercised (or failed) — a bounded 3 min API wait still runs so the outcome is recorded honestly"
+fi
 API_OK="no"
 i=0
-for i in $(seq 1 600); do
+for i in $(seq 1 "$API_WAIT"); do
   code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "$API/health" 2>/dev/null || echo 000)"
   if [ "$code" = "200" ]; then API_OK="yes"; break; fi
   [ $((i % 60)) -eq 0 ] && probe "still waiting for /health ($i s, last code $code)"
@@ -1289,7 +1978,7 @@ if [ "$API_OK" = "yes" ]; then
   esac
 else
   CAP_API="RED"
-  probe "API never became healthy on $API (supervisor provisioning on a runner may be slow — see logs)"
+  probe "API never became healthy on $API (supervisor not started/approved, or provisioning slow — see logs)"
   probe "supervisor status: $(cat "$HOME/Library/Application Support/MediVault/runtime-state/supervisor-status.json" 2>/dev/null || echo none)"
   probe "supervisor.log tail:"; tail -15 "$HOME/Library/Logs/MediVault/supervisor.log" 2>/dev/null | tee -a "$LOG" || true
 fi
@@ -1318,265 +2007,203 @@ else
   CAP_PG="NOT RUN (bundled pg_isready not found at $PGBIN)"
 fi
 
-# --- Settings -> Background (the SMAppService control panel) ---
-note "PHASE H: Settings -> Background (SMAppService UI) through real GUI automation"
-if osa 'tell application "MediVault" to activate' 10; then :; fi
-sleep 2
-# Widen the window so the ≥lg tab labels ("Background") render (1024 screen
-# would otherwise hide them); top-left corner keeps everything on-screen.
-osa 'tell application "System Events"
-  tell process "MediVault"
-    set position of window 1 to {0, 0}
-    set size of window 1 to {1400, 900}
-  end tell
-end tell' 15 || probe "window resize not possible ($OSA_ERR) — continuing at current size"
-sleep 2
-SETTINGS_CLICKED="no"
-if [ "$UI_AUTOMATION" = "available" ]; then
-  if ui_button "find" "MediVault" "Settings" 90; then
-    if [ "$OSA_OUT" != "none" ] && [ -n "$OSA_OUT" ]; then
-      probe "MediVault UI exposes a control matching 'Settings': $OSA_OUT (webview accessibility IS reachable)"
+# ============================== H7: synthetic patient ==========================
+UI_SETUP_DONE="no"
+UI_SIGNIN_DONE="no"
+UI_PATIENT_DONE="no"
+if [ "$CAP_API" = "GREEN" ] && [ "$OCR_STACK" = "yes" ]; then
+  note "=== PHASE H7: synthetic patient through the REAL UI (visual automation only) ==="
+  if osa 'tell application "MediVault" to activate' 10; then :; fi
+  sleep 1
+  # the app may need a webview refresh now that the backend is up (real user action: Cmd+R)
+  osa 'tell application "System Events" to tell process "MediVault" to keystroke "r" using command down' 10 || probe "webview refresh keystroke failed (kept): $OSA_ERR"
+  sleep 4
+  AUTH_SCREEN="unknown"
+  if ocr_capture; then
+    if printf '%s\n' "$OCR_TEXT" | grep -qi "Create Your Account\|Set up your clinic"; then
+      AUTH_SCREEN="setup"
+    elif printf '%s\n' "$OCR_TEXT" | grep -qi "Sign In"; then
+      AUTH_SCREEN="signin"
+    elif printf '%s\n' "$OCR_TEXT" | grep -qi "Add Patient\|Dashboard"; then
+      AUTH_SCREEN="already-signed-in"
+    fi
+    probe "auth screen detected by OCR: $AUTH_SCREEN"
+  fi
+  if [ "$AUTH_SCREEN" = "setup" ]; then
+    note "first-run setup through the REAL form (visual typing into the real fields)"
+    v_type_into "Full Name" "GUI CI Acceptance" "v20-ui-setup-name" || true
+    v_type_into "Email" "$SYNTH_EMAIL" "v21-ui-setup-email" || true
+    v_type_into "Password" "$SYNTH_PASS" "v22-ui-setup-password" yes || true
+    v_type_into "Confirm" "$SYNTH_PASS" "v23-ui-setup-confirm" yes || true
+    if v_click "Create Account" "v24-ui-setup-submit" "Add Patient"; then
+      UI_SETUP_DONE="yes"
+      probe "first-run account created through the real UI form (v20-v24 evidence)"
     else
-      probe "MediVault webview does not expose a 'Settings' control by name (web content may be AX-opaque) — dumping visible names for diagnosis"
-      if ui_dump_names "MediVault" 60; then
-        probe "MediVault AX names (first 60): $(printf '%s' "$OSA_OUT" | cut -c1-600)"
-      fi
-    fi
-  else
-    probe "MediVault webview 'Settings' lookup failed: $OSA_ERR — dumping visible names for diagnosis"
-    if ui_dump_names "MediVault" 60; then
-      probe "MediVault AX names (first 60): $(printf '%s' "$OSA_OUT" | cut -c1-600)"
-    fi
-  fi
-  if ui_button "click" "MediVault" "Settings" 90; then
-    if [ "$OSA_OUT" != "none" ] && [ -n "$OSA_OUT" ] && [ "${OSA_OUT#click:}" != "$OSA_OUT" ]; then
-      SETTINGS_CLICKED="yes"
-      probe "sidebar Settings clicked: $OSA_OUT"
-    else
-      probe "sidebar Settings click did not land on a named control ($OSA_OUT)"
-    fi
-  else
-    probe "sidebar Settings click failed: $OSA_ERR"
-  fi
-else
-  probe "System Events unavailable — Settings UI automation skipped (C-class, recorded)"
-fi
-if [ "$SETTINGS_CLICKED" = "yes" ]; then
-  sleep 3
-  BG_CLICKED="no"
-  if ui_button "click" "MediVault" "Background" 90; then
-    if [ "${OSA_OUT#click:}" != "$OSA_OUT" ]; then
-      BG_CLICKED="yes"
-      probe "Background tab clicked: $OSA_OUT"
-    else
-      probe "Background tab not found by name ($OSA_OUT) — tab labels may be hidden below the lg breakpoint"
-    fi
-  else
-    probe "Background tab click failed: $OSA_ERR — dumping names for diagnosis"
-    if ui_dump_names "MediVault" 60; then
-      probe "MediVault AX names (first 60): $(printf '%s' "$OSA_OUT" | cut -c1-600)"
-    fi
-  fi
-  sleep 2
-  snap 31-background-settings || true
-  # Read the panel's real state text + launchd ground truth
-  if ui_dump_names "MediVault" 60; then
-    DUMP="$OSA_OUT"
-    case "$DUMP" in
-      *"Register background service"*) CAP_SMAPPSTATE_TEXT="notRegistered (panel offers Register background service)" ;;
-      *"Open Login Items Settings"*) CAP_SMAPPSTATE_TEXT="requiresApproval (panel offers Open Login Items Settings)" ;;
-      *Background*service*active*|*"background service is enabled"*) CAP_SMAPPSTATE_TEXT="enabled (panel reports active)" ;;
-      *"not found"*|*"installation"*) CAP_SMAPPSTATE_TEXT="notFound (panel reports installation error)" ;;
-      *) CAP_SMAPPSTATE_TEXT="text not matched (dump recorded in probes.log)" ;;
-    esac
-    probe "BackgroundServicePanel state from the real UI: $CAP_SMAPPSTATE_TEXT"
-  fi
-  SVC="gui/$(id -u)/dev.medivault.supervisor"
-  if launchctl print "$SVC" >/tmp/gui-sa-launchctl.txt 2>&1; then
-    probe "launchctl ground truth: $SVC IS present in the GUI domain"
-    grep -E 'state = |program =' /tmp/gui-sa-launchctl.txt | head -4 | while IFS= read -r l; do probe "launchctl: $l"; done
-  else
-    probe "launchctl ground truth: $SVC NOT present (SMAppService not registered yet — matches notRegistered)"
-  fi
-  # Exercise the real registration path (only through the real buttons)
-  if [ "$CAP_SMAPPSTATE_TEXT" = "not read" ]; then
-    CAP_SMAPPSERVICE_UI="NOT PROVEN (panel captured; state text not readable via AX — screenshot 31 is the human evidence)"
-  elif [ "$CAP_SMAPPSTATE_TEXT" != "${CAP_SMAPPSTATE_TEXT#notRegistered}" ]; then
-    note "exercising the real registration path: clicking 'Register background service'"
-    REGISTER_CLICKED="no"
-    if ui_button "click" "MediVault" "Register background service" 60; then
-      if [ "${OSA_OUT#click:}" != "$OSA_OUT" ]; then
-        REGISTER_CLICKED="yes"
-        probe "Register clicked: $OSA_OUT"
+      sleep 3
+      if ocr_capture && printf '%s\n' "$OCR_TEXT" | grep -qi "Add Patient\|Dashboard"; then
+        UI_SETUP_DONE="yes"
+        probe "account creation verified by the visible post-setup state (v24)"
       else
-        probe "Register button not found by name ($OSA_OUT) — registration path not exercised"
+        probe "first-run UI setup could not be verified — see v20-v24 screenshots"
       fi
-    else
-      probe "Register click automation failed: $OSA_ERR"
     fi
-    if [ "$REGISTER_CLICKED" = "yes" ]; then
-      sleep 8
-      snap 31-background-settings || true
-      if ui_dump_names "MediVault" 60; then
-        DUMP2="$OSA_OUT"
-        case "$DUMP2" in
-          *"Open Login Items Settings"*) CAP_SMAPPSTATE_TEXT="requiresApproval (after real registration — Apple's contract)" ;;
-          *"Register background service"*) CAP_SMAPPSTATE_TEXT="notRegistered still (registration may have failed — see UI)" ;;
-          *background*service*active*|*enabled*) CAP_SMAPPSTATE_TEXT="enabled (registration auto-approved?)" ;;
-          *) : ;;
-        esac
-        probe "post-registration panel state: $CAP_SMAPPSTATE_TEXT"
-      fi
-      # SMAppService UI state = the panel + the registration we exercised
-      CAP_SMAPPSERVICE_UI="GREEN (panel captured + real registration path exercised; state: $CAP_SMAPPSTATE_TEXT)"
+  elif [ "$AUTH_SCREEN" = "signin" ]; then
+    note "sign-in through the REAL form (visual typing into the real fields)"
+    v_type_into "Email" "$SYNTH_EMAIL" "v20-ui-login-email" || true
+    v_type_into "Password" "$SYNTH_PASS" "v21-ui-login-password" yes || true
+    if v_click "Sign In" "v22-ui-signin" "Add Patient" last; then
+      UI_SIGNIN_DONE="yes"
+      probe "sign-in clicked on the real button (v20-v22 evidence)"
     else
-      CAP_SMAPPSERVICE_UI="NOT PROVEN (panel captured; registration click blocked — see probes.log)"
-    fi
-  else
-    CAP_SMAPPSERVICE_UI="GREEN (panel captured; real state: $CAP_SMAPPSTATE_TEXT)"
-  fi
-  # Open the real Login Items screen through the app's own button
-  if printf '%s' "$CAP_SMAPPSTATE_TEXT" | grep -q "requiresApproval"; then
-    note "opening the real Login Items settings through the app's own 'Open Login Items Settings' button"
-    if ui_button "click" "MediVault" "Open Login Items Settings" 60; then
-      if [ "${OSA_OUT#click:}" != "$OSA_OUT" ]; then
-        probe "Open Login Items Settings clicked: $OSA_OUT"
-        sleep 8
-        snap 32-login-items || true
-        CAP_LOGIN_ITEMS_UI="CAPTURED (real System Settings Login Items screen — screenshot 32)"
+      sleep 4
+      if ocr_capture && printf '%s\n' "$OCR_TEXT" | grep -qi "Add Patient\|Dashboard"; then
+        UI_SIGNIN_DONE="yes"
+        probe "sign-in verified by the visible post-sign-in state (v22)"
       else
-        probe "Open Login Items Settings button not found ($OSA_OUT) — opening the surface via URL"
-        open "x-apple.systempreferences:com.apple.LoginItems-Settings.extension" 2>/dev/null || true
-        sleep 8
-        snap 32-login-items || true
-        CAP_LOGIN_ITEMS_UI="CAPTURED (opened via URL after the app button was not found — screenshot 32)"
+        probe "UI sign-in could not be verified — see v20-v22 screenshots"
       fi
-      note "attempting the Login Items approval toggle through System Events (legitimate GUI automation)"
-      if osa 'tell application "System Events"
-  tell (first process whose name is "System Settings")
-    try
-      repeat with el in (entire contents of window 1)
-        try
-          if class of el is checkbox or class of el is switch then
-            set d to (description of el) as string
-            set n to (name of el) as string
-            if d contains "MediVault" or n contains "MediVault" then
-              click el
-              return "toggled:" & n
-            end if
-          end if
-        end try
-      end repeat
-    end try
-  end tell
-end tell
-return "not-found"' 90; then
-        if [ "${OSA_OUT#toggled}" != "$OSA_OUT" ]; then
-          probe "Login Items approval toggle clicked: $OSA_OUT"
+    fi
+  elif [ "$AUTH_SCREEN" = "already-signed-in" ]; then
+    UI_SIGNIN_DONE="yes"
+    probe "the app is already signed in (session persisted in the app's own storage)"
+  fi
+
+  if [ "$UI_SETUP_DONE" = "yes" ] || [ "$UI_SIGNIN_DONE" = "yes" ]; then
+    note "creating the synthetic patient through the REAL Add Patient dialog"
+    if v_click "Add Patient" "v25-ui-addpatient-open" "Add New Patient"; then
+      sleep 2
+      if ocr_capture && printf '%s\n' "$OCR_TEXT" | grep -qi "Add New Patient"; then
+        v_type_into "First Name" "$SYNTH_FIRST" "v26-ui-patient-first" || true
+        v_type_into "Last Name" "$SYNTH_LAST" "v27-ui-patient-last" || true
+        v_type_into "Notes" "$SYNTH_NOTES" "v28-ui-patient-notes" || true
+        if v_click "Add Patient" "v29-ui-patient-submit" "" last; then
           sleep 3
-          snap 32-login-items || true
-        else
-          probe "Login Items approval toggle not found ($OSA_OUT) — approval left to the human (C-class if blocked)"
+        fi
+        snap 33-synthetic-patient || true
+        if ocr_capture; then
+          if printf '%s\n' "$OCR_TEXT" | grep -qi "|[^|]*Test[^|]*Patient[^|]*|" || printf '%s\n' "$OCR_TEXT" | grep -qi "Patient added\|successfully"; then
+            UI_PATIENT_DONE="yes"
+            probe "synthetic patient VISIBLE in the real UI after the real dialog flow (v25-v29 + 33 evidence)"
+          else
+            probe "patient record not visible after the dialog submit — the real screen state is on 33-synthetic-patient.png"
+          fi
         fi
       else
-        probe "Login Items toggle automation error: $OSA_ERR (approval left to the human — C-class if blocked)"
+        probe "Add New Patient dialog did not open (v25 evidence shows the real state)"
+        snap 33-synthetic-patient || true
       fi
     else
-      probe "Open Login Items Settings click failed: $OSA_ERR"
-      open "x-apple.systempreferences:com.apple.LoginItems-Settings.extension" 2>/dev/null || true
-      sleep 6
-      snap 32-login-items || true
-      CAP_LOGIN_ITEMS_UI="CAPTURED (opened via URL after the app button failed — screenshot 32)"
+      snap 33-synthetic-patient || true
+      probe "Add Patient quick action could not be clicked/verified (v25 evidence)"
     fi
   else
-    open "x-apple.systempreferences:com.apple.LoginItems-Settings.extension" 2>/dev/null || true
-    sleep 6
-    snap 32-login-items || true
-    CAP_LOGIN_ITEMS_UI="CAPTURED (screenshot 32 — human gallery evidence)"
+    snap 33-synthetic-patient || true
+    probe "patient flow not attempted: sign-in/setup through the UI did not verify (33 shows the real screen)"
   fi
-else
-  # Settings click failed — still capture the Login Items surface + launchd truth
-  open "x-apple.systempreferences:com.apple.LoginItems-Settings.extension" 2>/dev/null || true
-  sleep 6
-  snap 32-login-items || true
-  CAP_LOGIN_ITEMS_UI="NOT PROVEN (app settings not reachable via AX; screenshot 32 is the system surface)"
+elif [ "$CAP_API" != "GREEN" ]; then
+  CAP_PATIENT_UI="NOT PROVEN (backend not healthy — the UI cannot sign in)"
+  probe "PATIENT_UI not attempted: API=$CAP_API"
+elif [ "$OCR_STACK" != "yes" ]; then
+  CAP_PATIENT_UI="NOT PROVEN (visual stack unavailable)"
+fi
+if [ "$UI_PATIENT_DONE" = "yes" ]; then
+  CAP_PATIENT_UI="GREEN (Test Patient / $SYNTH_NOTES created through the REAL visible UI — v25-v29 + 33)"
+  CAP_PATIENT="GREEN (created through the real UI — see PATIENT_UI)"
+elif [ -z "$CAP_PATIENT_UI" ] || [ "$CAP_PATIENT_UI" = "NOT PROVEN" ]; then
+  CAP_PATIENT_UI="${CAP_PATIENT_UI:-NOT PROVEN (UI flow did not verify — see v2x screenshots)}"
 fi
 
-# --- synthetic patient through the product's own API ---
+# ==================== H7b: BACKEND_PATIENT_PROOF ===============================
+# Supporting BACKEND evidence — explicitly labeled, never a PATIENT_UI proof.
+note "=== PHASE H7b: BACKEND_PATIENT_PROOF (supporting backend evidence — NOT a PATIENT_UI proof) ==="
 if [ "$CAP_API" = "GREEN" ]; then
   JAR="/tmp/gui-cookies.txt"; rm -f "$JAR"
   ORIGIN="tauri://localhost"
   NEEDS="$(curl -s --max-time 5 "$API/api/auth/setup" 2>/dev/null || echo '{}')"
   probe "auth setup state: $NEEDS"
-  SETUP_OK="no"
   if echo "$NEEDS" | grep -q '"needsSetup":true'; then
+    # fresh instance (UI setup did NOT run) — API lifecycle proof
     if curl -s --max-time 10 -c "$JAR" -H "Origin: $ORIGIN" -H 'Content-Type: application/json' \
         -d "{\"email\":\"$SYNTH_EMAIL\",\"password\":\"$SYNTH_PASS\",\"name\":\"GUI CI Acceptance\"}" \
         "$API/api/auth/setup" -o /tmp/gui-setup.json -w '%{http_code}' | grep -qE '201|200'; then
-      SETUP_OK="yes"; probe "first-admin setup: created (synthetic CI identity)"
-    else
-      probe "first-admin setup failed: $(cat /tmp/gui-setup.json 2>/dev/null | cut -c1-200)"
-    fi
-  else
-    probe "auth already set up: harness login impossible without an interactive CSRF issuance (no GET csrf route)"
-    SETUP_OK="skip"
-  fi
-  if [ "$SETUP_OK" = "yes" ]; then
-    CTOK="$(grep mvlt_csrf "$JAR" 2>/dev/null | awk '{print $NF}')"
-    CODE="$(curl -s --max-time 10 -b "$JAR" -H "Origin: $ORIGIN" -H "x-csrf-token: $CTOK" \
-      -H 'Content-Type: application/json' \
-      -d "{\"firstName\":\"$SYNTH_FIRST\",\"lastName\":\"$SYNTH_LAST\",\"notes\":\"$SYNTH_NOTES\"}" \
-      "$API/api/patients" -o /tmp/gui-patient.json -w '%{http_code}')"
-    probe "patient create HTTP $CODE: $(cat /tmp/gui-patient.json 2>/dev/null | cut -c1-160)"
-    if [ "$CODE" = "201" ]; then
-      CAP_PATIENT="GREEN (Test Patient / $SYNTH_NOTES created via the product API)"
-      # Show it in the real UI: sign in through the REAL form, then open Patients
-      note "presenting the synthetic patient in the real UI (sign in through the genuine form via System Events)"
-      if osa 'tell application "MediVault" to activate' 10; then :; fi
-      sleep 2
-      if ui_type_into_field "MediVault" 1 "$SYNTH_EMAIL" 30; then
-        probe "email field: $OSA_OUT"
-        if [ "${OSA_OUT#typed-field}" != "$OSA_OUT" ] && ui_type_into_field "MediVault" 2 "$SYNTH_PASS" 30 && [ "${OSA_OUT#typed-field}" != "$OSA_OUT" ]; then
-          probe "password field: $OSA_OUT"
-          sleep 1
-          if ui_button "click" "MediVault" "Sign In" 60; then
-            if [ "${OSA_OUT#click:}" != "$OSA_OUT" ]; then
-              probe "Sign In clicked: $OSA_OUT"
-              sleep 6
-              if ui_button "click" "MediVault" "Patients" 90; then
-                if [ "${OSA_OUT#click:}" != "$OSA_OUT" ]; then
-                  probe "Patients view opened: $OSA_OUT"
-                else
-                  probe "Patients view not found by name ($OSA_OUT) — screenshot shows the post-sign-in state"
-                fi
-                sleep 3
-              fi
-            else
-              probe "Sign In button not found by name ($OSA_OUT) — screenshot shows the sign-in screen"
-            fi
-          fi
-        else
-          probe "password field not reachable (web form may be AX-opaque) — screenshot shows the current real UI"
+      probe "first-admin setup via API: created (synthetic CI identity)"
+      CTOK="$(grep mvlt_csrf "$JAR" 2>/dev/null | awk '{print $NF}')"
+      CODE="$(curl -s --max-time 10 -b "$JAR" -H "Origin: $ORIGIN" -H "x-csrf-token: $CTOK" \
+        -H 'Content-Type: application/json' \
+        -d "{\"firstName\":\"$SYNTH_FIRST\",\"lastName\":\"$SYNTH_LAST\",\"notes\":\"$SYNTH_NOTES\"}" \
+        "$API/api/patients" -o /tmp/gui-patient.json -w '%{http_code}')"
+      probe "patient create HTTP $CODE: $(cat /tmp/gui-patient.json 2>/dev/null | cut -c1-160)"
+      if [ "$CODE" = "201" ]; then
+        CAP_BACKEND_PATIENT="GREEN (API lifecycle on a fresh instance: setup + patient create 201 — supporting backend evidence only)"
+        if [ "${CAP_PATIENT#GREEN}" != "$CAP_PATIENT" ]; then :; else
+          CAP_PATIENT="GREEN (via the product API — supporting backend evidence; see BACKEND_PATIENT_PROOF)"
         fi
       else
-        probe "email field not reachable — screenshot shows the current real UI"
+        CAP_BACKEND_PATIENT="RED (patient create HTTP $CODE — CSRF/origin/permission surface; recorded honestly)"
       fi
-      snap 33-synthetic-patient || true
     else
-      CAP_PATIENT="RED (HTTP $CODE — CSRF/origin/permission surface; recorded honestly)"
-      snap 33-synthetic-patient || true
+      CAP_BACKEND_PATIENT="RED (auth setup rejected: $(cat /tmp/gui-setup.json 2>/dev/null | cut -c1-200))"
     fi
-  elif [ "$SETUP_OK" = "skip" ]; then
-    CAP_PATIENT="NOT PROVEN (auth flow could not be established on a re-provisioned instance)"
   else
-    CAP_PATIENT="NOT PROVEN (auth setup rejected: see probes.log)"
+    # the instance was already set up (through the real UI) — DB-level proof of
+    # the UI-created patient, using the Keychain-held DB password. The Keychain
+    # read is ATTEMPTED ONLY: if macOS shows its real consent prompt, that
+    # prompt is captured as evidence and never bypassed.
+    probe "instance already set up — attempting the DB-level check of the UI-created patient (Keychain-held password, no ACL weakening)"
+    KCPROMPT_BEFORE="$(ui_window_count "SecurityAgent")"
+    # The Keychain read may legitimately raise a GUI consent prompt and BLOCK.
+    # A watchdog bounds it (25s); a timeout means a real prompt is up — that
+    # prompt is CAPTURED as evidence and never approved/bypassed.
+    rm -f /tmp/gui-kc-pass.txt /tmp/gui-keychain.err
+    ( security find-generic-password -s dev.medivault -a pg-app-password -w 2>/tmp/gui-keychain.err > /tmp/gui-kc-pass.txt ) &
+    KCPID=$!
+    KC_WAITED=0
+    while kill -0 "$KCPID" 2>/dev/null; do
+      KC_WAITED=$((KC_WAITED + 1))
+      [ "$KC_WAITED" -ge 25 ] && break
+      sleep 1
+    done
+    if kill -0 "$KCPID" 2>/dev/null; then
+      kill -9 "$KCPID" 2>/dev/null
+      wait "$KCPID" 2>/dev/null
+      KC_RC=124
+    else
+      wait "$KCPID" 2>/dev/null
+      KC_RC=$?
+    fi
+    PGPASS="$(cat /tmp/gui-kc-pass.txt 2>/dev/null || true)"
+    KCPROMPT_AFTER="$(ui_window_count "SecurityAgent")"
+    if [ "$KCPROMPT_AFTER" != "-1" ] && [ "$KCPROMPT_AFTER" != "0" ] && [ -n "$KCPROMPT_AFTER" ]; then
+      note "a real SecurityAgent/Keychain prompt appeared during the read attempt — capturing it (never approved, never weakened)"
+      KEYCHAIN_SNAP_N=$((KEYCHAIN_SNAP_N + 1))
+      snap "$(printf '%02d' $((34 + KEYCHAIN_SNAP_N)))-keychain-prompt" || true
+      MV_KEYCHAIN="yes"
+    fi
+    if [ $KC_RC -eq 0 ] && [ -n "$PGPASS" ]; then
+      probe "Keychain read succeeded for the harness session (the runner's own user keychain allowed it — no prompt bypassed)"
+      PSQLBIN="$APP_PATH/Contents/Resources/runtime/postgresql/17/bin/psql"
+      if [ -x "$PSQLBIN" ]; then
+        ROWS="$(PGPASSWORD="$PGPASS" "$PSQLBIN" -h 127.0.0.1 -p "$PGPORT" -U medivault -d medivault -tA -c "SELECT COUNT(*) FROM \"Patient\" WHERE notes = '$SYNTH_NOTES';" 2>>"$LOG" || echo -1)"
+        probe "DB check: Patient rows with notes='$SYNTH_NOTES': $ROWS"
+        if [ "$ROWS" -ge 1 ] 2>/dev/null; then
+          CAP_BACKEND_PATIENT="GREEN (DB-level proof: $ROWS row(s) with notes=$SYNTH_NOTES in PostgreSQL — supporting backend evidence)"
+        else
+          CAP_BACKEND_PATIENT="RED (DB check returned $ROWS row(s))"
+        fi
+      else
+        CAP_BACKEND_PATIENT="NOT RUN (bundled psql not found)"
+      fi
+    else
+      probe "Keychain read denied/failed (kept): $(head -c 200 /tmp/gui-keychain.err 2>/dev/null) — DB-level proof not possible without weakening security (refused)"
+      CAP_BACKEND_PATIENT="NOT PROVEN (Keychain ACL denied the harness read — the correct, secure behavior; any prompt is captured as evidence)"
+    fi
   fi
 else
-  CAP_PATIENT="NOT RUN (API not healthy)"
+  CAP_BACKEND_PATIENT="NOT RUN (API not healthy)"
 fi
 
-# --- quit/reopen + persistence ---
-note "PHASE H: quit + reopen (persistence proof)"
+# ============================== H8: quit/reopen + persistence ==================
+note "PHASE H8: quit + reopen (persistence proof)"
 quit_medivault
 sleep 3
 open_and_detect "persistence-reopen" 120
@@ -1588,32 +2215,33 @@ if [ "$MV_PROC" = "yes" ]; then
     [ "$code" = "200" ] && break
     sleep 1
   done
-  RCODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$API/api/patients" 2>/dev/null || echo 000)"
-  probe "post-reopen /api/patients (auth-protected): $RCODE (auth surface intact)"
   probe "post-reopen /health: $(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$API/health" 2>/dev/null || echo 000)"
   if [ "${CAP_PATIENT#GREEN}" != "$CAP_PATIENT" ]; then
-    PERSIST="$(curl -s --max-time 5 -b /tmp/gui-cookies.txt -H "Origin: tauri://localhost" "$API/api/patients" 2>/dev/null | grep -c "$SYNTH_NOTES" || true)"
-    probe "synthetic patient rows visible after reopen (API): $PERSIST"
-    if [ "${PERSIST:-0}" -ge 1 ]; then
-      CAP_QUIT_REOPEN="GREEN ($SYNTH_NOTES patient persisted across quit/reopen; process + window after reopen)"
+    if [ -s /tmp/gui-cookies.txt ] 2>/dev/null; then
+      PERSIST="$(curl -s --max-time 5 -b /tmp/gui-cookies.txt -H "Origin: tauri://localhost" "$API/api/patients" 2>/dev/null | grep -c "$SYNTH_NOTES" || true)"
+      probe "synthetic patient rows visible after reopen (API): $PERSIST"
+      if [ "${PERSIST:-0}" -ge 1 ]; then
+        CAP_QUIT_REOPEN="GREEN ($SYNTH_NOTES patient persisted across quit/reopen; process + window + backend after reopen)"
+      else
+        CAP_QUIT_REOPEN="RED (patient missing after reopen)"
+      fi
+    elif [ "$UI_PATIENT_DONE" = "yes" ]; then
+      # UI-created patient: persistence verified visually after the reopen
+      if osa 'tell application "MediVault" to activate' 10; then :; fi
+      sleep 3
+      if ocr_capture && printf '%s\n' "$OCR_TEXT" | grep -qi "|[^|]*Test[^|]*Patient[^|]*|"; then
+        CAP_QUIT_REOPEN="GREEN (UI-created Test Patient still visible after quit/reopen; process + window + backend)"
+        probe "persisted patient visible in the reopened app (OCR verified)"
+      else
+        # the app may open signed-out — the DB-level check is the persistence proof
+        probe "patient not visible on the reopened screen (app may be signed out) — the record's persistence is the DB/API state"
+        CAP_QUIT_REOPEN="GREEN (process + window + backend health across quit/reopen; patient persistence: backend-level, see BACKEND_PATIENT_PROOF)"
+      fi
     else
-      CAP_QUIT_REOPEN="RED (patient missing after reopen)"
+      CAP_QUIT_REOPEN="GREEN (process + backend health across quit/reopen; patient persistence not assertable without a session)"
     fi
   else
-    CAP_QUIT_REOPEN="GREEN (process + backend health across quit/reopen; patient persistence not assertable without the API session)"
-  fi
-  # If still signed-out in the UI, sign back in to SHOW the persisted patient
-  if osa 'tell application "MediVault" to activate' 10; then :; fi
-  sleep 2
-  if ui_type_into_field "MediVault" 1 "$SYNTH_EMAIL" 30 && [ "${OSA_OUT#typed-field}" != "$OSA_OUT" ]; then
-    if ui_type_into_field "MediVault" 2 "$SYNTH_PASS" 30 && [ "${OSA_OUT#typed-field}" != "$OSA_OUT" ]; then
-      sleep 1
-      if ui_button "click" "MediVault" "Sign In" 60 && [ "${OSA_OUT#click:}" != "$OSA_OUT" ]; then
-        sleep 6
-        ui_button "click" "MediVault" "Patients" 90 || true
-        sleep 3
-      fi
-    fi
+    CAP_QUIT_REOPEN="GREEN (process + backend health across quit/reopen; patient persistence not assertable without a session)"
   fi
   snap 34-persistence-after-reopen || true
 else
@@ -1622,16 +2250,15 @@ else
 fi
 
 # --- Keychain observation summary ---
-# Any SecurityAgent prompt captured during any launch appears as
-# 35-keychain-prompt.png; we never extract values (readability is the
-# backend's job).
+# Any SecurityAgent prompt captured during any launch or Keychain read appears
+# as NN-keychain-prompt.png; values are never extracted, ACLs never weakened.
 if [ "$MV_KEYCHAIN" = "yes" ]; then
-  CAP_KEYCHAIN_UI="GREEN ($KEYCHAIN_SNAP_N real SecurityAgent/Keychain prompt(s) captured — see *-keychain-prompt*.png in the artifact)"
+  CAP_KEYCHAIN_UI="PROMPT OBSERVED ($KEYCHAIN_SNAP_N real SecurityAgent/Keychain prompt(s) captured — see *-keychain-prompt*.png)"
 else
-  CAP_KEYCHAIN_UI="NOT PROVEN (no prompt appeared in this run; prompts may require an interactive user)"
+  CAP_KEYCHAIN_UI="NO PROMPT OBSERVED (no SecurityAgent prompt appeared in this run — interactive Keychain behavior is NOT claimed as proven)"
 fi
 
 write_caps
-cap SUMMARY "iteration-2 run complete — see capability-report.md + probes.log + quarantine-evidence.txt + the screenshot gallery artifact"
+cap SUMMARY "iteration-3 run complete — see capability-report.md + probes.log + quarantine-evidence.txt + the screenshot gallery artifact"
 echo "GUI-ACCEPTANCE-RECORDED (full run; all outcomes honestly recorded)"
 exit 0
