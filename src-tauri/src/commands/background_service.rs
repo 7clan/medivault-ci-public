@@ -101,10 +101,13 @@ fn helper_path() -> Result<PathBuf, String> {
             ))
         }
     };
+    // DEBUG-formatted names: Rust's OsStr Debug ESCAPES every non-printable
+    // byte, so invisible characters become visible escape sequences on
+    // screen - the listing becomes self-describing ground truth.
     let listing = entries
         .iter()
         .map(|en| {
-            let name = en.file_name().to_string_lossy().into_owned();
+            let name = format!("{:?}", en.file_name());
             let kind = match en.file_type() {
                 Ok(t) if t.is_dir() => "d",
                 Ok(t) if t.is_symlink() => "l",
@@ -148,9 +151,10 @@ fn helper_path() -> Result<PathBuf, String> {
         Some(h) => h,
         None => {
             return Err(format!(
-                "SMAppService helper missing from the app bundle: {} (installation incomplete?) — current_exe: {} — app-view of {}: {}",
+                "SMAppService helper missing from the app bundle: {} (installation incomplete?) — current_exe: {} — wanted: {:?} — app-view of {}: {}",
                 joined.display(),
                 exe.display(),
+                HELPER_NAME,
                 dir.display(),
                 listing
             ))
