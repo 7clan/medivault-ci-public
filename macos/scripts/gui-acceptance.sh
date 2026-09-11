@@ -809,28 +809,62 @@ cat > /tmp/mv-mouse.swift <<'SWIFT'
 import Foundation
 import CoreGraphics
 
-// mv-mouse — posts a REAL left click (native CGEvent) at screen coordinates.
-// Usage: mv-mouse <x_points> <y_points>
+// mv-mouse — posts a REAL mouse click (native CGEvent) at screen coordinates.
+// Usage: mv-mouse <x_points> <y_points> [left|right]  (default: left)
 let args = CommandLine.arguments
 guard args.count >= 3, let x = Double(args[1]), let y = Double(args[2]) else {
-  print("ERR usage mv-mouse <x> <y>"); exit(2)
+  print("ERR usage mv-mouse <x> <y> [left|right]"); exit(2)
 }
+let mode = args.count >= 4 ? args[3] : "left"
+let btn: CGMouseButton = mode == "right" ? .right : .left
+let down: CGEventType = mode == "right" ? .rightMouseDown : .leftMouseDown
+let up: CGEventType = mode == "right" ? .rightMouseUp : .leftMouseUp
 let pt = CGPoint(x: x, y: y)
 let src = CGEventSource(stateID: .combinedSessionState)
 func post(_ t: CGEventType) {
-  let e = CGEvent(mouseEventSource: src, mouseType: t, mouseCursorPosition: pt, mouseButton: .left)
+  let e = CGEvent(mouseEventSource: src, mouseType: t, mouseCursorPosition: pt, mouseButton: btn)
   e?.post(tap: .cghidEventTap)
 }
 post(.mouseMoved)
 usleep(150_000)
-post(.leftMouseDown)
+post(down)
 usleep(120_000)
-post(.leftMouseUp)
-print("CLICKED \(x) \(y)")
+post(up)
+print("CLICKED \(x) \(y) \(mode)")
 SWIFT
-if swiftc -O -o "$MV_OCR" /tmp/mv-ocr.swift 2>>"$LOG" && swiftc -O -o "$MV_MOUSE" /tmp/mv-mouse.swift 2>>"$LOG"; then
+cat > /tmp/mv-scroll.swift <<'SWIFT'
+import Foundation
+import CoreGraphics
+
+// mv-scroll — posts REAL scroll-wheel events at a screen position.
+// Usage: mv-scroll <x_points> <y_points> <ticks> [down|up]  (default: down)
+let args = CommandLine.arguments
+guard args.count >= 4, let x = Double(args[1]), let y = Double(args[2]),
+      let ticks = Int(args[3]) else {
+  print("ERR usage mv-scroll <x> <y> <ticks> [down|up]"); exit(2)
+}
+let dir = args.count >= 5 ? args[4] : "down"
+let delta: Int32 = dir == "up" ? 3 : -3
+let pt = CGPoint(x: x, y: y)
+let src = CGEventSource(stateID: .combinedSessionState)
+let move = CGEvent(mouseEventSource: src, mouseType: .mouseMoved, mouseCursorPosition: pt, mouseButton: .left)
+move?.post(tap: .cghidEventTap)
+usleep(120_000)
+for _ in 0..<ticks {
+  if let scroll = CGEvent(scrollEventSource: src, units: .line, wheelCount: 1,
+                          wheel1: delta, wheel2: 0, wheel3: 0) {
+    scroll.post(tap: .cghidEventTap)
+  }
+  usleep(60_000)
+}
+print("SCROLLED \(ticks) ticks \(dir) at \(x),\(y)")
+SWIFT
+MV_SCROLL="/tmp/mv-scroll"
+if swiftc -O -o "$MV_OCR" /tmp/mv-ocr.swift 2>>"$LOG" \
+   && swiftc -O -o "$MV_MOUSE" /tmp/mv-mouse.swift 2>>"$LOG" \
+   && swiftc -O -o "$MV_SCROLL" /tmp/mv-scroll.swift 2>>"$LOG"; then
   OCR_STACK="yes"
-  probe "visual stack compiled on the runner: mv-ocr (Vision text recognition) + mv-mouse (native CGEvent clicks) — product code untouched"
+  probe "visual stack compiled on the runner: mv-ocr (Vision OCR) + mv-mouse (native CGEvent left/right clicks) + mv-scroll (native scroll events) — product code untouched"
 else
   probe "visual stack compile FAILED (swiftc) — visual interaction unavailable this run (recorded honestly)"
   classify C "swiftc unavailable/failed on the runner — the OCR/CGEvent visual stack could not be built"
@@ -1021,6 +1055,66 @@ v_type_into() { # <label-needle> <text> <stem> [secret yes/no]
     probe "vtype[$stem]: keystroke FAILED (kept, not discarded): $OSA_ERR"
     return 1
   fi
+}
+
+settings_goto_privacy_security() { # open System Settings + navigate to the REAL Privacy & Security page VISUALLY
+  # Run 3e: the x-apple.systempreferences URL with a wrong pane id silently
+  # lands on General — navigation is done by clicking the real sidebar row.
+  guarded_open 45 open -a "System Settings" 2>/dev/null || true
+  sleep 6
+  local step
+  for step in 1 2 3 4 5 6 7 8 9 10; do
+    ocr_capture || return 1
+    if printf '%s\n' "$OCR_TEXT" | grep -qi "Privacy & Security"; then
+      break
+    fi
+    "$MV_SCROLL" 115 400 3 down 2>>"$LOG" || true
+    sleep 1
+  done
+  if ! printf '%s\n' "$OCR_TEXT" | grep -qi "Privacy & Security"; then
+    probe "Privacy & Security row not found in the System Settings sidebar (recorded honestly)"
+    return 1
+  fi
+  if ! ocr_lookup "Privacy & Security" "first"; then
+    return 1
+  fi
+  probe "clicking the REAL 'Privacy & Security' sidebar row at ($OCR_HIT_X,$OCR_HIT_Y) via native CGEvent"
+  if ! "$MV_MOUSE" "$OCR_HIT_X" "$OCR_HIT_Y" 2>>"$LOG"; then
+    return 1
+  fi
+  sleep 5
+  ocr_capture || return 1
+  local n
+  n="$(printf '%s\n' "$OCR_TEXT" | grep -ci "Privacy & Security")"
+  if [ "${n:-0}" -ge 2 ]; then
+    probe "Privacy & Security page is showing (the row + the page header are both visible — visual verification)"
+    return 0
+  fi
+  probe "page header for Privacy & Security not confirmed (count=$n) — continuing, the search will verify"
+  return 0
+}
+
+visual_find_open_anyway() { # scroll the Privacy & Security main pane searching for the real Open Anyway button; 0 = clicked
+  local pane_x pane_y step
+  pane_x=620
+  pane_y=400
+  # focus the main pane, then scroll it while OCR-searching for the button
+  for step in 1 2 3 4 5 6 7 8 9 10; do
+    if printf '%s\n' "$OCR_TEXT" | grep -qi "Open Anyway"; then
+      if ocr_lookup "Open Anyway" "first"; then
+        return 0
+      fi
+    fi
+    "$MV_MOUSE" "$pane_x" "$pane_y" 2>>"$LOG" || true
+    sleep 1
+    "$MV_SCROLL" "$pane_x" "$pane_y" 4 down 2>>"$LOG" || true
+    sleep 1
+    ocr_capture || return 1
+  done
+  if printf '%s\n' "$OCR_TEXT" | grep -qi "Open Anyway" && ocr_lookup "Open Anyway" "first"; then
+    return 0
+  fi
+  return 1
 }
 
 # visual_consent_click — answer Safari's genuine download-permission dialog
@@ -1484,14 +1578,27 @@ if [ "$MOUNTED" != "yes" ]; then
     fi
     sleep 2
     # ---- the supported approval path: Privacy & Security → Open Anyway ----
-    if [ "$UI_AUTOMATION" = "available" ]; then
-      note "=== PHASE D2: the supported DMG approval — System Settings → Privacy & Security → Open Anyway (legitimate GUI automation only) ==="
-      guarded_open 45 open "x-apple.systempreferences:com.apple.settings.privacy.security" 2>/dev/null || true
-      sleep 10
+    # v6: navigation is VISUAL (run 3e proved the wrong-case settings URL
+    # silently lands on General, and the sidebar row needs scrolling).
+    note "=== PHASE D2: the supported DMG approval — System Settings → Privacy & Security → Open Anyway (legitimate GUI automation only) ==="
+    OA_DMG_FOUND="no"
+    OA_DMG_HIT_X=""
+    OA_DMG_HIT_Y=""
+    if [ "$OCR_STACK" = "yes" ] && settings_goto_privacy_security; then
       snap 26a-dmg-privacy-security-before || true
-      OA_DMG_FOUND="no"
+      if ocr_capture && visual_find_open_anyway; then
+        OA_DMG_FOUND="yes"
+        OA_DMG_HIT_X="$OCR_HIT_X"
+        OA_DMG_HIT_Y="$OCR_HIT_Y"
+      fi
+    fi
+    if [ "$OA_DMG_FOUND" != "yes" ] && [ "$UI_AUTOMATION" = "available" ]; then
+      # AX fallback for the record: correct-case URL + the System Events walk
+      guarded_open 45 open "x-apple.systempreferences:com.apple.settings.Privacy-Security.extension" 2>/dev/null || true
+      sleep 8
+      [ -f "$EVID_DIR/26a-dmg-privacy-security-before.png" ] || snap 26a-dmg-privacy-security-before || true
       OA_DMG_T0="$(date +%s)"
-      while [ $(( $(date +%s) - OA_DMG_T0 )) -lt 120 ]; do
+      while [ $(( $(date +%s) - OA_DMG_T0 )) -lt 90 ]; do
         osa 'tell application "System Settings" to activate' 10 >/dev/null 2>&1 || true
         sleep 2
         if osa 'tell application "System Events"
@@ -1514,10 +1621,15 @@ return hits as string' 45; then
         fi
         sleep 3
       done
-      if [ "$OA_DMG_FOUND" = "yes" ]; then
-        CAP_DMG_OA="VISIBLE + CLICKED (the real Open Anyway button for the blocked DMG)"
-        probe "Open Anyway FOUND in the real Privacy & Security UI for the DMG-level block (count: $OSA_OUT)"
-        snap 27a-dmg-open-anyway-visible || true
+    fi
+    if [ "$OA_DMG_FOUND" = "yes" ]; then
+      CAP_DMG_OA="VISIBLE + CLICKED (the real Open Anyway button for the blocked DMG)"
+      probe "Open Anyway FOUND in the real Privacy & Security UI for the DMG-level block"
+      snap 27a-dmg-open-anyway-visible || true
+      if [ -n "$OA_DMG_HIT_X" ]; then
+        probe "clicking the real Open Anyway button at ($OA_DMG_HIT_X,$OA_DMG_HIT_Y) via native CGEvent"
+        "$MV_MOUSE" "$OA_DMG_HIT_X" "$OA_DMG_HIT_Y" 2>>"$LOG" || true
+      else
         if osa 'tell application "System Events"
   tell (first process whose name is "System Settings")
     repeat with el in (entire contents of window 1)
@@ -1531,19 +1643,23 @@ return hits as string' 45; then
   end tell
 end tell
 return "not-found"' 60; then
-          probe "DMG-level Open Anyway click issued: $OSA_OUT"
-          sleep 5
-          snap 28a-dmg-open-anyway-confirmation || true
-          # the admin-authorization dialog (SecurityAgent) — satisfy it with
-          # the runner's own passwordless account through the REAL dialog,
-          # never a bypass; honest stop if macOS refuses
-          local_sa="$(ui_window_count "SecurityAgent")"
-          if [ "$local_sa" != "-1" ] && [ "$local_sa" != "0" ] && [ -n "$local_sa" ]; then
-            note "the DMG approval raised an admin-authorization dialog — attempting it through the real dialog (runner / empty password)"
-            if ui_dialog_texts "SecurityAgent"; then
-              probe "DMG auth dialog text: $(printf '%s' "$OSA_OUT" | cut -c1-300)"
-            fi
-            if osa 'tell application "System Events"
+          probe "DMG-level Open Anyway click issued (System Events): $OSA_OUT"
+        else
+          probe "DMG-level Open Anyway AX click failed (kept): $OSA_ERR"
+        fi
+      fi
+      sleep 5
+      snap 28a-dmg-open-anyway-confirmation || true
+      # the admin-authorization dialog (SecurityAgent) — satisfy it with the
+      # runner's own passwordless account through the REAL dialog, never a
+      # bypass; honest stop if macOS refuses
+      local_sa="$(ui_window_count "SecurityAgent")"
+      if [ "$local_sa" != "-1" ] && [ "$local_sa" != "0" ] && [ -n "$local_sa" ]; then
+        note "the DMG approval raised an admin-authorization dialog — attempting it through the real dialog (runner / empty password)"
+        if ui_dialog_texts "SecurityAgent"; then
+          probe "DMG auth dialog text: $(printf '%s' "$OSA_OUT" | cut -c1-300)"
+        fi
+        if osa 'tell application "System Events"
   tell process "SecurityAgent"
     set fields to {}
     repeat with w in (get windows)
@@ -1565,62 +1681,101 @@ return "not-found"' 60; then
   end tell
 end tell
 return "fields-filled"' 30; then
-              probe "DMG auth fields filled (runner / empty password): $OSA_OUT"
-            else
-              probe "DMG auth fields could not be set via AX: $OSA_ERR"
-            fi
-            AUTH_CLICKED="no"
-            for btn in "OK" "Allow" "Unlock" "Continue" "Modify Settings"; do
-              if ui_click_button_in_windows "SecurityAgent" "$btn" 15; then
-                if [ "${OSA_OUT#clicked}" != "$OSA_OUT" ]; then
-                  AUTH_CLICKED="yes"
-                  probe "DMG auth dialog action button clicked: $OSA_OUT"
-                  break
-                fi
-              fi
-            done
-            [ "$AUTH_CLICKED" = "yes" ] || probe "no DMG auth action button was clickable (recorded honestly — approval left to the human)"
-            sleep 5
-          fi
-          sleep 3
-          snap 28a-dmg-open-anyway-confirmation || true
-          # plain confirmation sheet inside System Settings (no password on
-          # newer macOS) — click its real Open/Allow button if present
-          CONFIRM_CLICKED="no"
-          for btn in "Open" "Allow" "Confirm"; do
-            if ui_click_button_contains_in_windows "System Settings" "$btn" 20; then
-              if [ "${OSA_OUT#clicked}" != "$OSA_OUT" ]; then
-                CONFIRM_CLICKED="yes"
-                probe "DMG Open Anyway confirmation button clicked: $OSA_OUT"
-                break
-              fi
-            fi
-          done
-          [ "$CONFIRM_CLICKED" = "yes" ] || probe "no in-window confirmation button found (recorded honestly)"
-          sleep 3
-          snap 28a-dmg-open-anyway-confirmation || true
-          # verdict: does the mount clear now?
-          note "retrying the DMG open once after the Open Anyway approval"
-          guarded_open 90 open "$DMG_PATH" || probe "retry open returned non-zero or was watchdog-killed (recorded)"
-          for i in $(seq 1 60); do
-            [ -d "$VOLUME" ] && MOUNTED="yes" && break
-            sleep 1
-          done
-          if [ "$MOUNTED" = "yes" ]; then
-            CAP_DMG_OA="GREEN (Open Anyway approved through the real UI; the quarantined DMG then mounted)"
-          else
-            if [ -d "$VOLUME" ]; then MOUNTED="yes"; fi
-            [ "$MOUNTED" = "yes" ] || CAP_DMG_OA="BLOCKED (Open Anyway clicked but the mount did not clear — auth may have been refused; recorded honestly)"
-          fi
+          probe "DMG auth fields filled (runner / empty password): $OSA_OUT"
         else
-          CAP_DMG_OA="BLOCKED_BY_OS_AUTOMATION_POLICY (Open Anyway click refused by macOS automation policy: $OSA_ERR)"
+          probe "DMG auth fields could not be set via AX: $OSA_ERR"
         fi
+        AUTH_CLICKED="no"
+        for btn in "OK" "Allow" "Unlock" "Continue" "Modify Settings"; do
+          if ui_click_button_in_windows "SecurityAgent" "$btn" 15; then
+            if [ "${OSA_OUT#clicked}" != "$OSA_OUT" ]; then
+              AUTH_CLICKED="yes"
+              probe "DMG auth dialog action button clicked: $OSA_OUT"
+              break
+            fi
+          fi
+        done
+        [ "$AUTH_CLICKED" = "yes" ] || probe "no DMG auth action button was clickable (recorded honestly — approval left to the human)"
+        sleep 5
+      fi
+      # plain confirmation sheet (visual first, AX kept): macOS may show
+      # [Cancel] [Open] inside System Settings instead of a password prompt
+      if [ "$OCR_STACK" = "yes" ] && ocr_capture; then
+        if printf '%s\n' "$OCR_TEXT" | grep -qi "cannot be opened\|check it for malicious\|Are you sure"; then
+          if ocr_lookup "Open" "last" "exact"; then
+            probe "confirmation sheet visible — clicking its real 'Open' button at ($OCR_HIT_X,$OCR_HIT_Y)"
+            "$MV_MOUSE" "$OCR_HIT_X" "$OCR_HIT_Y" 2>>"$LOG" || true
+            sleep 4
+          fi
+        fi
+      fi
+      CONFIRM_CLICKED="no"
+      for btn in "Open" "Allow" "Confirm"; do
+        if ui_click_button_contains_in_windows "System Settings" "$btn" 20; then
+          if [ "${OSA_OUT#clicked}" != "$OSA_OUT" ]; then
+            CONFIRM_CLICKED="yes"
+            probe "DMG Open Anyway confirmation button clicked (AX): $OSA_OUT"
+            break
+          fi
+        fi
+      done
+      [ "$CONFIRM_CLICKED" = "yes" ] || probe "no in-window confirmation button found (recorded honestly)"
+      sleep 3
+      snap 28a-dmg-open-anyway-confirmation || true
+      # verdict: does the mount clear now?
+      note "retrying the DMG open once after the Open Anyway approval"
+      guarded_open 90 open "$DMG_PATH" || probe "retry open returned non-zero or was watchdog-killed (recorded)"
+      for i in $(seq 1 60); do
+        [ -d "$VOLUME" ] && MOUNTED="yes" && break
+        sleep 1
+      done
+      if [ "$MOUNTED" = "yes" ]; then
+        CAP_DMG_OA="GREEN (Open Anyway approved through the real UI; the quarantined DMG then mounted)"
       else
-        CAP_DMG_OA="NOT VISIBLE (no Open Anyway row for the DMG-level block within 120s — recorded honestly)"
-        probe "no Open Anyway row found for the DMG-level block (26a screenshot is the evidence)"
+        CAP_DMG_OA="BLOCKED (Open Anyway clicked but the mount did not clear — the auth may have been refused; recorded honestly)"
       fi
     else
-      CAP_DMG_OA="NOT PROVEN (assistive access unavailable — 26a screenshot is the human evidence)"
+      CAP_DMG_OA="NOT VISIBLE (no Open Anyway row found for the DMG-level block — 26a screenshot is the evidence)"
+      probe "no Open Anyway row found for the DMG-level block (26a screenshot is the evidence)"
+      # LAST legitimate fallback: the classic per-item escape — Finder
+      # right-click → Open on the DMG, then its confirmation dialog
+      if [ "$OCR_STACK" = "yes" ]; then
+        note "last legitimate fallback: Finder right-click → Open on the DMG (the classic per-item escape)"
+        guarded_open 30 open "$DL_DIR" 2>/dev/null || true
+        sleep 3
+        if ocr_capture && ocr_lookup "MediVault-arm64" "first"; then
+          probe "right-clicking the real DMG file at ($OCR_HIT_X,$OCR_HIT_Y) in the Finder Downloads window"
+          "$MV_MOUSE" "$OCR_HIT_X" "$OCR_HIT_Y" right 2>>"$LOG" || true
+          sleep 2
+          snap 22b-dmg-context-menu || true
+          if ocr_capture && ocr_lookup "Open" "first" "exact"; then
+            probe "clicking the real 'Open' context-menu item at ($OCR_HIT_X,$OCR_HIT_Y)"
+            "$MV_MOUSE" "$OCR_HIT_X" "$OCR_HIT_Y" 2>>"$LOG" || true
+            sleep 5
+            snap 22c-dmg-context-open-result || true
+            if ocr_capture && printf '%s\n' "$OCR_TEXT" | grep -qi "cannot be opened\|check it for malicious\|Are you sure"; then
+              if ocr_lookup "Open" "last" "exact"; then
+                probe "clicking the confirmation 'Open' button at ($OCR_HIT_X,$OCR_HIT_Y)"
+                "$MV_MOUSE" "$OCR_HIT_X" "$OCR_HIT_Y" 2>>"$LOG" || true
+                sleep 5
+              fi
+            fi
+            for i in $(seq 1 60); do
+              [ -d "$VOLUME" ] && MOUNTED="yes" && break
+              sleep 1
+            done
+            if [ "$MOUNTED" = "yes" ]; then
+              CAP_DMG_OA="GREEN (Finder right-click → Open approved the DMG — the classic per-item escape, real GUI interaction)"
+            else
+              probe "right-click Open did not clear the block (recorded honestly)"
+            fi
+          else
+            probe "'Open' context-menu item not isolable by OCR (22b screenshot is the evidence)"
+          fi
+        else
+          probe "the DMG file was not visible for a right-click (recorded honestly)"
+        fi
+      fi
     fi
   else
     probe "no DMG-level alert text was reachable via System Events during the stall (22a screenshot shows the real screen)"
@@ -1867,11 +2022,26 @@ OA_FLOW="no"
 if [ "$MV_BLOCK" = "yes" ] && [ "$UI_AUTOMATION" = "available" ]; then
   OA_FLOW="yes"
   note "=== PHASE F2: System Settings -> Privacy & Security -> Open Anyway (legitimate automation) ==="
-  guarded_open 45 open "x-apple.systempreferences:com.apple.settings.privacy.security" 2>/dev/null || true
-  sleep 10
-  snap 26-privacy-security-before || true
+  # v6: navigate VISUALLY (run 3e proved the wrong-case pane URL lands on
+  # General); the visual search also scrolls the page for the button
+  OA_VISUAL_X=""
+  OA_VISUAL_Y=""
+  if [ "$OCR_STACK" = "yes" ] && settings_goto_privacy_security; then
+    snap 26-privacy-security-before || true
+    if ocr_capture && visual_find_open_anyway; then
+      OA_VISUAL_X="$OCR_HIT_X"
+      OA_VISUAL_Y="$OCR_HIT_Y"
+    fi
+  else
+    guarded_open 45 open "x-apple.systempreferences:com.apple.settings.Privacy-Security.extension" 2>/dev/null || true
+    sleep 8
+    snap 26-privacy-security-before || true
+  fi
   note "searching the real Privacy & Security UI for the Open Anyway button (System Settings may take time to populate)"
   OA_FOUND="no"
+  if [ -n "$OA_VISUAL_X" ]; then
+    OA_FOUND="yes"
+  fi
   OA_T0="$(date +%s)"
   while [ $(( $(date +%s) - OA_T0 )) -lt 120 ]; do
     osa 'tell application "System Settings" to activate' 10 >/dev/null 2>&1 || true
@@ -1898,10 +2068,22 @@ return hits as string' 45; then
   done
   if [ "$OA_FOUND" = "yes" ]; then
     CAP_OA_VISIBLE="YES"
-    probe "Open Anyway button FOUND in the real Privacy & Security UI (count: $OSA_OUT)"
+    probe "Open Anyway button FOUND in the real Privacy & Security UI (visual at ($OA_VISUAL_X,$OA_VISUAL_Y)${OA_VISUAL_X:+ / }AX count: $OSA_OUT)"
     snap 27-open-anyway-visible || true
+    if [ -n "$OA_VISUAL_X" ]; then
+      note "clicking the real Open Anyway button via native CGEvent"
+      "$MV_MOUSE" "$OA_VISUAL_X" "$OA_VISUAL_Y" 2>>"$LOG" || true
+      sleep 5
+    fi
     note "clicking Open Anyway through legitimate GUI automation"
-    if osa 'tell application "System Events"
+    OA_CLICK_OK="no"
+    if [ -n "$OA_VISUAL_X" ]; then
+      # the visual click already happened — never click twice (the second
+      # click could land on the confirmation dialog that the first opened)
+      OA_CLICK_OK="yes"
+      probe "Open Anyway click issued: clicked:visual (native CGEvent at ($OA_VISUAL_X,$OA_VISUAL_Y))"
+      sleep 5
+    elif osa 'tell application "System Events"
   tell (first process whose name is "System Settings")
     repeat with el in (entire contents of window 1)
       try
@@ -1914,8 +2096,13 @@ return hits as string' 45; then
   end tell
 end tell
 return "not-found"' 60; then
+      OA_CLICK_OK="yes"
       probe "Open Anyway click issued: $OSA_OUT"
       sleep 5
+    else
+      probe "Open Anyway AX click failed (kept, not discarded): $OSA_ERR"
+    fi
+    if [ "$OA_CLICK_OK" = "yes" ]; then
       # confirmation dialog (admin auth or a confirm alert) — capture BEFORE acting
       CONFIRM_HOST=""
       local_sa="$(ui_window_count "SecurityAgent")"
