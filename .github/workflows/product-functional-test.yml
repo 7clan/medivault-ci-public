@@ -490,9 +490,26 @@ jobs:
         run: |
           set -euo pipefail
           . /tmp/pft-app-root.env
-          APP_ROOT="$APP_ROOT" DMG_OUT="$DMG_OUT" \
-            RELEASE_DOCS_DIR="$PWD/macos/release" \
-            bash macos/scripts/build-release-dmg.sh 2>&1 | tee /tmp/pft-build-dmg.log
+          # Bounded retry: hdiutil attach can transiently fail with
+          # "Resource temporarily unavailable" when the disk arbiter is busy
+          # right after the launch smoke teardown (observed run 34641321808).
+          sleep 10
+          OK=0
+          for attempt in 1 2 3; do
+            if APP_ROOT="$APP_ROOT" DMG_OUT="$DMG_OUT" \
+                 RELEASE_DOCS_DIR="$PWD/macos/release" \
+                 bash macos/scripts/build-release-dmg.sh 2>&1 | tee /tmp/pft-build-dmg.log; then
+              OK=1
+              break
+            fi
+            echo "DMG build attempt $attempt failed — settling 30s and retrying (transient disk arbitration)"
+            sleep 30
+            hdiutil detach /tmp/mv-release-dmg-mount.* -force >/dev/null 2>&1 || true
+            for v in $(hdiutil info | grep '/Volumes/' | awk '{print $3}'); do
+              hdiutil detach "$v" -force >/dev/null 2>&1 || true
+            done
+          done
+          [ "$OK" = "1" ] || { echo "::error::DMG build failed after 3 attempts"; exit 1; }
           grep -q 'BUILD-RELEASE-DMG-GREEN' /tmp/pft-build-dmg.log
           test -f "$DMG_OUT.sha256"
           shasum -a 256 "$DMG_OUT"
