@@ -455,7 +455,9 @@ jobs:
           . /tmp/pft-app-root.env
           APP="$APP_ROOT"
           rm -f /tmp/pft-desktop.exit
-          ( "$APP/Contents/MacOS/MediVault" > /tmp/pft-desktop.log 2>&1; echo $? > /tmp/pft-desktop.exit ) &
+          # The REAL executable name (CFBundleExecutable — `medivault` here).
+          BIN_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist" 2>/dev/null || echo medivault)"
+          ( "$APP/Contents/MacOS/$BIN_NAME" > /tmp/pft-desktop.log 2>&1; echo $? > /tmp/pft-desktop.exit ) &
           DESKTOP_PID=$!
           echo "desktop pid: $DESKTOP_PID"
           sleep 15
@@ -527,6 +529,8 @@ jobs:
           path: |
             /Users/runner/work/_temp/MediVault-0.1.1-firstrun-arm64.dmg
             /Users/runner/work/_temp/MediVault-0.1.1-firstrun-arm64.dmg.sha256
+            /Users/runner/work/_temp/MediVault-0.1.1-firstrun-arm64.dmg.smoke-screen.png
+          if-no-files-found: ignore
 
   product-functional-test:
     name: "Product functional test (real GUI, arm64)"

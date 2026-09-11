@@ -66,7 +66,13 @@ fn map_status(raw: &str) -> Result<BackgroundServiceStatus, String> {
 
 /// Resolve the helper shipped beside this executable:
 /// `<bundle>/Contents/MacOS/medivault-launchagent` (this binary is at
-/// `<bundle>/Contents/MacOS/MediVault`). Fail closed when missing.
+/// `<bundle>/Contents/MacOS/medivault` — the Cargo package name, mirrored
+/// by CFBundleExecutable). Fail closed when missing.
+///
+/// The error surface is fully diagnostic (first-red investigation): the
+/// exact stat error + errno + the current_exe the path was derived from,
+/// because an "is_file() == false" on a file that provably exists must be
+/// diagnosable from the UI message alone.
 fn helper_path() -> Result<PathBuf, String> {
     if !cfg!(target_os = "macos") {
         return Err("Background service control requires macOS".to_string());
@@ -77,14 +83,27 @@ fn helper_path() -> Result<PathBuf, String> {
         .parent()
         .ok_or_else(|| "app executable has no parent directory".to_string())?;
     let helper = dir.join(HELPER_NAME);
-    if !helper.is_file() {
-        return Err(format!(
-            "SMAppService helper missing from the app bundle: {} \
-             (installation incomplete?)",
-            helper.display()
-        ));
+    match std::fs::metadata(&helper) {
+        Ok(md) if md.is_file() => Ok(helper),
+        Ok(md) => Err(format!(
+            "SMAppService helper is not a regular file: {} (is_dir={}, len={}, mode={:#o}) — current_exe: {}",
+            helper.display(),
+            md.is_dir(),
+            md.len(),
+            {
+                use std::os::unix::fs::PermissionsExt;
+                md.permissions().mode()
+            },
+            exe.display()
+        )),
+        Err(e) => Err(format!(
+            "SMAppService helper missing from the app bundle: {} (installation incomplete? stat error: {} [os error {}]) — current_exe: {}",
+            helper.display(),
+            e,
+            e.raw_os_error().unwrap_or(-1),
+            exe.display()
+        )),
     }
-    Ok(helper)
 }
 
 /// Run the helper with one subcommand and return its stdout. Bounded wait —
