@@ -567,7 +567,11 @@ wait_for_medivault() { # <timeout_s> <label>
         probe "detector[$label]: visible window after ${MV_T_WINDOW}s — title: '$MV_TITLE'"
       fi
     fi
-    # Gatekeeper alert watch (only while the app has not appeared yet)
+    # Gatekeeper alert watch (only while the app has not appeared yet).
+    # Run 3f lesson: a CoreServicesUIAgent window can be an UNRELATED app's
+    # leftover "downloaded from the Internet" confirm — the alert text is
+    # read and only a MediVault/security-block dialog counts as MV_BLOCK.
+    # Unrelated confirms are cleared through their own Open button.
     if [ "$MV_PROC" = "no" ] && [ "$MV_BLOCK" = "no" ]; then
       local gk
       gk="$(ui_window_count "CoreServicesUIAgent")"
@@ -576,8 +580,22 @@ wait_for_medivault() { # <timeout_s> <label>
       fi
       case "$gk" in
         -1|0|'') : ;;
-        *) MV_BLOCK="yes"; MV_T_BLOCK=$(( $(date +%s) - t0 )); MV_BLOCK_SINCE="$(date +%s)"
-           probe "detector[$label]: Gatekeeper alert window detected after ${MV_T_BLOCK}s (process hosting it has $gk window(s))" ;;
+        *) local gktext
+           gktext=""
+           if ui_dialog_texts "CoreServicesUIAgent"; then
+             gktext="$OSA_OUT"
+           fi
+           if printf '%s' "$gktext" | grep -qi "could not verify\|malware\|Not Opened\|MediVault"; then
+             MV_BLOCK="yes"; MV_T_BLOCK=$(( $(date +%s) - t0 )); MV_BLOCK_SINCE="$(date +%s)"
+             probe "detector[$label]: MediVault Gatekeeper alert detected after ${MV_T_BLOCK}s (text: $(printf '%s' "$gktext" | cut -c1-200))"
+           elif printf '%s' "$gktext" | grep -qi "downloaded from the Internet"; then
+             probe "detector[$label]: an unrelated first-run confirmation dialog is up (not a MediVault block): $(printf '%s' "$gktext" | cut -c1-160) — clearing it through its own Open button"
+             ui_click_button_in_windows "CoreServicesUIAgent" "Open" 15 || true
+             sleep 3
+           else
+             probe "detector[$label]: CoreServicesUIAgent window present (no readable text) — treated as a possible block"
+             MV_BLOCK="yes"; MV_T_BLOCK=$(( $(date +%s) - t0 )); MV_BLOCK_SINCE="$(date +%s)"
+           fi ;;
       esac
     fi
     # macOS 26 "Not Opened" alerts are FINDER-hosted (run 3c) — a rise in the
@@ -860,15 +878,32 @@ for _ in 0..<ticks {
 print("SCROLLED \(ticks) ticks \(dir) at \(x),\(y)")
 SWIFT
 MV_SCROLL="/tmp/mv-scroll"
+SCROLL_OK="no"
+# Run 3f lesson: tools are compiled INDEPENDENTLY — a failure of the
+# optional scroll tool must never disable the core OCR+click stack (3f's
+# mv-scroll failure cascaded into losing the Safari consent click too).
 if swiftc -O -o "$MV_OCR" /tmp/mv-ocr.swift 2>>"$LOG" \
-   && swiftc -O -o "$MV_MOUSE" /tmp/mv-mouse.swift 2>>"$LOG" \
-   && swiftc -O -o "$MV_SCROLL" /tmp/mv-scroll.swift 2>>"$LOG"; then
+   && swiftc -O -o "$MV_MOUSE" /tmp/mv-mouse.swift 2>>"$LOG"; then
   OCR_STACK="yes"
-  probe "visual stack compiled on the runner: mv-ocr (Vision OCR) + mv-mouse (native CGEvent left/right clicks) + mv-scroll (native scroll events) — product code untouched"
+  probe "core visual stack compiled: mv-ocr (Vision OCR) + mv-mouse (native CGEvent left/right clicks) — product code untouched"
+  if swiftc -O -o "$MV_SCROLL" /tmp/mv-scroll.swift 2>>"$LOG"; then
+    SCROLL_OK="yes"
+    probe "mv-scroll (native scroll events) compiled as well"
+  else
+    probe "mv-scroll compile FAILED (kept) — scrolling falls back to keyboard Page Down (System Events)"
+  fi
 else
-  probe "visual stack compile FAILED (swiftc) — visual interaction unavailable this run (recorded honestly)"
+  probe "CORE visual stack compile FAILED (swiftc) — visual interaction unavailable this run (recorded honestly)"
   classify C "swiftc unavailable/failed on the runner — the OCR/CGEvent visual stack could not be built"
 fi
+
+mv_scroll_pane() { # <x> <y> <ticks> — native scroll if available, keyboard Page Down otherwise
+  if [ "$SCROLL_OK" = "yes" ]; then
+    "$MV_SCROLL" "$1" "$2" "$3" down 2>>"$LOG" || true
+  else
+    osa 'tell application "System Events" to key code 121' 8 || true
+  fi
+}
 
 # guarded_open — `open` can BLOCK (run 3a: Chrome hung 72 min at open). Every
 # browser launch goes through this watchdog.
@@ -1068,7 +1103,7 @@ settings_goto_privacy_security() { # open System Settings + navigate to the REAL
     if printf '%s\n' "$OCR_TEXT" | grep -qi "Privacy & Security"; then
       break
     fi
-    "$MV_SCROLL" 115 400 3 down 2>>"$LOG" || true
+    mv_scroll_pane 115 400 3
     sleep 1
   done
   if ! printf '%s\n' "$OCR_TEXT" | grep -qi "Privacy & Security"; then
@@ -1107,7 +1142,7 @@ visual_find_open_anyway() { # scroll the Privacy & Security main pane searching 
     fi
     "$MV_MOUSE" "$pane_x" "$pane_y" 2>>"$LOG" || true
     sleep 1
-    "$MV_SCROLL" "$pane_x" "$pane_y" 4 down 2>>"$LOG" || true
+    mv_scroll_pane "$pane_x" "$pane_y" 4
     sleep 1
     ocr_capture || return 1
   done
@@ -1251,6 +1286,23 @@ attempt_browser_download() { # <app-name> <slug> <is-safari yes/no>
   # navigation (run 3a: visible by ~15s) — answer it BEFORE typing anything
   if [ "$is_safari" = "yes" ]; then
     visual_consent_click || true
+  fi
+  # first-run browsers raise macOS's real "downloaded from the Internet"
+  # confirmation dialog (run 3f: it is what BLOCKED Chrome's launch — the
+  # dialog is CoreServicesUIAgent-hosted and AX-readable). Clear it through
+  # its own Open button BEFORE navigating.
+  if [ "$is_safari" != "yes" ]; then
+    if ui_dialog_texts "CoreServicesUIAgent"; then
+      if printf '%s' "$OSA_OUT" | grep -qi "downloaded from the Internet\|$app"; then
+        note "first-run confirmation dialog detected for $app — clicking its real 'Open' button through System Events (legitimate interaction)"
+        if ui_click_button_in_windows "CoreServicesUIAgent" "Open" 15; then
+          probe "first-run dialog: $OSA_OUT"
+        else
+          probe "first-run dialog Open click FAILED (kept): $OSA_ERR"
+        fi
+        sleep 4
+      fi
+    fi
   fi
   if osa "tell application \"$app\" to activate" 10; then
     sleep 1
