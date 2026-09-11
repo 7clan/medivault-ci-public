@@ -704,13 +704,34 @@ CAP_INSTALL="GREEN (hdiutil mount → cp to /Applications; non-quarantined by co
 hdiutil attach "$DMG_PATH" -mountpoint "$VOLUME" -nobrowse -readonly >/dev/null 2>>"$LOG" || die "hdiutil attach failed"
 [ -x "$VOLUME/MediVault.app/Contents/MacOS/MediVault" ] || die "mounted DMG has no MediVault.app"
 rm -rf "$APP_PATH"
-cp -R "$VOLUME/MediVault.app" "$APP_PATH" || die "cp of the app bundle failed"
+
+# Placement: FINDER duplicate first (the iteration-3-proven method — Finder
+# performs the copy AND registers the app with LaunchServices, which a bash
+# cp cannot do; run 6 proved `open` cannot launch a bash-cp'd app on this
+# macOS 26 image). Honest fallback: bash cp (labeled).
+PLACEMENT_HOW="none"
+if osa "tell application \"Finder\" to duplicate (POSIX file \"$VOLUME/MediVault.app\") to (POSIX file \"/Applications\") with replacing" 60; then
+  for i in $(seq 1 60); do [ -d "$APP_PATH" ] && PLACEMENT_HOW="finder-applescript" && break; sleep 1; done
+fi
+if [ "$PLACEMENT_HOW" = "none" ]; then
+  probe "Finder duplicate did not produce $APP_PATH (${OSA_ERR:-no error}) — bash cp fallback (labeled: NOT a Finder placement)"
+  cp -R "$VOLUME/MediVault.app" "$APP_PATH" || die "cp of the app bundle failed"
+  PLACEMENT_HOW="bash-cp (NOT a Finder placement)"
+fi
+CAP_INSTALL="GREEN ($PLACEMENT_HOW; non-quarantined by construction — never browser-downloaded)"
+cap INSTALL "$CAP_INSTALL"
+
 hdiutil detach "$VOLUME" -force >/dev/null 2>&1 || true
 # Honest labeling: this copy was NEVER browser-downloaded, so it carries no
 # quarantine — exactly the agreed PRODUCT_FUNCTIONAL_TEST_INSTALL path.
 XATTR_OUT="$(xattr "$APP_PATH" 2>/dev/null | tr '\n' ' ')"
 probe "installed app xattrs: '${XATTR_OUT:-none}'"
-[ -x "$APP_PATH/Contents/MacOS/$HELPER_NAME" ] || die "SMAppService helper missing in the installed app"
+probe "--- Contents/MacOS inventory (the helper must be here as a REAL FILE):"
+ls -la "$APP_PATH/Contents/MacOS/" 2>&1 | tee -a "$LOG"
+probe "helper file type: $(file "$APP_PATH/Contents/MacOS/$HELPER_NAME" 2>&1 | head -1)"
+probe "helper stat: $(stat -f 'mode=%Sp size=%z type=%HT' "$APP_PATH/Contents/MacOS/$HELPER_NAME" 2>&1)"
+probe "helper (bash) status: $("$APP_PATH/Contents/MacOS/$HELPER_NAME" status 2>&1 | head -2 | tr '\n' ' ' || true)"
+[ -f "$APP_PATH/Contents/MacOS/$HELPER_NAME" ] || die "SMAppService helper missing or not a regular file in the installed app"
 snap "03-installed-app" || true
 
 # =============================================================================
@@ -825,6 +846,20 @@ if ! wait_for_ocr "Local services" 90 "first-run-screen"; then
   product_red FIRST_RUN_SETUP_CONTROL "the first-run onboarding screen (the 'Local services' card) never became visible"
 fi
 snap "04-first-run-screen" || true
+
+# Error-state detection: the onboarding must show the SETUP CONTROL, not an
+# error card. If an error text is visible, capture the decisive process/
+# filesystem diagnostics before stopping (first-red discipline).
+if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*\(helper missing\|error occurred\|failed\|incomplete\)"; then
+  note "--- onboarding ERROR state detected — decisive diagnostics ---"
+  probe "running MediVault processes (ACTUAL binary paths):"
+  ps auxww | grep -i "[M]ediVault" | awk '{printf "  pid=%s %s\n", $2, substr($0, index($0,$11))}' | head -8 | tee -a "$LOG"
+  probe "--- Contents/MacOS NOW (after the app checked it):"
+  ls -la "$APP_PATH/Contents/MacOS/" 2>&1 | tee -a "$LOG"
+  probe "helper (bash) status NOW: $("$APP_PATH/Contents/MacOS/$HELPER_NAME" status 2>&1 | head -2 | tr '\n' ' ' || true)"
+  snap "04b-onboarding-error-state" || true
+  product_red FIRST_RUN_SETUP_CONTROL "the onboarding shows an ERROR instead of the setup control — the visible error text is on 04-first-run-screen.png (see the OCR inventory + diagnostics above)"
+fi
 
 FIRST_RUN_CONTROL="RED"
 for needle in "Set up MediVault" "Local services" "Not registered"; do
