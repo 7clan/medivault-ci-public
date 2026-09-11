@@ -347,9 +347,29 @@ jobs:
           set -euo pipefail
           . /tmp/pft-app-root.env
           APP="$APP_ROOT"
-          find "$APP/Contents/Resources/api/node_modules/.prisma" -name 'schema.prisma' -exec sed -i '' 's|'"$PWD"'/packages/db/prisma|/dev/null/in-bundle|g' {} + 2>/dev/null || true
-          PRISMA_ENGINES_DIR="$(dirname "$(find "$APP/Contents/Resources/api/node_modules/.prisma" -name 'libquery_engine*' | head -1)")"
-          ls "$PRISMA_ENGINES_DIR" 2>/dev/null || true
+          REPAIRED=0
+          while IFS= read -r -d '' f; do
+            ID_LINE="$(otool -l "$f" 2>/dev/null | awk '/LC_ID_DYLIB/{id=1} id && $1=="name"{print $2; id=0}' | head -1)"
+            if [ -n "$ID_LINE" ] && [[ "$ID_LINE" == /* ]]; then
+              base="$(basename "$f")"
+              echo "  repair: $(basename "$f") id '$ID_LINE' -> @loader_path/$base"
+              install_name_tool -id "@loader_path/$base" "$f"
+              codesign --force --sign - "$f" >/dev/null
+              REPAIRED=$((REPAIRED + 1))
+            fi
+          done < <(find "$APP/Contents/Resources/api/node_modules/.prisma" \
+                        "$APP/Contents/Resources/prisma-cli/node_modules/@prisma/engines" \
+                        -type f -name '*.dylib.node' -print0 2>/dev/null)
+          echo "prisma install-IDs repaired: $REPAIRED"
+          LEFT=$(find "$APP" -type f -print0 | xargs -0 file 2>/dev/null | grep 'Mach-O' | cut -d: -f1 | while read -r m; do
+            otool -L "$m" 2>/dev/null | tail -n +2 | sed 's/(.*//' | grep -E '^/' | grep -vE '^/usr/lib/|^/System/' || true
+          done | sort -u)
+          if [ -n "$LEFT" ]; then
+            echo "::error::absolute (non-system) Mach-O references remain:"
+            echo "$LEFT"
+            exit 1
+          fi
+          echo "PRISMA-INSTALL-ID-HYGIENE-GREEN (zero non-system absolute references)"
 
       - name: Mach-O gates on the merged bundle (all binaries incl. the helper)
         shell: bash
