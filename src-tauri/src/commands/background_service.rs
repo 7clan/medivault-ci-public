@@ -96,13 +96,39 @@ fn helper_path() -> Result<PathBuf, String> {
             },
             exe.display()
         )),
-        Err(e) => Err(format!(
-            "SMAppService helper missing from the app bundle: {} (installation incomplete? stat error: {} [os error {}]) — current_exe: {}",
-            helper.display(),
-            e,
-            e.raw_os_error().unwrap_or(-1),
-            exe.display()
-        )),
+        Err(e) => {
+            // First-red investigation (run 34650350460): the app stat()s
+            // ENOENT for a file bash provably sees. Capture THE APP'S OWN
+            // view of the directory (ls -la + readdir) inside the error so
+            // the UI message alone identifies the divergence.
+            let listing = std::fs::read_dir(dir)
+                .map(|entries| {
+                    entries
+                        .filter_map(|en| en.ok())
+                        .map(|en| {
+                            let name = en.file_name().to_string_lossy().into_owned();
+                            let kind = match en.file_type() {
+                                Ok(t) if t.is_dir() => "d",
+                                Ok(t) if t.is_symlink() => "l",
+                                Ok(_) => "f",
+                                Err(_) => "?",
+                            };
+                            format!("{name}[{kind}]")
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .unwrap_or_else(|e| format!("<readdir failed: {e}>"));
+            Err(format!(
+                "SMAppService helper missing from the app bundle: {} (installation incomplete? stat error: {} [os error {}]) — current_exe: {} — app-view of {}: {}",
+                helper.display(),
+                e,
+                e.raw_os_error().unwrap_or(-1),
+                exe.display(),
+                dir.display(),
+                listing
+            ))
+        }
     }
 }
 
