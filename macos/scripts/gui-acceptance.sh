@@ -613,7 +613,7 @@ open_and_detect() { # <label> [timeout]
   local timeout="${2:-120}"
   local t0
   t0="$(date +%s)"
-  open "$APP_PATH" || note "open \$APP_PATH returned non-zero (continuing — Gatekeeper may still present UI)"
+  guarded_open 90 open "$APP_PATH" || note "open \$APP_PATH returned non-zero or was watchdog-killed (continuing — Gatekeeper may still present UI)"
   wait_for_medivault "$timeout" "$label"
   if [ -n "$MV_T_PROC" ] || [ -n "$MV_T_WINDOW" ]; then
     local entry="$label: open→process=${MV_T_PROC:-n/a}s, open→window=${MV_T_WINDOW:-n/a}s (title: ${MV_TITLE:-none})"
@@ -672,7 +672,7 @@ window_count
 WC_BASE="$WINDOW_COUNT"
 
 note "PHASE A: opening Finder (LaunchServices — no TCC needed)"
-open -a Finder || note "open -a Finder returned non-zero"
+guarded_open 30 open -a Finder || note "open -a Finder returned non-zero or was watchdog-killed"
 sleep 3
 snap 01-desktop || true
 window_count
@@ -682,7 +682,7 @@ FINDER_CHANGED="no"; snap_changed 01-desktop && FINDER_CHANGED="yes"
 probe "screen changed after opening Finder (hash-diff): $FINDER_CHANGED; real windows: $WC_BASE -> $WC_FINDER"
 
 note "PHASE A: opening System Settings"
-open -a "System Settings" || note "open -a System Settings returned non-zero"
+guarded_open 30 open -a "System Settings" || note "open -a System Settings returned non-zero or was watchdog-killed"
 sleep 5
 snap 03-system-settings || true
 window_count
@@ -1264,7 +1264,7 @@ if [ "$BROWSER_OK" != "yes" ]; then
   # rest of the experiment can still gather evidence on the artifact itself.
   note "FALLBACK: harness curl acquisition (documented: NOT a browser download; no quarantine expected)"
   BROWSER_USED="curl-fallback (NOT a browser)"
-  if curl -fL --retry 3 -o "$DMG_PATH" "$RELEASE_URL"; then
+  if curl -fL --retry 3 --max-time 900 -o "$DMG_PATH" "$RELEASE_URL"; then
     probe "curl acquisition complete ($(stat -f%z "$DMG_PATH") bytes)"
     classify B "no browser could download on the runner — curl fallback used, honestly labeled"
   else
@@ -1339,7 +1339,7 @@ fi
 
 
 # Downloads folder in Finder (real window) + screenshots
-open "$DL_DIR" 2>/dev/null || true
+guarded_open 30 open "$DL_DIR" 2>/dev/null || true
 sleep 3
 snap 20-downloads-with-dmg || true
 # 21: Get Info window on the DMG (only if the automation works — else skipped)
@@ -1363,7 +1363,7 @@ fi
 # Offline verification of the EXACT frozen release candidate (no rebuild).
 note "=== PHASE C: offline verify (full verify-release) ==="
 MANIFEST_PATH="$DL_DIR/$MANIFEST_NAME"
-curl -fsSL -o "$MANIFEST_PATH" "$RELEASE_BASE/$MANIFEST_NAME" \
+curl -fsSL --max-time 300 -o "$MANIFEST_PATH" "$RELEASE_BASE/$MANIFEST_NAME" \
   || die "cannot acquire the manifest sidecar (harness acquisition, not part of the offline proof)"
 if ( cd "$DL_DIR" && EXPECTED_ARCH="$EXPECTED_ARCH" bash "$REPO_ROOT/macos/scripts/verify-release.sh" "$DMG_NAME" "$MANIFEST_NAME" ) >>"$LOG" 2>&1; then
   CAP_OFFLINE_VERIFY="GREEN"
@@ -1377,15 +1377,74 @@ else
 fi
 
 # =============================== PHASE D ======================================
-# DMG opened by Finder (real GUI mount + window).
-note "=== PHASE D: open the DMG in Finder ==="
+# DMG opened by Finder (real GUI mount + window). Run 3b taught us that a
+# plain `open` of a QUARANTINED DMG can block for 68+ minutes (a Gatekeeper
+# assessment of the DMG itself, likely with its own alert, blocks the mount).
+# The open is watchdogged; if the mount stalls, whatever the screen really
+# shows is captured, any real DMG-level Gatekeeper alert is dismissed through
+# its OWN buttons (native alert — AX-accessible, unlike Safari's dialog), and
+# the open is retried once. Nothing is bypassed.
+note "=== PHASE D: open the DMG in Finder (watchdogged — the DMG is quarantined) ==="
 hdiutil detach "$VOLUME" -quiet >/dev/null 2>&1 || true
-open "$DMG_PATH" || die "open \$DMG failed (harness D-class)"
+DMG_OPEN_RC=0
+guarded_open 90 open "$DMG_PATH" || DMG_OPEN_RC=$?
+[ "$DMG_OPEN_RC" -eq 0 ] || probe "guarded_open of the DMG returned $DMG_OPEN_RC (recorded — a Gatekeeper assessment/alert may be blocking the mount)"
 MOUNTED="no"
 for i in $(seq 1 60); do
   [ -d "$VOLUME" ] && MOUNTED="yes" && break
   sleep 1
 done
+if [ "$MOUNTED" != "yes" ]; then
+  # capture what the screen actually shows during the stalled mount
+  snap 22a-dmg-gatekeeper-alert || true
+  DMG_ALERT_TEXT=""
+  DMG_ALERT_HOST=""
+  for hostproc in CoreServicesUIAgent UserNotificationCenter; do
+    if ui_dialog_texts "$hostproc"; then
+      if [ -n "${OSA_OUT// /}" ]; then
+        DMG_ALERT_TEXT="$OSA_OUT"
+        DMG_ALERT_HOST="$hostproc"
+        break
+      fi
+    else
+      probe "DMG alert text query failed for $hostproc (kept, not discarded): $OSA_ERR"
+    fi
+  done
+  if [ -n "$DMG_ALERT_TEXT" ]; then
+    probe "DMG-level Gatekeeper alert text ($DMG_ALERT_HOST): $(printf '%s' "$DMG_ALERT_TEXT" | cut -c1-400)"
+    {
+      echo "DMG-level Gatekeeper alert (host process: $DMG_ALERT_HOST) — captured while opening the quarantined DMG"
+      echo "$DMG_ALERT_TEXT"
+    } > "$EVID_DIR/gatekeeper-dmg-alert-text.txt" 2>/dev/null || true
+    CAP_GK_WARNING="OBSERVED (DMG-level Gatekeeper alert during the mount — 22a + gatekeeper-dmg-alert-text.txt)"
+    classify E "quarantined DMG blocked at open with a Gatekeeper alert — the documented zero-cost Gatekeeper contract"
+    DMG_DISMISS="not-attempted"
+    for hostproc in CoreServicesUIAgent UserNotificationCenter; do
+      for btn in "Done" "OK" "Cancel"; do
+        if ui_click_button_in_windows "$hostproc" "$btn" 15; then
+          if [ "${OSA_OUT#clicked}" != "$OSA_OUT" ]; then
+            DMG_DISMISS="$OSA_OUT"
+            break 2
+          fi
+        fi
+      done
+    done
+    if [ "$DMG_DISMISS" != "not-attempted" ]; then
+      probe "DMG-level alert dismissed via its own button: $DMG_DISMISS"
+      sleep 3
+      note "retrying the DMG open once after the alert was dismissed through its own button"
+      guarded_open 60 open "$DMG_PATH" || probe "retry open returned non-zero or was watchdog-killed (recorded)"
+      for i in $(seq 1 60); do
+        [ -d "$VOLUME" ] && MOUNTED="yes" && break
+        sleep 1
+      done
+    else
+      probe "DMG-level alert could not be dismissed via its own buttons (recorded honestly — the mount cannot proceed past a standing alert)"
+    fi
+  else
+    probe "no DMG alert text was reachable via System Events during the stall (22a screenshot shows the real screen)"
+  fi
+fi
 if [ "$MOUNTED" = "yes" ]; then
   sleep 3
   snap 22-dmg-finder || true
@@ -1394,8 +1453,8 @@ if [ "$MOUNTED" = "yes" ]; then
   probe "drag layout present: $([ -d "$VOLUME/MediVault.app" ] && echo app && [ -L "$VOLUME/Applications" ] && echo +Applications-symlink)"
 else
   CAP_DMG_FINDER="NOT PROVEN"
-  probe "volume did not appear at $VOLUME after open"
-  classify B "Finder DMG mount did not surface on the runner"
+  probe "volume did not appear at $VOLUME after the watchdogged open + alert handling"
+  classify B "Finder DMG mount did not surface on the runner (see 22a-dmg-gatekeeper-alert.png for the real screen state)"
 fi
 
 # =============================== PHASE E ======================================
@@ -1413,7 +1472,7 @@ PLACEMENT="none"
 USER_APP_PATH="$HOME/Applications/MediVault.app"
 if [ "$UI_AUTOMATION" = "available" ] && [ "$MOUNTED" = "yes" ]; then
   note "attempting genuine GUI automation: Finder window copy (select + cmd+C/V) — a DRAG is not directly scriptable via System Events"
-  open "$VOLUME" 2>/dev/null || true
+  guarded_open 30 open "$VOLUME" 2>/dev/null || true
   sleep 2
   if osa '
     tell application "System Events"
@@ -1433,7 +1492,7 @@ if [ "$UI_AUTOMATION" = "available" ] && [ "$MOUNTED" = "yes" ]; then
       sleep 1
       if osa 'tell application "System Events" to key code 8 using {command down}' 15; then
         sleep 1
-        open "/Applications" 2>/dev/null || true; sleep 2
+        guarded_open 30 open "/Applications" 2>/dev/null || true; sleep 2
         if osa 'tell application "System Events" to key code 9 using {command down}' 20; then
           sleep 8
           [ -d "$APP_PATH" ] && PLACEMENT="gui-keyboard-copy"
@@ -1485,7 +1544,7 @@ if [ "$PLACEMENT" = "none" ] && [ "$MOUNTED" = "yes" ]; then
 fi
 
 if [ -d "$APP_PATH" ]; then
-  open "$(dirname "$APP_PATH")" 2>/dev/null || true
+  guarded_open 30 open "$(dirname "$APP_PATH")" 2>/dev/null || true
   sleep 2
   snap 23-applications || true
   CAP_PLACEMENT_HOW="$PLACEMENT"
@@ -1599,7 +1658,7 @@ OA_FLOW="no"
 if [ "$MV_BLOCK" = "yes" ] && [ "$UI_AUTOMATION" = "available" ]; then
   OA_FLOW="yes"
   note "=== PHASE F2: System Settings -> Privacy & Security -> Open Anyway (legitimate automation) ==="
-  open "x-apple.systempreferences:com.apple.settings.privacy.security" 2>/dev/null || true
+  guarded_open 45 open "x-apple.systempreferences:com.apple.settings.privacy.security" 2>/dev/null || true
   sleep 10
   snap 26-privacy-security-before || true
   note "searching the real Privacy & Security UI for the Open Anyway button (System Settings may take time to populate)"
@@ -1910,7 +1969,7 @@ if printf '%s' "$CAP_SMAPPSTATE_TEXT" | grep -q "requiresApproval"; then
   if v_click "Open Login Items Settings" "v13-login-items-btn" "Login Items"; then
     LI_OPENED="yes (the app's own real button — v13 before/after evidence)"
   else
-    open "x-apple.systempreferences:com.apple.LoginItems-Settings.extension" 2>/dev/null || true
+    guarded_open 45 open "x-apple.systempreferences:com.apple.LoginItems-Settings.extension" 2>/dev/null || true
     sleep 8
     LI_OPENED="yes (URL fallback after the visual click did not verify — recorded honestly)"
   fi
@@ -2001,7 +2060,7 @@ return "fields-filled"' 30; then
 elif [ "$CAP_REG_CLICKED" != "NO" ] || [ -n "$(launchctl print "gui/$(id -u)/dev.medivault.supervisor" 2>/dev/null)" ]; then
   : # registration happened without requiresApproval — no Login Items step
 else
-  open "x-apple.systempreferences:com.apple.LoginItems-Settings.extension" 2>/dev/null || true
+  guarded_open 45 open "x-apple.systempreferences:com.apple.LoginItems-Settings.extension" 2>/dev/null || true
   sleep 6
   snap 32-login-items || true
   CAP_LOGIN_ITEMS_UI="CAPTURED (screenshot 32 — the system surface; approval not applicable)"
