@@ -16,7 +16,7 @@
 //!
 //! IMPLEMENTATION
 //!   SMAppService is an Objective-C/Swift API; the Rust shell invokes the
-//!   dedicated helper binary shipped at `Contents/MacOS/medivault-launchagent`
+//!   dedicated helper binary shipped at `Contents/MacOS/mediavault-launchagent`
 //!   (macos/smappservice/medivault-launchagent.swift). The helper runs from
 //!   inside MediVault.app, so its `Bundle.main` is the app bundle and
 //!   `SMAppService.agent(plistName:)` resolves the shipped plist.
@@ -47,7 +47,7 @@ pub enum BackgroundServiceStatus {
     NotFound,
 }
 
-const HELPER_NAME: &str = "medivault-launchagent";
+const HELPER_NAME: &str = "mediavault-launchagent";
 
 /// Map the helper's exact status line to the IPC enum. Private string
 /// mapping is unit-tested below; anything unknown is an error.
@@ -65,7 +65,7 @@ fn map_status(raw: &str) -> Result<BackgroundServiceStatus, String> {
 }
 
 /// Resolve the helper shipped beside this executable:
-/// `<bundle>/Contents/MacOS/medivault-launchagent` (this binary is at
+/// `<bundle>/Contents/MacOS/mediavault-launchagent` (this binary is at
 /// `<bundle>/Contents/MacOS/medivault` — the Cargo package name, mirrored
 /// by CFBundleExecutable). Fail closed when missing.
 ///
@@ -186,7 +186,7 @@ fn run_helper(subcommand: &str) -> Result<String, String> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(format!(
-            "medivault-launchagent {subcommand} failed (exit {}): {stderr}",
+            "mediavault-launchagent {subcommand} failed (exit {}): {stderr}",
             output.status.code().unwrap_or(-1)
         ));
     }
