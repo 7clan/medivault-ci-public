@@ -237,7 +237,10 @@ guarded_open() { # <timeout_s> <open-args...>
 }
 
 # ------------------- bounded app-launch detector (proven, v2+) ----------------
-wait_for_medivault() { # <timeout_s> <label>
+wait_for_medivault() { # <timeout_s> <label> — CASE-INSENSITIVE process detection
+  # Run 7's decisive lesson: the Tauri binary is `medivault` (lowercase, from
+  # the Cargo package name — CFBundleExecutable), while the bundle/LS name is
+  # "MediVault". Case-sensitive pgrep missed a HEALTHY `open`-launched app.
   local timeout="$1"
   local label="$2"
   local t0
@@ -245,16 +248,23 @@ wait_for_medivault() { # <timeout_s> <label>
   MV_PROC="no"; MV_WINDOW="no"; MV_TITLE=""; MV_T_PROC=""; MV_T_WINDOW=""
   while [ $(( $(date +%s) - t0 )) -le "$timeout" ]; do
     if [ "$MV_PROC" = "no" ]; then
-      if pgrep -x MediVault >/dev/null 2>&1 || pgrep -f "MediVault.app/Contents/MacOS/MediVault" >/dev/null 2>&1; then
+      # "ediVault.app/Contents/MacOS/" matches BOTH spellings of the binary.
+      if pgrep -f "ediVault.app/Contents/MacOS/" >/dev/null 2>&1; then
         MV_PROC="yes"; MV_T_PROC=$(( $(date +%s) - t0 ))
-        probe "detector[$label]: process after ${MV_T_PROC}s"
+        probe "detector[$label]: process after ${MV_T_PROC}s ($(pgrep -f 'ediVault.app/Contents/MacOS/' | tr '\n' ' '))"
       fi
     fi
-    if [ "$MV_PROC" = "yes" ] && [ "$MV_WINDOW" = "no" ]; then
-      if osa 'tell application "System Events" to tell process "MediVault" to get value of attribute "AXTitle" of window 1' 8; then
-        MV_TITLE="$OSA_OUT"
-        MV_WINDOW="yes"; MV_T_WINDOW=$(( $(date +%s) - t0 ))
-        probe "detector[$label]: window after ${MV_T_WINDOW}s — title: '$MV_TITLE'"
+    if [ "$MV_WINDOW" = "no" ]; then
+      # Window probe runs INDEPENDENT of the process probe (never gated).
+      if osa 'tell application "System Events" to get name of every process whose name contains "edivault"' 8; then
+        if [ -n "$(printf '%s' "$OSA_OUT" | tr -d ' ,')" ]; then
+          if osa 'tell application "System Events" to tell (first process whose name contains "edivault") to get value of attribute "AXTitle" of window 1' 8; then
+            MV_TITLE="$OSA_OUT"
+            MV_WINDOW="yes"
+            [ -n "$MV_T_WINDOW" ] || MV_T_WINDOW=$(( $(date +%s) - t0 ))
+            probe "detector[$label]: window after ${MV_T_WINDOW}s — title: '$MV_TITLE'"
+          fi
+        fi
       fi
     fi
     if [ "$MV_PROC" = "yes" ] && [ "$MV_WINDOW" = "yes" ]; then
@@ -282,11 +292,11 @@ quit_medivault() {
     probe "quit via AppleScript: issued"
   else
     probe "quit via AppleScript blocked ($OSA_ERR) — SIGTERM fallback"
-    pkill -TERM -f "MediVault.app/Contents/MacOS/MediVault" 2>/dev/null || true
+    pkill -TERM -f "ediVault.app/Contents/MacOS/" 2>/dev/null || true
   fi
   local i
   for i in $(seq 1 30); do
-    pgrep -f "MediVault.app/Contents/MacOS/MediVault" >/dev/null 2>&1 || break
+    pgrep -f "ediVault.app/Contents/MacOS/" >/dev/null 2>&1 || break
     sleep 1
   done
 }
@@ -597,7 +607,7 @@ v_type_into() { # <label-needle> <text> <stem> [secret yes|no] [arabic yes|no]
     return 1
   fi
   sleep 1
-  if osa "tell application \"System Events\" to tell process \"MediVault\" to keystroke \"$text\"" 15; then
+  if osa "tell application \"System Events\" to tell (first process whose name contains \"edivault\") to keystroke \"$text\"" 15; then
     sleep 1
     ocr_capture || return 1
     snap_file "$MV_SHOT" "${stem}-after" || true
@@ -624,7 +634,7 @@ v_type_into() { # <label-needle> <text> <stem> [secret yes|no] [arabic yes|no]
       sleep 1
       osa 'tell application "System Events" to tell process "MediVault" to keystroke "a" using command down' 10 || true
       sleep 1
-      if osa "tell application \"System Events\" to tell process \"MediVault\" to keystroke \"$text\"" 15; then
+      if osa "tell application \"System Events\" to tell (first process whose name contains \"edivault\") to keystroke \"$text\"" 15; then
         sleep 1
         ocr_capture || return 1
         snap_file "$MV_SHOT" "${stem}-after" || true
@@ -739,17 +749,26 @@ snap "03-installed-app" || true
 # =============================================================================
 note "=== PHASE 3: first launch → first-run onboarding screen ==="
 
+app_running() { # case-safe liveness probe (the binary is `medivault`, the LS name is `MediVault`)
+  pgrep -f "ediVault.app/Contents/MacOS/" >/dev/null 2>&1
+}
+
 launch_medivault() { # robust, honest launch: LS open → register → Finder → direct
+  # The bundle's REAL executable name (CFBundleExecutable — `medivault` in
+  # this build; read from Info.plist, never assumed).
   local rc
+  MV_BIN_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Contents/Info.plist" 2>/dev/null || echo medivault)"
+  MV_BIN="$APP_PATH/Contents/MacOS/$MV_BIN_NAME"
+  probe "bundle executable: $MV_BIN_NAME (from CFBundleExecutable)"
   OPEN_STDERR="/tmp/mv-open.err"
   set +e
   open "$APP_PATH" 2>"$OPEN_STDERR"
   rc=$?
   set -e
   probe "open exit=$rc; stderr: $(head -c 300 "$OPEN_STDERR" 2>/dev/null | tr '\n' ' ')"
-  sleep 10
-  if pgrep -x MediVault >/dev/null 2>&1 || pgrep -f "MediVault.app/Contents/MacOS/MediVault" >/dev/null 2>&1; then
-    probe "launch method: open (LaunchServices) — process is up"
+  sleep 12
+  if app_running; then
+    probe "launch method: open (LaunchServices) — process is up: $(pgrep -f 'ediVault.app/Contents/MacOS/' | tr '\n' ' ')"
     return 0
   fi
   probe "open produced no process — registering the app with LaunchServices (lsregister) and retrying"
@@ -763,15 +782,15 @@ launch_medivault() { # robust, honest launch: LS open → register → Finder �
   rc=$?
   set -e
   probe "open retry exit=$rc; stderr: $(head -c 300 "$OPEN_STDERR" 2>/dev/null | tr '\n' ' ')"
-  sleep 10
-  if pgrep -x MediVault >/dev/null 2>&1 || pgrep -f "MediVault.app/Contents/MacOS/MediVault" >/dev/null 2>&1; then
+  sleep 12
+  if app_running; then
     probe "launch method: open after lsregister — process is up"
     return 0
   fi
   # Finder open (the doctor-facing double-click equivalent)
   if osa "tell application \"Finder\" to open application file (POSIX file \"$APP_PATH\" as alias)" 30; then
-    sleep 10
-    if pgrep -x MediVault >/dev/null 2>&1 || pgrep -f "MediVault.app/Contents/MacOS/MediVault" >/dev/null 2>&1; then
+    sleep 12
+    if app_running; then
       probe "launch method: Finder open — process is up"
       return 0
     fi
@@ -781,9 +800,11 @@ launch_medivault() { # robust, honest launch: LS open → register → Finder �
   # Final fallback: direct binary execution in the SAME GUI login session
   # (the app, window, and all GUI interactions are real — recorded honestly
   # as a direct-binary launch because every LaunchServices path failed).
+  # Uses the REAL CFBundleExecutable name; RUST_LOG=debug surfaces the app's
+  # own diagnostics (incl. webview console forwarding) in the captured log.
   probe "launch method: DIRECT BINARY EXECUTION (all LaunchServices paths failed — recorded honestly)"
   rm -f /tmp/mv-direct-launch.exit
-  ( "$APP_PATH/Contents/MacOS/MediVault" > /tmp/mv-direct-launch.log 2>&1; echo $? > /tmp/mv-direct-launch.exit ) &
+  ( RUST_LOG=debug "$MV_BIN" > /tmp/mv-direct-launch.log 2>&1; echo $? > /tmp/mv-direct-launch.exit ) &
   LAUNCH_PID=$!
   sleep 8
   kill -0 "$LAUNCH_PID" 2>/dev/null || { probe "direct launch also failed"; return 1; }
@@ -857,6 +878,10 @@ if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*\(helper missing\|error occurred
   probe "--- Contents/MacOS NOW (after the app checked it):"
   ls -la "$APP_PATH/Contents/MacOS/" 2>&1 | tee -a "$LOG"
   probe "helper (bash) status NOW: $("$APP_PATH/Contents/MacOS/$HELPER_NAME" status 2>&1 | head -2 | tr '\n' ' ' || true)"
+  if [ -s /tmp/mv-direct-launch.log ]; then
+    probe "--- the app's OWN stderr (RUST_LOG=debug, first 80 lines) ---"
+    sed -n '1,80p' /tmp/mv-direct-launch.log 2>/dev/null | tee -a "$LOG" || true
+  fi
   snap "04b-onboarding-error-state" || true
   product_red FIRST_RUN_SETUP_CONTROL "the onboarding shows an ERROR instead of the setup control — the visible error text is on 04-first-run-screen.png (see the OCR inventory + diagnostics above)"
 fi
@@ -1288,7 +1313,7 @@ cap PATIENT_DATA_ISOLATION "$CAP_ISOLATION"
 note "=== PHASE 9: quit → reopen → persistence ==="
 v_click "Dashboard" "28-pre-quit" "Add Patient" || true
 quit_medivault
-pgrep -f "MediVault.app/Contents/MacOS/MediVault" >/dev/null 2>&1 && probe "WARN: desktop process still alive after quit"
+pgrep -f "ediVault.app/Contents/MacOS/" >/dev/null 2>&1 && probe "WARN: desktop process still alive after quit"
 snap "29-quit-confirmed" || true
 
 # The supervisor (launchd) must STILL be running after the desktop app quit.

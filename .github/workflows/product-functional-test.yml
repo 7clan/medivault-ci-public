@@ -470,6 +470,11 @@ jobs:
           ps -p "$DESKTOP_PID" -o pid,etime,comm
           echo "--- desktop.log (first 20 lines):"
           sed -n '1,20p' /tmp/pft-desktop.log 2>/dev/null || true
+          # Capture what the app's window actually shows on THIS runner (the
+          # first-run onboarding state must be the SETUP CONTROL, not an error
+          # card) — the screenshot ships with the DMG artifact for inspection.
+          screencapture -x /tmp/pft-smoke-screen.png 2>/dev/null || true
+          [ -s /tmp/pft-smoke-screen.png ] && cp /tmp/pft-smoke-screen.png "$DMG_OUT.smoke-screen.png" || true
           kill -TERM "$DESKTOP_PID"
           EXITED=0
           for i in $(seq 1 30); do
