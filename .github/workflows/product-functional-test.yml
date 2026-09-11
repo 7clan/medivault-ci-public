@@ -108,7 +108,10 @@ jobs:
         run: |
           set -euo pipefail
           ./node_modules/.bin/vitest run tests/first-run-frontend.test.ts tests/first-run-api.test.ts tests/m4-https-enforcement.test.ts tests/model-a-localhost-production.test.ts 2>&1 | tee /tmp/firstrun-tests.log
-          grep -Eq 'Test Files[ ]+[0-9]+ passed' /tmp/firstrun-tests.log || { echo "::error::first-run targeted test failure"; exit 1; }
+          # Strip ANSI color codes before asserting (vitest colorizes the summary line).
+          sed 's/\x1b\[[0-9;]*m//g' /tmp/firstrun-tests.log > /tmp/firstrun-tests-plain.log
+          grep -Eq 'Test Files[ ]+[0-9]+ passed' /tmp/firstrun-tests-plain.log || { echo "::error::first-run targeted test failure"; exit 1; }
+          grep -Eq 'Tests[ ]+[0-9]+ passed' /tmp/firstrun-tests-plain.log
           echo "first-run targeted tests: GREEN"
 
       - name: Frontend typecheck (tsc --noEmit)
