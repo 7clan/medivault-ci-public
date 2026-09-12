@@ -1048,7 +1048,18 @@ cap API "$CAP_API"
 # the supervisor's SELF-REPORTED state + the LISTEN socket + the API's
 # /ready (which performs SELECT 1 through the real DB connection):
 probe "supervisor status: $(cat "$SUP_STATUS" 2>/dev/null | head -c 400)"
+# The supervisor's self-reported state lags the API's /health by a few
+# seconds (its health-marking cycle runs on an interval): the API answers
+# first, THEN the supervisor flips to healthy. Bounded wait for the state
+# to settle (run 34706676279 first-red: read 'starting' while /ready=200
+# and PG already LISTENed — a pure read race, not a product defect).
 SSTATE2="$(python3 -c "import json;print(json.load(open('$SUP_STATUS')).get('state','none'))" 2>/dev/null || echo none)"
+t0s="$(date +%s)"
+while [ "$SSTATE2" != "healthy" ] && [ $(( $(date +%s) - t0s )) -lt 45 ]; do
+  if [ "$SSTATE2" = "failed" ] || [ "$SSTATE2" = "stopped" ]; then break; fi
+  sleep 2
+  SSTATE2="$(python3 -c "import json;print(json.load(open('$SUP_STATUS')).get('state','none'))" 2>/dev/null || echo none)"
+done
 PG_PID="$(python3 -c "import json;print(json.load(open('$SUP_STATUS')).get('pg_pid',0))" 2>/dev/null || echo 0)"
 PG_LISTEN="$(lsof -nP -iTCP:$PGPORT 2>/dev/null | grep LISTEN | head -1)"
 READY_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$API/ready" || echo 000)"
