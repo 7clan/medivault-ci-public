@@ -1342,25 +1342,25 @@ create_patient() { # <first> <last> <note> <stem> <arabic yes|no>
     fi
   fi
   snap "${stem}-form-filled" || true
-  # Below-the-fold mitigation (same class-D as run 34697721680): the dialog
-  # scrolls internally (max-h-90vh overflow-y-auto) and the footer submit
-  # can sit below the fold. Return in the FOCUSED last field submits the
-  # dialog's <form onSubmit> natively; the real button click remains the
-  # fallback. Submitted = the dialog CLOSED (works for the Arabic patient
-  # too, whose name the OCR cannot read) or the patient's first name is
-  # already visible in the dashboard list.
+  # Below-the-fold + textarea-safe submit (runs 34697721680 + 34707729968):
+  # the footer button can sit below the fold, AND the last typed field
+  # (Notes) is a TEXTAREA — Return there inserts a NEWLINE, it does not
+  # submit the form. Click the FIRST NAME field (a real <input>), press
+  # Return THERE, and treat the dialog TITLE disappearing as submitted
+  # (unambiguous; works for the Arabic patient too). The real button
+  # click remains the fallback.
   PATIENT_SUBMITTED=0
-  if osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10; then
-    sleep 3
-    ocr_capture || true
-    if [ -n "$OCR_TEXT" ] && ! printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*First Name"; then
-      PATIENT_SUBMITTED=1
-    elif printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*${first}"; then
-      PATIENT_SUBMITTED=1
-    fi
-    if [ "$PATIENT_SUBMITTED" = "1" ]; then
-      snap "${stem}-submit-enter" || true
-      probe "the focused-field Return submitted the ${stem} patient form (below-the-fold footer — a real user's flow)"
+  if ocr_lookup "First Name" "first" "label"; then
+    "$MV_MOUSE" "$OCR_HIT_X" "$(( OCR_HIT_Y + 6 ))" 2>>"$LOG" || true
+    sleep 1
+    if osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10; then
+      sleep 3
+      ocr_capture || true
+      if [ -n "$OCR_TEXT" ] && ! printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*Add New Patient"; then
+        PATIENT_SUBMITTED=1
+        snap "${stem}-submit-enter" || true
+        probe "the First-Name-field Return submitted the ${stem} patient form (below-the-fold footer + the Notes textarea trap — a real user's flow)"
+      fi
     fi
   fi
   if [ "$PATIENT_SUBMITTED" = "0" ]; then
@@ -1474,11 +1474,13 @@ if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*First Name"; then
   # Below-the-fold mitigation: Return in the FOCUSED phone field submits the
   # edit dialog's <form onSubmit> natively; the Save Changes click remains
   # the fallback (with a Page Down to reveal it first if needed).
+  # Return from the PHONE input (a real <input> — NOT the Notes textarea
+  # trap); submitted = the dialog title gone (unambiguous).
   EDIT_SAVED=0
   if osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10; then
     sleep 3
     ocr_capture || true
-    if [ -n "$OCR_TEXT" ] && ! printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*First Name"; then
+    if [ -n "$OCR_TEXT" ] && ! printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*Edit Patient"; then
       EDIT_SAVED=1
       snap "24-edit-save-enter" || true
       probe "the focused-field Return saved the edit dialog (below-the-fold footer — a real user's flow)"
