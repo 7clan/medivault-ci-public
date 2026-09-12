@@ -54,6 +54,7 @@ import {
   getBackgroundServiceStatus,
   registerBackgroundService,
   openLoginItemsSettings,
+  navigateToLocalBackend,
   friendlyMessage,
 } from '@/lib/desktop/api'
 import { DESKTOP_API_BASE, backendHealthProbe } from '@/lib/local-backend'
@@ -130,9 +131,22 @@ export function FirstRunOnboarding() {
 
   // Hand off: the API now serves the SAME frontend at its own origin —
   // every existing relative /api call becomes same-origin from here on.
+  //
+  // PFT run 34693988598: the JS-initiated window.location.replace()
+  // cross-scheme navigation left the WKWebView BLANK (the webview's own
+  // fetch to the same origin worked — that is how this phase was reached
+  // — and the page renders correctly in a real browser). The hand-off now
+  // navigates from the RUST side (WebviewWindow::navigate → wry
+  // load_url): the invoke never resolves on success (the navigation
+  // destroys this JS context), so it is fire-and-forget; the location
+  // replace is the fallback when the invoke rejects (non-desktop
+  // contexts, command errors).
   useEffect(() => {
     if (phase.kind !== 'ready') return
-    window.location.replace(`${DESKTOP_API_BASE}/`)
+    const target = `${DESKTOP_API_BASE}/`
+    void navigateToLocalBackend(target).catch(() => {
+      window.location.replace(target)
+    })
   }, [phase])
 
   const runRegister = useCallback(async () => {

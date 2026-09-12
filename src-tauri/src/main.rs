@@ -74,6 +74,8 @@ fn main() {
             commands::backup::get_restore_preview,
             commands::backup::execute_restore,
             commands::backup::get_backup_history,
+            // First-run hand-off (the webview navigates to the API origin)
+            commands::webview::navigate_to_local_backend,
             // Settings
             commands::settings::get_settings,
             commands::settings::update_settings,

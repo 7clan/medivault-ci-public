@@ -10,3 +10,4 @@ pub mod device;
 pub mod documents;
 pub mod patients;
 pub mod settings;
+pub mod webview;

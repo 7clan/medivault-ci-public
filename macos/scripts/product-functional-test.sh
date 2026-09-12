@@ -1060,7 +1060,23 @@ if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*Create Your Account"; then
   CAP_HANDOFF="GREEN (the webview reached the API-served frontend: 'Create Your Account' visible)"
 else
   snap "08-handoff-failed" || true
-  product_red HANDOFF "the app did not hand off to the API-served setup screen within 120s of backend health"
+  # Decisive webview diagnostics: what did the WKWebView actually do with
+  # the hand-off navigation? (1) Can the machine deliver the exact URLs
+  # (server-side proof)? (2) Is the WebContent process alive (a crash =
+  # blank webview)? (3) What does the system log say about WebKit /
+  # navigation errors in the window? (4) The app's own stderr (the Rust
+  # navigation command logs entry + target).
+  note "--- hand-off diagnostics ---"
+  probe "server-side: GET /            -> $(curl -s -o /dev/null -w '%{http_code} %{size_download}B' --max-time 4 "$API/" 2>/dev/null || echo 'REFUSED')"
+  probe "server-side: GET /api/auth/setup -> $(curl -s -o /dev/null -w '%{http_code}' --max-time 4 "$API/api/auth/setup" 2>/dev/null || echo 'REFUSED')"
+  probe "WebContent processes: $(pgrep -fl 'com.apple.WebKit.WebContent' 2>/dev/null | head -3 | tr '\n' ' ' || echo none)"
+  probe "--- WebKit / navigation system log (last 3 minutes, selected):"
+  log show --last 3m --predicate 'process CONTAINS[c] "WebKit" OR (process == "medivault" AND eventMessage CONTAINS[c] "navigation")' --style compact 2>/dev/null | tail -30 | tee -a "$LOG" || probe "(log show unavailable)"
+  if [ -s /tmp/mv-direct-launch.log ]; then
+    probe "--- app console at the hand-off failure (last 40 lines) ---"
+    tail -40 /tmp/mv-direct-launch.log 2>/dev/null | tee -a "$LOG" || true
+  fi
+  product_red HANDOFF "the app did not hand off to the API-served setup screen within 120s of backend health (webview + server diagnostics above)"
 fi
 cap HANDOFF "$CAP_HANDOFF"
 snap "08-account-setup-screen" || true

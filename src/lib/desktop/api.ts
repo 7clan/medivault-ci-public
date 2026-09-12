@@ -484,6 +484,26 @@ export async function openLoginItemsSettings(): Promise<void> {
 }
 
 // ====================================================================
+// First-run hand-off
+// ====================================================================
+
+/**
+ * Navigate the main webview to the LOCAL backend origin (the first-run
+ * hand-off — see src-tauri/src/commands/webview.rs). The Rust-side
+ * navigation (wry load_url) is used because the JS-initiated
+ * `window.location.replace()` cross-scheme navigation left the WKWebView
+ * blank (PFT run 34693988598) while the same URL rendered correctly in a
+ * real browser and the webview's own fetch to the same origin worked.
+ *
+ * A successful navigation destroys this page's JS context, so the
+ * returned promise never settles — callers fire-and-forget and keep a
+ * visible anchor fallback.
+ */
+export async function navigateToLocalBackend(url: string): Promise<void> {
+  await invokeFn<void>('navigate_to_local_backend', { url })
+}
+
+// ====================================================================
 // RE-EXPORT helpers for components
 // ====================================================================
 

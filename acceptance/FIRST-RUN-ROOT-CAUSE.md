@@ -289,3 +289,24 @@ rate-limit ^11.2.0, fastify ^5.11.0 (multipart and rate-limit carried
 the SAME drift class, fixed pre-emptively); (3) a dependency drift
 guard test pins every fastify-family dep in the api-service
 package.json to the root (tested) major.
+
+**F10 — the hand-off navigation left the WKWebView blank (JS-initiated
+cross-scheme navigation).** PFT run 34693988598 (after F9): the backend
+came up GREEN again (enabled → healthy in 10s), the webview's OWN
+`fetch` to `http://127.0.0.1:3001/health` worked (that is how the
+phase reached `ready`), but `window.location.replace()` to the same
+origin produced a BLANK document (VLM: uniform off-white, no elements;
+OCR: nothing in the content area for 120s; the same page renders
+correctly in a real browser against the same API; Safari did NOT open —
+no external escape). Fix: the hand-off now navigates from the RUST
+side — a new `navigate_to_local_backend` Tauri command
+(`WebviewWindow::navigate` → wry `load_url` → `[WKWebView
+loadRequest:]`, a different initiation path than a JS-initiated
+location change). The command is LOOPBACK-ONLY by construction (plain
+http on 127.0.0.1/localhost/::1, everything else rejected fail-closed;
+unit-tested). The frontend calls it fire-and-forget (a successful
+navigation destroys the calling JS context) with the location.replace
+fallback on invoke rejection; the visible anchor fallback remains. The
+PFT harness's HANDOFF red now captures decisive webview diagnostics:
+server-side delivery of the exact URLs, WebContent process liveness,
+the WebKit/navigation system log, and the app's own stderr.
