@@ -310,3 +310,31 @@ fallback on invoke rejection; the visible anchor fallback remains. The
 PFT harness's HANDOFF red now captures decisive webview diagnostics:
 server-side delivery of the exact URLs, WebContent process liveness,
 the WebKit/navigation system log, and the app's own stderr.
+
+**F11 — the API-served page never hydrated: the served CSP blocked the
+export's inline RSC flight scripts (the blank hand-off screen).** PFT
+runs 34693988598 + 34695855931: with F9/F10 in place the chain reached
+the very last step — the Rust-side navigation fired, the WebKit network
+log proves the page LOADED ("the page load completed", the 1.28MB main
+chunk delivered, WebContent processes alive, GET / and /api/auth/setup
+both 200) — yet the screen stayed blank (VLM + pixel analysis: the
+content area is pure white; the splash's letters are LAID OUT but not
+PAINTED). Local reproduction in a real browser against the same API:
+identical blank page, zero console messages, fonts loaded, readyState
+complete — and `self.__next_f` EMPTY: React never hydrated, so every
+framer-motion element stayed at its SSR `initial` opacity:0 — an
+INVISIBLE-BY-DESIGN splash = a blank screen. Root cause: the
+static-frontend plugin served the Tauri shell's CSP VERBATIM
+(`script-src 'self'`), but Tauri REWRITES its CSP at serve time with
+per-script hashes (its documented CSP feature) — the raw policy blocks
+the export's INLINE flight scripts (`self.__next_f.push(...)`,
+build-generated, 7 inline scripts), so the RSC payload never executed.
+Control experiment (local, real browser): old CSP → 2/2 loads with NO
+hydration (motion.p opacity 0, no forms); fixed CSP → 3/3 loads
+hydrated (splash animates, forms render). Fix: the served CSP's
+script-src adds 'unsafe-inline' for the export's own inline scripts —
+the ONE deliberate difference from the shell's policy, documented in
+the code (the same content is hash-protected on the tauri:// origin).
+Pinned by the CSP assertion in the static-serving tests + a shape
+guard (the export must still ship inline __next_f scripts, else the
+policy is re-reviewed).

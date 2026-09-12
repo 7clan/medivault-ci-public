@@ -192,6 +192,16 @@ describe('static-frontend plugin — the API serves the static export at its own
       const csp = String(res.headers['content-security-policy'])
       expect(csp).toContain("default-src 'self'")
       expect(csp).toContain('http://127.0.0.1:*')
+      // PFT runs 34693988598/34695855931 first-red (the blank hand-off
+      // screen): script-src MUST allow the static export's INLINE RSC
+      // flight scripts (self.__next_f.push(...)). The Tauri shell serves
+      // the same page hash-protected on the tauri:// origin (Tauri
+      // rewrites its CSP at serve time); this origin serves the export's
+      // own build-generated inline scripts — without 'unsafe-inline' they
+      // never execute, React never hydrates, and every framer-motion
+      // element stays at its initial opacity:0 — a BLANK page with zero
+      // console errors. Pinned here so the policy cannot silently regress.
+      expect(csp).toContain("script-src 'self' 'unsafe-inline'")
       expect(String(res.headers['cache-control'])).toContain('no-cache')
     } finally {
       await app.close()

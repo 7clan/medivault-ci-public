@@ -32,9 +32,18 @@ import fastifyStatic from '@fastify/static'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-/** Mirrors src-tauri/tauri.conf.json app.security.csp. */
+/** CSP for the API-served copy of the SAME static export the Tauri shell
+ * embeds. ONE deliberate difference from the Tauri shell's policy (which
+ * Tauri rewrites at serve time with per-script hashes): `script-src` adds
+ * 'unsafe-inline' for the export's INLINE RSC flight scripts
+ * (`self.__next_f.push(...)` — build-generated, same content the shell
+ * serves hash-protected on the tauri:// origin). Without it the flight
+ * payload never executes, React never hydrates, and every framer-motion
+ * element stays at its initial opacity:0 — a BLANK page (PFT runs
+ * 34693988598/34695855931 first-red). Pinned by the static-serving tests.
+ */
 const CSP =
-  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+  "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
   "img-src 'self' data: blob:; connect-src 'self' http://localhost:* http://127.0.0.1:* https://*; " +
   "font-src 'self' data:; object-src 'none'"
 
