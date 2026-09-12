@@ -757,13 +757,25 @@ app_running() { # case-safe liveness probe (the binary is `medivault`, the LS na
   pgrep -f "ediVault.app/Contents/MacOS/" >/dev/null 2>&1
 }
 
-launch_medivault() { # robust, honest launch: LS open → register → Finder → direct
+launch_medivault() { # honest launch: direct-exec FIRST (RUST_LOG captured) → LS open → Finder
   # The bundle's REAL executable name (CFBundleExecutable — `medivault` in
-  # this build; read from Info.plist, never assumed).
+  # this build; read from Info.plist, never assumed). Direct execution in the
+  # same GUI login session keeps the app's OWN stderr (RUST_LOG=debug,
+  # webview console forwarding) capturable — the decisive first-red tool.
+  # The LaunchServices/open path was already proven working (run 14).
   local rc
   MV_BIN_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Contents/Info.plist" 2>/dev/null || echo medivault)"
   MV_BIN="$APP_PATH/Contents/MacOS/$MV_BIN_NAME"
   probe "bundle executable: $MV_BIN_NAME (from CFBundleExecutable)"
+  rm -f /tmp/mv-direct-launch.exit
+  ( RUST_LOG=debug "$MV_BIN" > /tmp/mv-direct-launch.log 2>&1; echo $? > /tmp/mv-direct-launch.exit ) &
+  LAUNCH_PID=$!
+  sleep 8
+  if kill -0 "$LAUNCH_PID" 2>/dev/null; then
+    probe "launch method: direct binary execution with RUST_LOG=debug (stderr captured to /tmp/mv-direct-launch.log)"
+    return 0
+  fi
+  probe "direct launch failed — falling back to open (LaunchServices)"
   OPEN_STDERR="/tmp/mv-open.err"
   set +e
   open "$APP_PATH" 2>"$OPEN_STDERR"
@@ -870,7 +882,14 @@ if ! wait_for_ocr "Local services" 90 "first-run-screen"; then
   probe "OCR inventory for diagnosis: $(printf '%s' "$OCR_TEXT" | awk -F'|' '{printf "[%s] ", $2}' | cut -c1-600)"
   product_red FIRST_RUN_SETUP_CONTROL "the first-run onboarding screen (the 'Local services' card) never became visible"
 fi
+sleep 6
+ocr_capture || true
 snap "04-first-run-screen" || true
+# The app's OWN console (webview + IPC diagnostics) — captured at every key point.
+if [ -s /tmp/mv-direct-launch.log ]; then
+  probe "--- app console (first 60 lines) ---"
+  sed -n '1,60p' /tmp/mv-direct-launch.log 2>/dev/null | tee -a "$LOG" || true
+fi
 
 # Error-state detection: the onboarding must show the SETUP CONTROL, not an
 # error card. If an error text is visible, capture the decisive diagnostics,
@@ -935,6 +954,10 @@ if ! v_click "Set up MediVault" "05-setup-click" "preparing local services"; the
     :
   else
     snap "05-setup-click-failed" || true
+    if [ -s /tmp/mv-direct-launch.log ]; then
+      probe "--- app console at the click failure (last 80 lines) ---"
+      tail -80 /tmp/mv-direct-launch.log 2>/dev/null | tee -a "$LOG" || true
+    fi
     product_red REGISTRATION_CLICK "clicking the real 'Set up MediVault' control produced no visible state change"
   fi
 fi
