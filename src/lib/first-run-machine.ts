@@ -13,7 +13,13 @@
  *   status/notRegistered → the "Set up MediVault" setup control
  *   status/enabled      → registered + starting message
  *   status/requiresApproval → approval guidance + "Open Login Items" control
- *   status/notFound     → installation problem (clear failure)
+ *   status/notFound     → the documented FRESH state for a never-launched
+ *                          app (macos-zero-cost-release-contract.md: "the
+ *                          documented fresh state for a never-launched app
+ *                          is notFound"; frozen lifecycle runs 34265844092
+ *                          prove register() succeeds from it → enabled).
+ *                          The setup control is offered; a genuinely broken
+ *                          install fails at register() with the real error.
  *   busy                → action in flight (spinner + label)
  *   waiting             → bounded health wait with elapsed display
  *   ready               → "Local service ready" → hand off to the
@@ -85,9 +91,23 @@ export function firstRunReducer(
   }
 }
 
-/** Does the phase expose the pre-auth setup (register) control? */
+/** Does the phase expose the pre-auth setup (register) control?
+ *
+ * `notFound` is included deliberately: the frozen smappservice-lifecycle
+ * evidence (macos-zero-cost-release-contract.md first-red ledger) documents
+ * `notFound` as the fresh state for a never-launched app — register() is
+ * the proven transition from BOTH fresh states (notRegistered AND
+ * notFound → enabled/requiresApproval). Treating notFound as terminal was
+ * the PFT run 34689461997 first-red: the fresh machine reported notFound,
+ * the onboarding rendered a fatal "Installation problem" card, and the
+ * setup control never appeared. A genuinely broken install (plist actually
+ * missing) fails at register() and surfaces the real error instead.
+ */
 export function showsSetupControl(phase: FirstRunPhase): boolean {
-  return phase.kind === 'status' && phase.status === 'notRegistered'
+  return (
+    phase.kind === 'status' &&
+    (phase.status === 'notRegistered' || phase.status === 'notFound')
+  )
 }
 
 /** Does the phase expose the Login Items approval guidance? */

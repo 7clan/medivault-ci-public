@@ -22,7 +22,11 @@
  *   enabled          → bounded wait for backend health, then hand off to
  *                      the API-served app (create account / sign in)
  *   requiresApproval → clear guidance + "Open Login Items"
- *   notFound         → installation problem, fail clearly
+ *   notFound         → the documented FRESH state for a never-launched
+ *                      app (zero-cost-release contract; register() is the
+ *                      proven transition from it) — the setup control is
+ *                      offered; a genuinely broken install fails at
+ *                      register() with the real error
  *
  * When `http://127.0.0.1:3001/health` answers, the webview navigates to
  * the API-served static export (same frontend, now same-origin with the
@@ -42,7 +46,6 @@ import {
   Settings2,
   RefreshCw,
   AlertTriangle,
-  XCircle,
   CheckCircle2,
   ArrowRight,
   Server,
@@ -267,16 +270,25 @@ export function FirstRunOnboarding() {
             )}
 
             {phase.kind === 'status' && phase.status === 'notFound' && (
-              <Alert variant="destructive">
-                <XCircle className="h-4 w-4" aria-hidden="true" />
-                <AlertDescription>
-                  <span className="font-medium">Installation problem.</span>{' '}
-                  The background service could not be found in this copy of
-                  the app. Please reinstall MediVault. If the problem
-                  persists, report it with the logs from the Support
-                  section.
-                </AlertDescription>
-              </Alert>
+              <div className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <Badge variant="secondary">Not found yet</Badge>
+                  <span className="text-sm text-muted-foreground">
+                    macOS has no record of the background service — this is
+                    normal on a brand-new install.
+                  </span>
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  Register it to start the local backend automatically at
+                  login. Registration uses your account — no administrator
+                  password is required. If this copy of the app is
+                  incomplete, registration will report the exact reason.
+                </p>
+                <Button size="sm" onClick={() => void runRegister()}>
+                  <ShieldCheck className="mr-2 h-4 w-4" aria-hidden="true" />
+                  Set up MediVault
+                </Button>
+              </div>
             )}
 
             {phase.kind === 'busy' && (

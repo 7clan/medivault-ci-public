@@ -80,14 +80,20 @@ describe('first-run-machine — the pre-auth onboarding state model', () => {
     expect(showsSetupControl(phase)).toBe(false)
   })
 
-  it('notFound is a clear failure — no setup control, no guidance, no retry loop', () => {
+  it('notFound offers the setup control — the documented fresh state for a never-launched app (PFT run 34689461997 first-red)', () => {
     const phase = firstRunReducer(FIRST_RUN_INITIAL, {
       type: 'status',
       status: 'notFound',
       now: T0,
     })
     expect(phase).toEqual({ kind: 'status', status: 'notFound' })
-    expect(showsSetupControl(phase)).toBe(false)
+    // The frozen smappservice-lifecycle evidence (zero-cost-release
+    // contract first-red ledger) documents notFound as the fresh state for
+    // a never-launched app, and register() succeeds from it → enabled.
+    // Treating it as terminal was the product bug: the fresh machine
+    // rendered a fatal "Installation problem" card and the pre-auth setup
+    // control (the entire P1 fix) never appeared.
+    expect(showsSetupControl(phase)).toBe(true)
     expect(showsApprovalGuidance(phase)).toBe(false)
   })
 

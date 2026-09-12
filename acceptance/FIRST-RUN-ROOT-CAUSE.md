@@ -123,7 +123,10 @@ so the existing relative-fetch web app works unmodified:
   uses) with Apple's four-state model surfaced honestly:
   notRegistered → "Set up MediVault"; requiresApproval → guidance +
   "Open Login Items"; enabled → bounded wait for
-  `http://127.0.0.1:3001/health`; notFound → clear failure.
+  `http://127.0.0.1:3001/health`; notFound → the documented fresh
+  state for a never-launched app (zero-cost-release contract) — the
+  setup control is offered; a genuinely broken install fails at
+  register() with the real error.
 - The supervisor gains the frontend directory in the API child env; the
   API (Fastify, `@fastify/static` already a dependency) serves the static
   export at `http://127.0.0.1:3001/` — the webview navigates there once
@@ -219,3 +222,23 @@ fails, the onboarding renders an empty card. Fix:
 `#[serde(rename_all = "camelCase")]` + the IPC-boundary regression test
 `ipc_boundary_serializes_the_documented_apple_status_strings` (pins
 both directions; PascalCase explicitly rejected).
+
+**F7 — fresh machines report `notFound`, not `notRegistered` (PFT run
+34689461997 first-red, after F5/F6).** The instrumentation (now
+compiling) proved the chain GREEN end-to-end: invoke received → helper
+launched → exited 0 in 118ms → status reached the frontend → the card
+RENDERED (F6 worked). But the rendered state was the fatal
+`notFound` branch: "Installation problem. … Please reinstall
+MediVault." — and the pre-auth setup control never appeared. Root
+cause: `notFound` is the DOCUMENTED fresh state for a never-launched
+app (macos-zero-cost-release-contract.md first-red ledger: "the
+documented fresh state for a never-launched app is notFound —
+identical value in the frozen production-readiness evidence"; the
+smappservice-lifecycle lane explicitly accepts BOTH fresh states and
+proves register() succeeds from either → enabled). The onboarding had
+made the SAME mis-shaped assertion the lifecycle lane originally
+made. Fix: the `notFound` branch offers the SAME "Set up MediVault"
+registration control (with honest fresh-install copy); a genuinely
+broken install (plist actually missing) fails at register() and
+surfaces the real error. `showsSetupControl()` now covers both fresh
+states; the frontend test pins this as the run-34689461997 regression.
