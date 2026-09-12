@@ -192,3 +192,30 @@ The env_logger init (`src-tauri/src/main.rs:22-28`) + `RUST_LOG=debug`
 direct-exec capture means the next PFT run's
 `/tmp/mv-direct-launch.log` will show exactly where the chain stalls
 (invoke entry → helper launch → helper exit → mapped status).
+
+**F5 — the instrumentation itself never compiled (E0382).** PFT run
+34688887879: `error[E0382]: borrow of moved value: child_helper` —
+eff9933 moved `child_helper` into the watchdog thread closure and then
+borrowed it in the `map_err` error path. The previous session's sync
+failed at the secret scan BEFORE this was ever dispatched, so the
+compile error was never seen. Repaired: the error path uses `helper`
+(the un-moved outer binding — same path).
+
+**F6 — the ACTUAL first-run boundary bug (the "invoke never resolves"
+resolved).** Cross-referencing run 34662818460's evidence: the helper
+answers `notFound` instantly from bash; the app console (RUST_LOG=debug)
+shows only starting/ready; VLM on 04-first-run-screen.png shows the
+CardContent renders COMPLETELY EMPTY — no spinner, no 'checking' text,
+no setup control, no error. A phase stuck at 'checking' would render a
+spinner + text; an EMPTY card means the phase reached `status` with a
+value that matches NONE of the four render branches — i.e. the invoke
+RESOLVED with an unexpected value. Root cause: the Rust enum
+`BackgroundServiceStatus` had NO `#[serde(rename_all = "camelCase")]`,
+so serde's default serialized the unit variants as the PascalCase
+variant NAMES (`"NotRegistered"`), while the frontend (and the Swift
+helper's stdout, and Apple's documented SMAppService status strings)
+speak camelCase (`'notRegistered'`) — intersection empty, every branch
+fails, the onboarding renders an empty card. Fix:
+`#[serde(rename_all = "camelCase")]` + the IPC-boundary regression test
+`ipc_boundary_serializes_the_documented_apple_status_strings` (pins
+both directions; PascalCase explicitly rejected).

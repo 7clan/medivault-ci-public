@@ -31,7 +31,19 @@ use std::time::Duration;
 
 /// The Apple SMAppService status model — exactly the four documented
 /// values, camelCase for the IPC boundary.
+///
+/// IPC BOUNDARY CONTRACT (first-red, PFT runs 34659573072/34661025092 +
+/// 34688887879): the frontend renders the four documented Apple status
+/// strings — `notRegistered | enabled | requiresApproval | notFound`.
+/// serde's DEFAULT for unit variants is the PascalCase variant NAME
+/// (`"NotRegistered"`), which matches NONE of the frontend branches: the
+/// invoke resolves, the phase becomes `status`, and every render branch
+/// fails — an EMPTY onboarding card with no setup control (the misread
+/// "invoke never resolves"). `rename_all = "camelCase"` makes the
+/// serialized form exactly the documented Apple strings; pinned by test
+/// `ipc_boundary_serializes_the_documented_apple_status_strings`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum BackgroundServiceStatus {
     /// The service hasn't been registered with the Service Management
     /// framework (fresh install) — the UI offers registration.
@@ -201,7 +213,8 @@ fn run_helper(subcommand: &str) -> Result<String, String> {
     });
     let output = match rx.recv_timeout(std::time::Duration::from_secs(20)) {
         Ok(result) => result.map_err(|e| {
-            format!("failed to launch {}: {e}", child_helper.display())
+            // `helper` (not the moved `child_helper`) — same path, still owned here.
+            format!("failed to launch {}: {e}", helper.display())
         })?,
         Err(_) => {
             return Err(format!(
@@ -308,6 +321,42 @@ mod tests {
             "notregistered",
         ] {
             assert!(map_status(bad).is_err(), "must reject {bad:?}");
+        }
+    }
+
+    /// THE IPC boundary regression: the exact layer where the fresh-install
+    /// onboarding broke. The Swift helper speaks the documented Apple
+    /// strings (camelCase), the frontend renders the same four strings —
+    /// but serde's DEFAULT serializes unit variants as the PascalCase
+    /// variant NAME. With the default, the invoke resolves and EVERY
+    /// frontend branch fails (empty card, no setup control). Pin both
+    /// directions of the boundary to the documented strings.
+    #[test]
+    fn ipc_boundary_serializes_the_documented_apple_status_strings() {
+        for (variant, wire) in [
+            (BackgroundServiceStatus::NotRegistered, "notRegistered"),
+            (BackgroundServiceStatus::Enabled, "enabled"),
+            (BackgroundServiceStatus::RequiresApproval, "requiresApproval"),
+            (BackgroundServiceStatus::NotFound, "notFound"),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&variant).unwrap(),
+                format!("{wire:?}"),
+                "serialized IPC value must be the documented Apple string"
+            );
+            assert_eq!(
+                serde_json::from_str::<BackgroundServiceStatus>(&format!("{wire:?}")).unwrap(),
+                variant,
+                "frontend literal must deserialize back to the variant"
+            );
+        }
+        // The old broken form (PascalCase) must FAIL to deserialize — the
+        // boundary speaks exactly one spelling.
+        for bad in ["\"NotRegistered\"", "\"Enabled\"", "\"RequiresApproval\"", "\"NotFound\""] {
+            assert!(
+                serde_json::from_str::<BackgroundServiceStatus>(bad).is_err(),
+                "PascalCase variant names are not the IPC contract: {bad}"
+            );
         }
     }
 }
