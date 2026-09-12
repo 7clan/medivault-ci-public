@@ -1100,10 +1100,34 @@ if ! v_type_into "Confirm" "$DOC_PASS" "09-account-confirm" yes; then
 fi
 snap "09-account-form-filled" || true
 
-if ! v_click "Create Account & Start" "10-account-submit" "Add Patient"; then
-  if ! v_click "Create Account" "10-account-submit" "Add Patient"; then
-    snap "10-account-submit-failed" || true
-    product_red ACCOUNT_CREATION "submitting the real setup form produced no visible change (no dashboard)"
+# First-red run 34697721680 (class-D harness): the submit button sat BELOW
+# THE FOLD at 1024x768 — the form is taller than the window, the OCR showed
+# the Confirm field as the last visible element, and both button click
+# attempts found nothing. Submit the NATIVE way first: Return in the FOCUSED
+# Confirm field submits the HTML form directly (the product UI a real user
+# with a smaller window would use); fall back to scrolling the real button
+# into view and clicking it.
+SUBMITTED=0
+if osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10; then
+  sleep 3
+  if wait_for_ocr "Add Patient" 45 "dashboard-after-enter-submit"; then
+    SUBMITTED=1
+    snap "10-account-submit-enter" || true
+    probe "the focused-field Return submitted the setup form (the button was below the fold — a real user's flow)"
+  fi
+fi
+if [ "$SUBMITTED" = "0" ]; then
+  # Scroll the real button into view (Page Down) and click it.
+  ocr_capture || true
+  if ! printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*Create Account"; then
+    osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 121' 10 >/dev/null 2>&1 || true
+    sleep 1
+  fi
+  if ! v_click "Create Account & Start" "10-account-submit" "Add Patient"; then
+    if ! v_click "Create Account" "10-account-submit" "Add Patient"; then
+      snap "10-account-submit-failed" || true
+      product_red ACCOUNT_CREATION "submitting the real setup form produced no visible change (no dashboard)"
+    fi
   fi
 fi
 if ! wait_for_ocr "Add Patient" 90 "dashboard-after-setup"; then
@@ -1215,9 +1239,32 @@ create_patient() { # <first> <last> <note> <stem> <arabic yes|no>
     fi
   fi
   snap "${stem}-form-filled" || true
-  if ! v_click_try_hits "Add Patient" "${stem}-submit" "$first"; then
-    snap "${stem}-submit-failed" || true
-    product_red "PATIENT_${stem}" "submitting the Add Patient form produced no visible change"
+  # Below-the-fold mitigation (same class-D as run 34697721680): the dialog
+  # scrolls internally (max-h-90vh overflow-y-auto) and the footer submit
+  # can sit below the fold. Return in the FOCUSED last field submits the
+  # dialog's <form onSubmit> natively; the real button click remains the
+  # fallback. Submitted = the dialog CLOSED (works for the Arabic patient
+  # too, whose name the OCR cannot read) or the patient's first name is
+  # already visible in the dashboard list.
+  PATIENT_SUBMITTED=0
+  if osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10; then
+    sleep 3
+    ocr_capture || true
+    if [ -n "$OCR_TEXT" ] && ! printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*First Name"; then
+      PATIENT_SUBMITTED=1
+    elif printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*${first}"; then
+      PATIENT_SUBMITTED=1
+    fi
+    if [ "$PATIENT_SUBMITTED" = "1" ]; then
+      snap "${stem}-submit-enter" || true
+      probe "the focused-field Return submitted the ${stem} patient form (below-the-fold footer — a real user's flow)"
+    fi
+  fi
+  if [ "$PATIENT_SUBMITTED" = "0" ]; then
+    if ! v_click_try_hits "Add Patient" "${stem}-submit" "$first"; then
+      snap "${stem}-submit-failed" || true
+      product_red "PATIENT_${stem}" "submitting the Add Patient form produced no visible change"
+    fi
   fi
   sleep 2
 }
@@ -1308,19 +1355,42 @@ snap "22-detail-a-isolated" || true
 
 # --- Edit Patient A (the pencil in the detail banner → Edit Patient dialog) ---
 note "--- edit patient A (phone) ---"
-if ! v_click "Edit Patient" "23-edit-open" "Save Changes"; then
+# The dialog scrolls internally (max-h-90vh) — verify it opened by a TOP
+# label ('First Name'), not the footer button ('Save Changes' can sit below
+# the fold — same class-D as run 34697721680).
+if ! v_click "Edit Patient" "23-edit-open" "First Name"; then
   snap "23-edit-open-failed" || true
   # The edit control is icon-only; try the geometric approach only if the
   # dialog has not opened (the visible dialog IS the verification).
   probe "the 'Edit Patient' control could not be OCR-clicked"
 fi
-if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*Save Changes"; then
+if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*First Name"; then
   if ! v_type_into "Phone" "+1 555 0100" "24-edit-phone"; then
     product_red PATIENT_EDIT "could not type the new phone into the edit dialog"
   fi
-  if ! v_click "Save Changes" "24-edit-save" "$PAT_A_FIRST"; then
-    snap "24-edit-save-failed" || true
-    product_red PATIENT_EDIT "saving the edit produced no visible change"
+  # Below-the-fold mitigation: Return in the FOCUSED phone field submits the
+  # edit dialog's <form onSubmit> natively; the Save Changes click remains
+  # the fallback (with a Page Down to reveal it first if needed).
+  EDIT_SAVED=0
+  if osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10; then
+    sleep 3
+    ocr_capture || true
+    if [ -n "$OCR_TEXT" ] && ! printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*First Name"; then
+      EDIT_SAVED=1
+      snap "24-edit-save-enter" || true
+      probe "the focused-field Return saved the edit dialog (below-the-fold footer — a real user's flow)"
+    fi
+  fi
+  if [ "$EDIT_SAVED" = "0" ]; then
+    ocr_capture || true
+    if ! printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*Save Changes"; then
+      osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 121' 10 >/dev/null 2>&1 || true
+      sleep 1
+    fi
+    if ! v_click "Save Changes" "24-edit-save" "$PAT_A_FIRST"; then
+      snap "24-edit-save-failed" || true
+      product_red PATIENT_EDIT "saving the edit produced no visible change"
+    fi
   fi
   sleep 2
   snap "24-edit-saved" || true
