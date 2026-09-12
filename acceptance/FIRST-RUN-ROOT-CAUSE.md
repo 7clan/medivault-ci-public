@@ -242,3 +242,26 @@ registration control (with honest fresh-install copy); a genuinely
 broken install (plist actually missing) fails at register() and
 surfaces the real error. `showsSetupControl()` now covers both fresh
 states; the frontend test pins this as the run-34689461997 regression.
+
+**F8 — the fresh-install flow never bootstraps the keychain (PFT run
+34690519015 first-red, after F7).** The F7 fix worked end-to-end: the
+notFound branch rendered the setup control, the real click registered
+(SMAppService flipped to `enabled` at 0s), the app entered the bounded
+health wait — but the API never answered in 420s. Root cause: the
+supervisor FAILS CLOSED when the 5 keychain items are missing (by
+design — the frozen supervisor contract), and NOTHING in the
+fresh-install product flow creates them. Every CI lane that reaches
+`healthy` from a fresh state runs `mediavault-supervisor
+bootstrap-secrets` FIRST (smappservice-lifecycle Branch A: bootstrap →
+register → launchd start → healthy → /health 200 → parent == launchd —
+CI-PROVEN; the items' keychain ACL is bound to the supervisor binary,
+so the launchd-started supervisor reads items an earlier bootstrap
+created). Fix: `background_service_register` runs the supervisor's
+idempotent `bootstrap-secrets` (bounded 20s watchdog, same discipline
+as the helper) BEFORE the helper's register — the pre-auth "Set up
+MediVault" click now performs the complete CI-proven ordering. The
+helper-name regression suite now also pins the supervisor filename
+across the Rust constant, the cargo package name, the staging script,
+the plist BundleProgram, and the DMG verifiers. The PFT harness's API
+red now self-diagnoses (supervisor status file + supervisor.log +
+provision.log + launchd job shape).

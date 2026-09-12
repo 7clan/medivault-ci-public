@@ -992,7 +992,21 @@ probe "SMAppService status: $SMAPP; API answered: $API_OK after $(( $(date +%s) 
 CAP_SMAPP="GREEN (status=enabled after the real UI registration click)"
 cap SMAPPSERVICE "$CAP_SMAPP"
 
-[ "$API_OK" = "1" ] || product_red API "the API at 127.0.0.1:3001/health never answered after registration (waited 420s)"
+[ "$API_OK" = "1" ] || {
+  # Decisive diagnostics for a backend that never came up: the supervisor's
+  # self-reported state + its own logs + the launchd job shape (first-red
+  # discipline: the NEXT red must explain itself).
+  note "--- backend-never-up diagnostics (supervisor state + logs + launchd job) ---"
+  SUP_HOME="$HOME/Library/Application Support/MediVault"
+  probe "supervisor status file: $(cat "$SUP_HOME/runtime-state/supervisor-status.json" 2>/dev/null | head -c 400 || echo 'ABSENT')"
+  probe "--- supervisor.log (last 40 lines):"
+  tail -40 "$HOME/Library/Logs/MediVault/supervisor.log" 2>/dev/null | tee -a "$LOG" || probe "(supervisor.log absent)"
+  probe "--- provision.log (last 25 lines):"
+  tail -25 "$HOME/Library/Logs/MediVault/provision.log" 2>/dev/null | tee -a "$LOG" || probe "(provision.log absent)"
+  probe "--- launchd job:"
+  launchctl print "gui/$(id -u)/dev.medivault.supervisor" 2>&1 | grep -E 'state = |pid = |runs = |last exit code|program identifier|managed_by' | head -8 | tee -a "$LOG" || true
+  product_red API "the API at 127.0.0.1:3001/health never answered after registration (waited 420s; supervisor state + logs above)"
+}
 CAP_API="GREEN (http 127.0.0.1:3001/health after registration)"
 cap API "$CAP_API"
 

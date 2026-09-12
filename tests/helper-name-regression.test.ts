@@ -143,3 +143,63 @@ describe('SMAppService helper filename: one shared name across all surfaces', ()
     }
   })
 })
+
+describe('Supervisor binary filename: one shared name across all surfaces', () => {
+  const SUPERVISOR_FILENAME = 'mediavault-supervisor'
+
+  it('the Rust lookup constant equals the supervisor name (the fresh-run bootstrap target)', () => {
+    const rust = readRepo('src-tauri/src/commands/background_service.rs')
+    const constant = mustExtract(
+      'background_service.rs SUPERVISOR_NAME',
+      rust,
+      /const SUPERVISOR_NAME: &str = "([^"]+)"/,
+    )
+    expect(constant).toBe(SUPERVISOR_FILENAME)
+  })
+
+  it('the cargo package name equals the supervisor name (build output basename)', () => {
+    const toml = readRepo('macos/supervisor/Cargo.toml')
+    const pkg = mustExtract(
+      'macos/supervisor/Cargo.toml package name',
+      toml,
+      /^name = "([^"]+)"/m,
+    )
+    expect(pkg).toBe(SUPERVISOR_FILENAME)
+  })
+
+  it('stage-pg-bundle.sh stages the supervisor at Contents/MacOS/<shared name>', () => {
+    const sh = readRepo('macos/scripts/stage-pg-bundle.sh')
+    const staged = mustExtract(
+      'stage-pg-bundle.sh staged filename',
+      sh,
+      /cp "\$SUPERVISOR_BIN" "\$MACOS_DIR\/([^"]+)"/,
+    )
+    expect(staged).toBe(SUPERVISOR_FILENAME)
+  })
+
+  it('the LaunchAgent plist BundleProgram points at the shared name (launchd starts THIS file)', () => {
+    const plist = readRepo('macos/launchagent/dev.medivault.supervisor.plist')
+    const program = mustExtract(
+      'dev.medivault.supervisor.plist BundleProgram',
+      plist,
+      /<string>Contents\/MacOS\/([^<]+)<\/string>/,
+    )
+    expect(program).toBe(SUPERVISOR_FILENAME)
+  })
+
+  it('build-release-dmg.sh verifies the supervisor under the shared name (app + mounted DMG)', () => {
+    const sh = readRepo('macos/scripts/build-release-dmg.sh')
+    const inApp = mustExtract(
+      'build-release-dmg.sh app check',
+      sh,
+      /\[ -x "\$APP_ROOT\/Contents\/MacOS\/([^"]+)" \] \|\| die "supervisor binary missing in \$APP_ROOT"/,
+    )
+    const inDmg = mustExtract(
+      'build-release-dmg.sh mounted check',
+      sh,
+      /test -x "\$MOUNTPOINT\/MediVault\.app\/Contents\/MacOS\/([^"]+)" \|\| die "mounted app: supervisor missing"/,
+    )
+    expect(inApp).toBe(SUPERVISOR_FILENAME)
+    expect(inDmg).toBe(SUPERVISOR_FILENAME)
+  })
+})

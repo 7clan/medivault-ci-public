@@ -61,6 +61,12 @@ pub enum BackgroundServiceStatus {
 
 const HELPER_NAME: &str = "mediavault-launchagent";
 
+/// The supervisor binary shipped beside this executable — the FIRST-RUN
+/// SECRETS bootstrap target (PFT run 34690519015 first-red: the supervisor
+/// fails closed when the 5 keychain items are missing, so the launchd job
+/// starts, exits immediately, and the API never answers).
+const SUPERVISOR_NAME: &str = "mediavault-supervisor";
+
 /// Map the helper's exact status line to the IPC enum. Private string
 /// mapping is unit-tested below; anything unknown is an error.
 fn map_status(raw: &str) -> Result<BackgroundServiceStatus, String> {
@@ -187,6 +193,126 @@ fn helper_path() -> Result<PathBuf, String> {
     Ok(helper)
 }
 
+/// Resolve the supervisor binary shipped beside this executable:
+/// `<bundle>/Contents/MacOS/mediavault-supervisor`. Entry-based lookup —
+/// same ground-truth discipline as the helper (the on-disk entry's own
+/// path; the plain joined path is only used in the error diagnostic).
+fn supervisor_path() -> Result<PathBuf, String> {
+    if !cfg!(target_os = "macos") {
+        return Err("Background service control requires macOS".to_string());
+    }
+    let exe = std::env::current_exe()
+        .map_err(|e| format!("cannot resolve the app executable path: {e}"))?;
+    let dir = exe
+        .parent()
+        .ok_or_else(|| "app executable has no parent directory".to_string())?
+        .to_path_buf();
+    let joined = dir.join(SUPERVISOR_NAME);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries.filter_map(|en| en.ok()).collect::<Vec<_>>(),
+        Err(e) => {
+            return Err(format!(
+                "supervisor lookup failed: cannot read the app bundle directory {} (readdir error: {} [os error {}])",
+                dir.display(),
+                e,
+                e.raw_os_error().unwrap_or(-1)
+            ))
+        }
+    };
+    let listing = entries
+        .iter()
+        .map(|en| format!("{:?}[{}]", en.file_name(), {
+            match en.file_type() {
+                Ok(t) if t.is_dir() => "d",
+                Ok(t) if t.is_symlink() => "l",
+                Ok(_) => "f",
+                Err(_) => "?",
+            }
+        }))
+        .collect::<Vec<_>>()
+        .join(" ");
+    // Exact ASCII name match on the entry (the supervisor name is plain
+    // ASCII in every observed staging; a normalization artifact would be a
+    // new first-red with its own evidence).
+    for en in &entries {
+        if en.file_name().to_string_lossy() == SUPERVISOR_NAME {
+            if !en.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                return Err(format!(
+                    "the supervisor is not a regular file: {} — app-view of {}: {}",
+                    en.path().display(),
+                    dir.display(),
+                    listing
+                ));
+            }
+            return Ok(en.path());
+        }
+    }
+    Err(format!(
+        "supervisor missing from the app bundle: {} (installation incomplete?) — current_exe: {} — wanted: {:?} — app-view of {}: {}",
+        joined.display(),
+        exe.display(),
+        SUPERVISOR_NAME,
+        dir.display(),
+        listing
+    ))
+}
+
+/// FIRST-RUN SECRETS BOOTSTRAP — run `mediavault-supervisor
+/// bootstrap-secrets` (bounded, same watchdog discipline as the helper).
+///
+/// PFT run 34690519015 first-red: the supervisor fails closed when the 5
+/// keychain items are missing (by design — the frozen supervisor
+/// contract), so on a brand-new machine the launchd job starts, exits
+/// immediately, and the API never answers. Every CI lane that reaches
+/// `healthy` from a fresh state bootstraps first (smappservice-lifecycle
+/// Branch A: bootstrap → register → launchd start → healthy; the items'
+/// keychain ACL is bound to the supervisor binary, so the launchd-started
+/// supervisor reads items an earlier bootstrap created — CI-PROVEN).
+/// The pre-auth "Set up MediVault" flow must do the same. Bootstrap is
+/// IDEMPOTENT (existing items are left untouched — keychain-lifecycle
+/// runs it twice), so re-registration on an already-set-up machine is a
+/// no-op for the secrets.
+fn run_secrets_bootstrap() -> Result<(), String> {
+    let supervisor = supervisor_path()?;
+    log::info!(
+        "background_service: launching {} bootstrap-secrets…",
+        supervisor.display()
+    );
+    let t0 = std::time::Instant::now();
+    let child_bin = supervisor.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = std::process::Command::new(&child_bin)
+            .arg("bootstrap-secrets")
+            .output();
+        let _ = tx.send(result);
+    });
+    let output = match rx.recv_timeout(Duration::from_secs(20)) {
+        Ok(result) => result.map_err(|e| {
+            // `supervisor` (not the moved `child_bin`) — same path, still owned here.
+            format!("failed to launch {}: {e}", supervisor.display())
+        })?,
+        Err(_) => {
+            return Err(format!(
+                "mediavault-supervisor bootstrap-secrets timed out after 20s (the keychain bootstrap never exited — see the app log)"
+            ))
+        }
+    };
+    log::info!(
+        "background_service: bootstrap-secrets exited {:?} in {:?}",
+        output.status.code(),
+        t0.elapsed()
+    );
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!(
+            "mediavault-supervisor bootstrap-secrets failed (exit {}): {stderr}",
+            output.status.code().unwrap_or(-1)
+        ));
+    }
+    Ok(())
+}
+
 /// Run the helper with one subcommand and return its stdout. BOUNDED wait —
 /// a hung helper must surface as a clear error, never an indefinite hang
 /// (first-red, runs 34659573072/34661025092: the invoke never resolved).
@@ -250,9 +376,19 @@ pub async fn background_service_status() -> Result<BackgroundServiceStatus, Stri
 /// Register the background service (SMAppService.register). After success,
 /// macOS may still require user approval in Login Items (status becomes
 /// `requiresApproval`) — the UI follows up with a status poll.
+///
+/// FIRST-RUN ORDER (PFT run 34690519015): the keychain bootstrap runs
+/// BEFORE registration — the launchd job starts the supervisor the moment
+/// the service is enabled, and the supervisor fails closed when the 5
+/// keychain items are missing. The pre-auth "Set up MediVault" click
+/// therefore prepares the secrets first (idempotent), then registers —
+/// the same ordering every CI lane that reaches healthy uses.
 #[tauri::command]
 pub async fn background_service_register() -> Result<(), String> {
     log::info!("background_service_register: invoke received");
+    tauri::async_runtime::spawn_blocking(run_secrets_bootstrap)
+        .await
+        .map_err(|e| format!("secrets bootstrap join error: {e}"))??;
     tauri::async_runtime::spawn_blocking(move || run_helper("register"))
         .await
         .map_err(|e| format!("register task join error: {e}"))??;
