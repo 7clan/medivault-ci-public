@@ -580,12 +580,13 @@ v_click_arabic() { # <needle> <stem> <expect-text-or-empty>
   return 1
 }
 
-v_type_into() { # <label-needle> <text> <stem> [secret yes|no] [arabic yes|no]
+v_type_into() { # <label-needle> <text> <stem> [secret yes|no] [arabic yes|no] [clear yes|no]
   local label="$1"
   local text="$2"
   local stem="$3"
   local secret="${4:-no}"
   local arabic="${5:-no}"
+  local clear="${6:-no}"
   if [ "$OCR_STACK" != "yes" ]; then
     probe "vtype[$stem]: visual stack unavailable — skipped"
     return 1
@@ -607,6 +608,15 @@ v_type_into() { # <label-needle> <text> <stem> [secret yes|no] [arabic yes|no]
     return 1
   fi
   sleep 1
+  # Optional field clear (a real user's flow): the login form KEEPS a
+  # failed attempt's password (setError only — the app does not clear it),
+  # so re-typing over a wrong attempt must select-all + delete first.
+  if [ "$clear" = "yes" ]; then
+    osa 'tell application "System Events" to tell (first process whose name contains "edivault") to keystroke "a" using command down' 10 || true
+    sleep 1
+    osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 51' 10 || true
+    sleep 1
+  fi
   if osa "tell application \"System Events\" to tell (first process whose name contains \"edivault\") to keystroke \"$text\"" 15; then
     sleep 1
     ocr_capture || return 1
@@ -1167,7 +1177,20 @@ fi
 if ! v_type_into "Password" "$DOC_PASS" "13-login-password" yes; then
   product_red LOGIN "could not type the login Password"
 fi
-if ! v_click_try_hits "Sign In" "13-login-submit" "Add Patient"; then
+# Needle-ambiguity mitigation (run 34700270221 first-red: the 'Sign In'
+# OCR lookup matched the card TITLE at (377,335), not the submit button):
+# Return in the FOCUSED password field submits the login form natively —
+# the button click remains the fallback.
+LOGIN_SUBMITTED=0
+if osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10; then
+  sleep 3
+  if wait_for_ocr "Add Patient" 45 "dashboard-after-enter-login"; then
+    LOGIN_SUBMITTED=1
+    snap "13-login-submit-enter" || true
+    probe "the focused-field Return submitted the login form (needle-ambiguity fallback — a real user's flow)"
+  fi
+fi
+if [ "$LOGIN_SUBMITTED" = "0" ] && ! v_click_try_hits "Sign In" "13-login-submit" "Add Patient"; then
   snap "13-login-failed" || true
   product_red LOGIN "submitting the real login form did not reach the dashboard"
 fi
@@ -1193,7 +1216,16 @@ fi
 if ! v_type_into "Password" "Definitely-Wrong-Pass-99" "14-wrong-password" yes; then
   product_red WRONG_PASSWORD "could not type the wrong password"
 fi
-if ! v_click_try_hits "Sign In" "14-wrong-submit" "Invalid email or password"; then
+WRONG_SUBMITTED=0
+if osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10; then
+  sleep 3
+  if wait_for_ocr "Invalid email or password" 20 "wrong-after-enter"; then
+    WRONG_SUBMITTED=1
+    snap "14-wrong-submit-enter" || true
+    probe "the focused-field Return submitted the wrong-password attempt"
+  fi
+fi
+if [ "$WRONG_SUBMITTED" = "0" ] && ! v_click_try_hits "Sign In" "14-wrong-submit" "Invalid email or password"; then
   snap "14-wrong-password-failed" || true
   product_red WRONG_PASSWORD "the wrong password did NOT produce the expected visible rejection"
 fi
@@ -1202,10 +1234,22 @@ cap WRONG_PASSWORD "$CAP_LOGIN_WRONG"
 snap "14-wrong-password-error" || true
 
 # Log in again with the correct password.
-if ! v_type_into "Password" "$DOC_PASS" "15-login-again-password" yes; then
+# The login form KEEPS the failed attempt's password (setError only — the
+# app does not clear it): select-all + delete in the focused field first
+# (the real user's flow), then type the correct password.
+if ! v_type_into "Password" "$DOC_PASS" "15-login-again-password" yes no yes; then
   product_red LOGIN "could not re-enter the correct password after the wrong attempt"
 fi
-if ! v_click_try_hits "Sign In" "15-login-again" "Add Patient"; then
+RELOGIN_SUBMITTED=0
+if osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10; then
+  sleep 3
+  if wait_for_ocr "Add Patient" 45 "relogin-after-enter"; then
+    RELOGIN_SUBMITTED=1
+    snap "15-relogin-submit-enter" || true
+    probe "the focused-field Return submitted the re-login"
+  fi
+fi
+if [ "$RELOGIN_SUBMITTED" = "0" ] && ! v_click_try_hits "Sign In" "15-login-again" "Add Patient"; then
   product_red LOGIN "re-login with the correct password failed"
 fi
 wait_for_ocr "Add Patient" 60 "dashboard-after-relogin" || product_red LOGIN "no dashboard after re-login"
@@ -1487,7 +1531,16 @@ if ! wait_for_ocr "Add Patient" 150 "dashboard-after-reopen"; then
     if ! v_type_into "Password" "$DOC_PASS" "30-relogin-password" yes; then
       product_red QUIT_REOPEN "could not type the password on the re-open login screen"
     fi
-    if ! v_click_try_hits "Sign In" "30-relogin" "Add Patient"; then
+    REOPEN_LOGIN_SUBMITTED=0
+    if osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10; then
+      sleep 3
+      if wait_for_ocr "Add Patient" 45 "reopen-relogin-after-enter"; then
+        REOPEN_LOGIN_SUBMITTED=1
+        snap "30-relogin-submit-enter" || true
+        probe "the focused-field Return submitted the reopen re-login"
+      fi
+    fi
+    if [ "$REOPEN_LOGIN_SUBMITTED" = "0" ] && ! v_click_try_hits "Sign In" "30-relogin" "Add Patient"; then
       product_red QUIT_REOPEN "re-login after reopen failed"
     fi
     wait_for_ocr "Add Patient" 60 "dashboard-after-relogin" || product_red QUIT_REOPEN "no dashboard after re-login on reopen"
