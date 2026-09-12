@@ -66,7 +66,17 @@ DOC_NAME="MediVault Test Doctor"
 DOC_EMAIL="doctor.test@example.invalid"
 DOC_PASS_FILE="/tmp/.mv-doc-pass"
 umask 077
-openssl rand -base64 24 | tr -d '\n' > "$DOC_PASS_FILE"
+# The setup form's strength checklist requires 8+ chars with upper, lower,
+# digit AND special. Plain base64 draws have only + and / as specials —
+# ~36.5% of draws contain NONE (run 34703457461 first-red: the form
+# rejected 'Password must contain at least one special character').
+# Guarantee every class deterministically, pad with real entropy, and
+# fail-closed if the classes are not all present. Never printed.
+{ printf 'Aa1!'; openssl rand -base64 24 | tr -d '\n'; } > "$DOC_PASS_FILE"
+grep -q '[A-Z]' "$DOC_PASS_FILE" || { echo "FATAL: password lacks an uppercase letter"; exit 1; }
+grep -q '[a-z]' "$DOC_PASS_FILE" || { echo "FATAL: password lacks a lowercase letter"; exit 1; }
+grep -q '[0-9]' "$DOC_PASS_FILE" || { echo "FATAL: password lacks a digit"; exit 1; }
+grep -q '!' "$DOC_PASS_FILE" || { echo "FATAL: password lacks a special character"; exit 1; }
 
 # Synthetic patients — obviously fake data only.
 # Patient C's name is Arabic: first=محمد, last=تجريبي ("Muhammad Test").
