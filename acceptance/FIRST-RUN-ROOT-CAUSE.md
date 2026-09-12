@@ -146,3 +146,49 @@ Security contract preserved: API stays 127.0.0.1:3001-only, PostgreSQL
 (loopback allowlist), session auth kept (HttpOnly, SameSite=Lax), CSRF
 kept (double-submit, bootstrapped), Keychain untouched, SMAppService
 untouched, supervisor still owns PG/API processes.
+
+## 5. Fix log (chronological, first-red discipline)
+
+**F1 — the pre-auth onboarding fix landed** (see §4): embedded first-run
+state machine (`src/components/first-run-onboarding.tsx`,
+`src/lib/first-run-machine.ts`, `src/lib/local-backend.ts`) reusing the
+exact Settings → Background registration commands; supervisor
+`frontend_dir` + API-served static export at `http://127.0.0.1:3001/`;
+`GET /api/auth/csrf` bootstrap + `x-csrf-token` on mutating requests;
+Model A plain-loopback cookie storage. Targeted tests:
+`tests/first-run-frontend.test.ts` (18) + `tests/first-run-api.test.ts`
+(14) — all GREEN.
+
+**F2 — the helper filename typo (the first real product red after F1).**
+PFT runs 34650350460…34658231874: the app reported "SMAppService helper
+missing" with `wanted "medivault-launchagent"` while the readdir listing
+showed `mediavault-launchagent` — the Rust lookup constant
+(`HELPER_NAME`) was missing ONE letter 'a'. bash probes worked because
+the harness used the correct spelling. Fixed at commit 2284423
+(HELPER_NAME → `mediavault-launchagent`). The typo predates the fix
+(the frozen v0.1.0 code carries it), but the registration path was dead
+code there (see D1), so it never fired.
+
+**F3 — the source file itself was still misspelled** (found by the new
+regression test, this session): the Swift source
+`macos/smappservice/medivault-launchagent.swift` kept the old spelling
+while every consumer used `mediavault-launchagent`. Renamed to
+`macos/smappservice/mediavault-launchagent.swift` (+ the 6 referencing
+yml/rs/sh surfaces). Pure rename — compile outputs, staged names, and
+logic unchanged. Regression coverage:
+`tests/helper-name-regression.test.ts` (9 assertions) pins the shared
+name across the Rust constant, the staging script, the DMG verifiers,
+the signature verifier, both acceptance harnesses, both workflows, and
+the source filename — any drift fails the targeted suite before CI.
+
+**F4 — the invoke hang (OPEN).** PFT runs 34659573072/34661025092
+(after F2): the first-run card renders but the status invoke never
+resolves (the `checking` spinner never advances; the helper itself runs
+instantly from bash). Instrumentation added at commit eff9933: entry
+logs on every `background_service_*` invoke, launch/exit/elapsed logs
+in `run_helper`, and a BOUNDED 20s timeout on a dedicated thread so a
+hung helper surfaces as a clear error instead of an indefinite hang.
+The env_logger init (`src-tauri/src/main.rs:22-28`) + `RUST_LOG=debug`
+direct-exec capture means the next PFT run's
+`/tmp/mv-direct-launch.log` will show exactly where the chain stalls
+(invoke entry → helper launch → helper exit → mapped status).

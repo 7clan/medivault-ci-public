@@ -18,7 +18,7 @@
 #                                                  fix, FRONT-RUN-ROOT-CAUSE.md;
 #                                                  staged when FRONTEND_DIR is set)
 #   Contents/Library/LaunchAgents/dev.medivault.supervisor.plist
-#   Contents/MacOS/medivault-launchagent          (SMAppService control helper,
+#   Contents/MacOS/mediavault-launchagent          (SMAppService control helper,
 #                                                  production-readiness phase)
 #   Contents/Resources/supervisor-config.json    (RELOCATABLE production default)
 #
@@ -51,7 +51,7 @@ PRISMA_SCHEMA_DIR="${PRISMA_SCHEMA_DIR:?PRISMA_SCHEMA_DIR (packages/db/prisma) i
 LAUNCHAGENT_SRC="${LAUNCHAGENT_SRC:?LAUNCHAGENT_SRC (plist source) is required}"
 # OPTIONAL: the compiled SMAppService helper. The production-readiness
 # shape passes SMAPPSERVICE_BIN=… (helper staged at Contents/MacOS/
-# medivault-launchagent + the RELOCATABLE production supervisor-config.json
+# mediavault-launchagent + the RELOCATABLE production supervisor-config.json
 # + the BundleProgram plist contract asserts). Frozen historical modes
 # leave it unset → byte-identical legacy staging (they write their own
 # CI config afterwards, exactly as their frozen contracts prescribe).

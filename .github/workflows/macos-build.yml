@@ -5948,7 +5948,7 @@ jobs:
           set -euo pipefail
           export MACOSX_DEPLOYMENT_TARGET=13.0
           HELPER_OUT="$RUNNER_TEMP/mediavault-launchagent"
-          swiftc -O macos/smappservice/medivault-launchagent.swift \
+          swiftc -O macos/smappservice/mediavault-launchagent.swift \
             -target ${{ matrix.expected_uname }}-apple-macos13.0 \
             -o "$HELPER_OUT"
           file "$HELPER_OUT"
@@ -7370,7 +7370,7 @@ jobs:
           set -euo pipefail
           export MACOSX_DEPLOYMENT_TARGET=13.0
           HELPER_OUT="$RUNNER_TEMP/zc-mediavault-launchagent"
-          swiftc -O macos/smappservice/medivault-launchagent.swift \
+          swiftc -O macos/smappservice/mediavault-launchagent.swift \
             -target ${{ matrix.expected_uname }}-apple-macos13.0 \
             -o "$HELPER_OUT"
           file "$HELPER_OUT"
@@ -8070,7 +8070,7 @@ jobs:
           set -euo pipefail
           export MACOSX_DEPLOYMENT_TARGET=13.0
           HELPER_OUT="$RUNNER_TEMP/zc-mediavault-launchagent"
-          swiftc -O macos/smappservice/medivault-launchagent.swift \
+          swiftc -O macos/smappservice/mediavault-launchagent.swift \
             -target ${{ matrix.expected_uname }}-apple-macos13.0 \
             -o "$HELPER_OUT"
           file "$HELPER_OUT"
@@ -8863,7 +8863,7 @@ jobs:
           set -euo pipefail
           export MACOSX_DEPLOYMENT_TARGET=13.0
           HELPER_OUT="$RUNNER_TEMP/zc-mediavault-launchagent"
-          swiftc -O macos/smappservice/medivault-launchagent.swift \
+          swiftc -O macos/smappservice/mediavault-launchagent.swift \
             -target ${{ matrix.expected_uname }}-apple-macos13.0 \
             -o "$HELPER_OUT"
           file "$HELPER_OUT"

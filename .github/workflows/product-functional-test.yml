@@ -107,7 +107,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ./node_modules/.bin/vitest run tests/first-run-frontend.test.ts tests/first-run-api.test.ts tests/m4-https-enforcement.test.ts tests/model-a-localhost-production.test.ts 2>&1 | tee /tmp/firstrun-tests.log
+          ./node_modules/.bin/vitest run tests/first-run-frontend.test.ts tests/first-run-api.test.ts tests/helper-name-regression.test.ts tests/m4-https-enforcement.test.ts tests/model-a-localhost-production.test.ts 2>&1 | tee /tmp/firstrun-tests.log
           # Strip ANSI color codes before asserting (vitest colorizes the summary line).
           sed 's/\x1b\[[0-9;]*m//g' /tmp/firstrun-tests.log > /tmp/firstrun-tests-plain.log
           grep -Eq 'Test Files[ ]+[0-9]+ passed' /tmp/firstrun-tests-plain.log || { echo "::error::first-run targeted test failure"; exit 1; }
@@ -293,7 +293,7 @@ jobs:
           set -euo pipefail
           export MACOSX_DEPLOYMENT_TARGET=13.0
           HELPER_OUT="$RUNNER_TEMP/pft-mediavault-launchagent"
-          swiftc -O macos/smappservice/medivault-launchagent.swift \
+          swiftc -O macos/smappservice/mediavault-launchagent.swift \
             -target arm64-apple-macos13.0 \
             -o "$HELPER_OUT"
           file "$HELPER_OUT"

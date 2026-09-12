@@ -17,7 +17,7 @@
 //! IMPLEMENTATION
 //!   SMAppService is an Objective-C/Swift API; the Rust shell invokes the
 //!   dedicated helper binary shipped at `Contents/MacOS/mediavault-launchagent`
-//!   (macos/smappservice/medivault-launchagent.swift). The helper runs from
+//!   (macos/smappservice/mediavault-launchagent.swift). The helper runs from
 //!   inside MediVault.app, so its `Bundle.main` is the app bundle and
 //!   `SMAppService.agent(plistName:)` resolves the shipped plist.
 //!
@@ -175,14 +175,45 @@ fn helper_path() -> Result<PathBuf, String> {
     Ok(helper)
 }
 
-/// Run the helper with one subcommand and return its stdout. Bounded wait —
-/// a hung helper must never hang the UI.
+/// Run the helper with one subcommand and return its stdout. BOUNDED wait —
+/// a hung helper must surface as a clear error, never an indefinite hang
+/// (first-red, runs 34659573072/34661025092: the invoke never resolved).
+/// Every step is logged (info level) so the captured app stderr shows
+/// exactly where the chain stops.
 fn run_helper(subcommand: &str) -> Result<String, String> {
     let helper = helper_path()?;
-    let output = std::process::Command::new(&helper)
-        .arg(subcommand)
-        .output()
-        .map_err(|e| format!("failed to launch {}: {e}", helper.display()))?;
+    log::info!(
+        "background_service: launching helper {} {}…",
+        helper.display(),
+        subcommand
+    );
+    let t0 = std::time::Instant::now();
+    // Spawn on a dedicated thread so a hung child becomes a bounded timeout
+    // instead of blocking the async runtime forever.
+    let child_helper = helper.clone();
+    let child_sub = subcommand.to_string();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = std::process::Command::new(&child_helper)
+            .arg(&child_sub)
+            .output();
+        let _ = tx.send(result);
+    });
+    let output = match rx.recv_timeout(std::time::Duration::from_secs(20)) {
+        Ok(result) => result.map_err(|e| {
+            format!("failed to launch {}: {e}", child_helper.display())
+        })?,
+        Err(_) => {
+            return Err(format!(
+                "mediavault-launchagent {subcommand} timed out after 20s (the                  SMAppService helper never exited — see the app log; this is                  the hang first observed in runs 34659573072/34661025092)"
+            ))
+        }
+    };
+    log::info!(
+        "background_service: helper {subcommand} exited {:?} in {:?}",
+        output.status.code(),
+        t0.elapsed()
+    );
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(format!(
@@ -196,6 +227,7 @@ fn run_helper(subcommand: &str) -> Result<String, String> {
 /// Current SMAppService status of the supervisor LaunchAgent.
 #[tauri::command]
 pub async fn background_service_status() -> Result<BackgroundServiceStatus, String> {
+    log::info!("background_service_status: invoke received");
     let raw = tauri::async_runtime::spawn_blocking(move || run_helper("status"))
         .await
         .map_err(|e| format!("status task join error: {e}"))??;
@@ -207,6 +239,7 @@ pub async fn background_service_status() -> Result<BackgroundServiceStatus, Stri
 /// `requiresApproval`) — the UI follows up with a status poll.
 #[tauri::command]
 pub async fn background_service_register() -> Result<(), String> {
+    log::info!("background_service_register: invoke received");
     tauri::async_runtime::spawn_blocking(move || run_helper("register"))
         .await
         .map_err(|e| format!("register task join error: {e}"))??;
