@@ -301,3 +301,41 @@ describe('shouldUseSecureCookies — Model A (localhost-production) exception', 
     }
   })
 })
+
+// ─── Dependency drift guard (PFT run 34692245479 first-red) ─────────
+// The staged prod tree (npm install --omit=dev from
+// mini-services/api-service/package.json) must resolve the SAME MAJOR
+// of every fastify-family plugin the dev/test tree (the root
+// package.json + bun.lock) exercises. v8→v10 of @fastify/static changed
+// the setHeaders callback contract (raw ServerResponse vs FastifyReply):
+// the drifted prod tree answered GET / with 500 {"error":"Internal
+// server error"} and the hand-off screen showed the raw JSON — while
+// every dev/test run was green. Same-major = same semver API contract.
+describe('api-service dependency drift guard (staged prod tree == tested tree)', () => {
+  const repoRoot = path.resolve(__dirname, '..')
+  const rootDeps = JSON.parse(
+    fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'),
+  ).dependencies as Record<string, string>
+  const apiDeps = JSON.parse(
+    fs.readFileSync(
+      path.join(repoRoot, 'mini-services/api-service/package.json'),
+      'utf8',
+    ),
+  ).dependencies as Record<string, string>
+  const majorOf = (range: string) => /^[\^~]?(\d+)/.exec(range)?.[1]
+
+  for (const dep of [
+    '@fastify/static',
+    '@fastify/cookie',
+    '@fastify/cors',
+    '@fastify/multipart',
+    '@fastify/rate-limit',
+    'fastify',
+  ]) {
+    it(`${dep}: the api-service range matches the root (tested) range's major`, () => {
+      expect(apiDeps[dep], 'the api-service must declare the dependency').toBeDefined()
+      expect(rootDeps[dep], 'the root (tested) tree must declare the dependency').toBeDefined()
+      expect(majorOf(apiDeps[dep])).toBe(majorOf(rootDeps[dep]))
+    })
+  }
+})

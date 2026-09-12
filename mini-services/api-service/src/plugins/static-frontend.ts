@@ -27,7 +27,7 @@
  */
 
 import fp from 'fastify-plugin'
-import type { FastifyPluginAsync } from 'fastify'
+import type { FastifyPluginAsync, FastifyReply } from 'fastify'
 import fastifyStatic from '@fastify/static'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -56,9 +56,26 @@ export const staticFrontendPlugin: FastifyPluginAsync = async (fastify) => {
     index: 'index.html',
     // Non-file GETs fall through to the not-found handler below.
     wildcard: false,
-    setHeaders(reply, pathname) {
+    // VERSION CONTRACT (PFT run 34692245479 first-red): @fastify/static v8
+    // invokes setHeaders with the RAW http.ServerResponse (`.setHeader`),
+    // v10+ with the FastifyReply (`.header`) — the api-service package
+    // range resolved v8 on the staged prod tree while the dev/test tree
+    // ran v10, so `reply.header` threw `TypeError: reply.header is not a
+    // function` and GET / answered 500 `{"error":"Internal server error"}`
+    // (the hand-off screen). Support BOTH shapes; a drift guard test pins
+    // the dev/prod version alignment.
+    setHeaders(res, pathname) {
       if (typeof pathname === 'string' && pathname.endsWith('.html')) {
-        reply.header('Cache-Control', 'no-cache')
+        const noCache = 'no-cache'
+        if (typeof (res as { setHeader?: unknown }).setHeader === 'function') {
+          // @fastify/static v8 shape: the raw Node response.
+          ;(
+            res as unknown as import('node:http').ServerResponse
+          ).setHeader('Cache-Control', noCache)
+        } else {
+          // @fastify/static v10+ shape: the FastifyReply.
+          ;(res as unknown as FastifyReply).header('Cache-Control', noCache)
+        }
       }
     },
   })

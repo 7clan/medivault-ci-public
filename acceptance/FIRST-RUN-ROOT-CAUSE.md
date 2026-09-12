@@ -265,3 +265,27 @@ across the Rust constant, the cargo package name, the staging script,
 the plist BundleProgram, and the DMG verifiers. The PFT harness's API
 red now self-diagnoses (supervisor status file + supervisor.log +
 provision.log + launchd job shape).
+
+**F9 — the hand-off served a 500 (dependency drift: prod-staged
+@fastify/static v8 vs tested v10).** PFT run 34692245479 (after F8):
+the ENTIRE backend came up — registration click → keychain bootstrap →
+SMAppService enabled → supervisor healthy in 10s (PG 127.0.0.1:55432
+LISTEN, /ready=200 through the real DB) — and the webview DID navigate
+to the API origin, but the screen showed the raw JSON
+`{"error":"Internal server error"}`. Reproduced faithfully locally
+(built dist + real static export + fresh prod `npm install
+--omit=dev`): `TypeError: reply.header is not a function` at
+static-frontend's setHeaders — @fastify/static **v8** invokes
+setHeaders with the RAW http.ServerResponse (`.setHeader`), **v10**
+with the FastifyReply (`.header`). The api-service package.json range
+(`^8.1.3`) resolved v8.3.0 on the staged prod tree while the root
+dev/test tree ran v10.1.2 — every test green, production 500. Fix
+(three layers): (1) the setHeaders callback supports BOTH shapes
+(feature-detect setHeader/header — verified against the exact v8.3.0
+staged tree: GET / 200, assets 200, SPA fallback 200, csrf 200); (2)
+the api-service fastify-family ranges aligned to the root (tested)
+tree — @fastify/static ^10.1.2, cors ^11.3.0, multipart ^10.1.0,
+rate-limit ^11.2.0, fastify ^5.11.0 (multipart and rate-limit carried
+the SAME drift class, fixed pre-emptively); (3) a dependency drift
+guard test pins every fastify-family dep in the api-service
+package.json to the root (tested) major.

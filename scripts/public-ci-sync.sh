@@ -131,6 +131,18 @@ CUR_BRANCH="$(git -C "$PRIVATE_REPO_DIR" rev-parse --abbrev-ref HEAD)"
 [ -z "$(git -C "$PRIVATE_REPO_DIR" status --porcelain)" ] || die "private worktree is DIRTY — commit/stash first (clean worktree required)"
 PRIVATE_SHA="$(git -C "$PRIVATE_REPO_DIR" rev-parse HEAD)"
 note "P1 private SHA: $PRIVATE_SHA (worktree clean)"
+# P1b: local build output makes the P5 private-tree secret scan read
+# gitignored artifacts (.next manifests, webpack chunks, target/…) that
+# the EXPORT never contains — the scan then fails on non-committed
+# content and the failure looks mysterious. Fail EARLY with the exact
+# remedy instead (observed twice: 2026-09-12 — stale build output in the
+# working tree). This does NOT weaken any scan: it refuses to run the
+# pipeline on a dirty-directory tree.
+BUILD_DEBRIS=""
+for d in .next out dist target build; do
+  [ -e "$PRIVATE_REPO_DIR/$d" ] && BUILD_DEBRIS="$BUILD_DEBRIS $d"
+done
+[ -z "$BUILD_DEBRIS" ] || die "local build output present in the private tree:$BUILD_DEBRIS — remove it before syncing (the private-tree secret scan covers gitignored build artifacts; the export itself only ever contains committed files)"
 if [ "$OFFLINE" != "1" ]; then
   [ -f "$TOKEN_FILE" ] && [ -s "$TOKEN_FILE" ] || die "credential file missing/empty: $TOKEN_FILE (deliver per approval spec; never commit it)"
   chmod 600 "$TOKEN_FILE" 2>/dev/null || true
