@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { doctorInfoFromMeResponse } from '@/lib/auth-me'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -42,20 +43,17 @@ export function LoginForm() {
           const meRes = await fetch('/api/auth/me', { credentials: 'include' })
           if (meRes.ok) {
             const meData = await meRes.json()
-            setDoctorInfo(
-              meData.name || meData.email || email.split('@')[0] || null,
-              meData.email || email || null,
-              meData.id || null
-            )
+            // PFT run 34701835070 fix: the me response nests the user
+            // object ({ user: { ... } }) — the shared parser normalizes it.
+            const info = doctorInfoFromMeResponse(meData, email)
+            setDoctorInfo(info.name, info.email, info.id)
           } else {
-            setDoctorInfo(
-              loginData?.user?.name || email.split('@')[0] || null,
-              email,
-              loginData?.user?.id || null
-            )
+            const info = doctorInfoFromMeResponse(loginData?.user, email)
+            setDoctorInfo(info.name, info.email, info.id)
           }
         } catch {
-          setDoctorInfo(email.split('@')[0], email, '')
+          const info = doctorInfoFromMeResponse(null, email)
+          setDoctorInfo(info.name, info.email, info.id)
         }
         setCurrentView('dashboard')
         toast({

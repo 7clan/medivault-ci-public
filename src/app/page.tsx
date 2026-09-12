@@ -17,6 +17,7 @@ import { QuickActionsFab } from '@/components/quick-actions-fab'
 import { useKeyboardShortcuts } from '@/hooks/use-keyboard-shortcuts'
 import { motion, AnimatePresence } from 'framer-motion'
 import { FirstRunOnboarding } from '@/components/first-run-onboarding'
+import { doctorInfoFromMeResponse } from '@/lib/auth-me'
 import { isDesktopFirstRun } from '@/lib/local-backend'
 // CSRF double-submit bootstrap — completes the API's own cookie model
 // (attaches x-csrf-token on mutating /api requests; no-ops outside http).
@@ -119,11 +120,12 @@ export default function Home() {
           if (sessionRes.ok) {
             const meData = await sessionRes.json()
             if (meData) {
-              setDoctorInfo(
-                meData.name || meData.email?.split('@')[0] || null,
-                meData.email || null,
-                meData.id || null
-              )
+              // PFT run 34701835070 fix: the me response nests the user
+              // object ({ user: { ... } }) — the shared parser normalizes it
+              // (the old flat read lost the doctor identity on session
+              // restore: the header pill fell back to the email prefix).
+              const info = doctorInfoFromMeResponse(meData)
+              setDoctorInfo(info.name, info.email, info.id)
               setCurrentView('dashboard')
               setSessionChecked(true)
               return

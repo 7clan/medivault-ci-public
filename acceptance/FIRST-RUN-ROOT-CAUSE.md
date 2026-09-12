@@ -338,3 +338,18 @@ the code (the same content is hash-protected on the tauri:// origin).
 Pinned by the CSP assertion in the static-serving tests + a shape
 guard (the export must still ship inline __next_f scripts, else the
 policy is re-reviewed).
+
+**F12 — both /api/auth/me consumers read the response FLAT while the
+route nests the user object (PFT run 34701835070 first-red).** LOGIN
+was GREEN (the Return-submit reached the dashboard in 2s) — but the
+profile pill then showed "doctor.test" (the EMAIL prefix, truncated)
+instead of the doctor's NAME. The route returns
+`{ user: { id, name, email, … }, permissions }`; login-form.tsx AND
+page.tsx's checkSession both read `meData.name` / `meData.email` /
+`meData.id` — all undefined on the nested shape — so after an explicit
+login the pill fell back to the email prefix, and after a session
+restore (quit/reopen → checkSession) the doctor identity was lost
+entirely. Fix: a shared, unit-tested parser
+(`src/lib/auth-me.ts` → `doctorInfoFromMeResponse`) normalizes the
+nested shape (flat back-compat + fallback email), used by BOTH
+consumers; 4 regression tests pin the route shape contract.

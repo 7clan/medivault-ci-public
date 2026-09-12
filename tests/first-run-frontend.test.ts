@@ -282,3 +282,55 @@ describe('fetch-csrf helpers — the double-submit header contract', () => {
     expect(requestMethod(req, { method: 'DELETE' })).toBe('DELETE')
   })
 })
+
+// ─── /api/auth/me response shape (PFT run 34701835070 first-red) ──────
+// The route returns { user: { id, name, email, ... }, permissions } — but
+// both consumers (login-form, page.tsx checkSession) read the fields FLAT
+// (meData.name → undefined), so after login the header pill fell back to
+// the email prefix and after session restore the doctor identity was lost.
+// The shared parser is pinned here against the REAL route shape.
+import { doctorInfoFromMeResponse } from '../src/lib/auth-me'
+
+describe('doctorInfoFromMeResponse — the /api/auth/me shape contract', () => {
+  it('reads the nested user object (the real route shape)', () => {
+    const info = doctorInfoFromMeResponse({
+      user: {
+        id: 'usr_1',
+        name: 'MediVault Test Doctor',
+        email: 'doctor.test@example.invalid',
+        roleId: 1,
+      },
+      permissions: ['read'],
+    })
+    expect(info).toEqual({
+      name: 'MediVault Test Doctor',
+      email: 'doctor.test@example.invalid',
+      id: 'usr_1',
+    })
+  })
+
+  it('falls back to the email prefix when name is absent (never the nested-object undefined trap)', () => {
+    const info = doctorInfoFromMeResponse({
+      user: { id: 'usr_2', name: null, email: 'doctor.test@example.invalid' },
+      permissions: [],
+    })
+    expect(info.name).toBe('doctor.test')
+    expect(info.email).toBe('doctor.test@example.invalid')
+    expect(info.id).toBe('usr_2')
+  })
+
+  it('uses the fallback email (the just-typed login address) when the response has none', () => {
+    const info = doctorInfoFromMeResponse(
+      { user: { id: 'usr_3' }, permissions: [] },
+      'typed@example.invalid',
+    )
+    expect(info.name).toBe('typed')
+    expect(info.email).toBe('typed@example.invalid')
+    expect(info.id).toBe('usr_3')
+  })
+
+  it('accepts a flat user object (back-compat) and null input', () => {
+    expect(doctorInfoFromMeResponse({ id: 'u', name: 'Flat', email: 'f@x.invalid' }).name).toBe('Flat')
+    expect(doctorInfoFromMeResponse(null)).toEqual({ name: null, email: null, id: null })
+  })
+})
