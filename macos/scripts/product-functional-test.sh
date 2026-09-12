@@ -451,7 +451,7 @@ ocr_capture() { # full-screen capture + OCR; sets OCR_TEXT / MV_SCALE / LAST_OCR
   return 0
 }
 
-ocr_lookup() { # <needle> [first|last] [exact|any]
+ocr_lookup() { # <needle> [first|last] [exact|any|label]
   local needle="$1"
   local which="${2:-first}"
   local mode="${3:-any}"
@@ -459,7 +459,20 @@ ocr_lookup() { # <needle> [first|last] [exact|any]
   local hits px py w h
   hits="$(printf '%s\n' "$OCR_TEXT" | grep -i -- "|${needle}|" || true)"
   if [ -z "$hits" ] && [ "$mode" != "exact" ]; then
-    hits="$(printf '%s\n' "$OCR_TEXT" | grep -i -- "|[^|]*${needle}[^|]*|" || true)"
+    if [ "$mode" = "label" ]; then
+      # LABEL mode (PFT run 34705012537 first-red): a substring match on a
+      # SHORT line only — floating field labels are short ("• Password",
+      # "Full Name *", "Confirm*"); long SENTENCES containing the needle
+      # (error banners like "Invalid email or password. Please try
+      # again.") are not labels. Without this, the 15-relogin's Password
+      # lookup matched the error banner, the click missed the input, and
+      # the subsequent Cmd+A + Backspace (no input focused) triggered
+      # macOS's back-navigation — the webview returned to the tauri://
+      # first-run page from the back/forward cache.
+      hits="$(printf '%s\n' "$OCR_TEXT" | awk -F'|' -v n="$needle"         'tolower($2) ~ tolower(n) && length($2) <= length(n) + 14' || true)"
+    else
+      hits="$(printf '%s\n' "$OCR_TEXT" | grep -i -- "|[^|]*${needle}[^|]*|" || true)"
+    fi
   fi
   [ -n "$hits" ] || return 1
   if [ "$which" = "last" ]; then
@@ -603,7 +616,7 @@ v_type_into() { # <label-needle> <text> <stem> [secret yes|no] [arabic yes|no] [
   fi
   ocr_capture || return 1
   snap_file "$MV_SHOT" "${stem}-before" || true
-  if ! ocr_lookup "$label" "first"; then
+  if ! ocr_lookup "$label" "first" "label"; then
     probe "vtype[$stem]: label '$label' NOT FOUND on screen — no click attempted"
     return 1
   fi
@@ -1249,6 +1262,24 @@ snap "14-wrong-password-error" || true
 # (the real user's flow), then type the correct password.
 if ! v_type_into "Password" "$DOC_PASS" "15-login-again-password" yes no yes; then
   product_red LOGIN "could not re-enter the correct password after the wrong attempt"
+fi
+# Defensive recovery (PFT run 34705012537 evidence chain): if the webview
+# ever returns to the tauri:// first-run page (a stray Backspace with no
+# input focused triggers macOS back-navigation), come back to the
+# API-served app through the ready page's REAL link and re-enter BOTH
+# login fields.
+if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*first-run setup"; then
+  probe "the webview returned to the first-run page (stray back-navigation) — recovering via the Open MediVault link"
+  if v_click "Open MediVault" "15-recover-from-back" "Sign In"; then
+    if ! v_type_into "Email" "$DOC_EMAIL" "15-recover-email"; then
+      product_red LOGIN "could not re-type the email after back-navigation recovery"
+    fi
+    if ! v_type_into "Password" "$DOC_PASS" "15-recover-password" yes no yes; then
+      product_red LOGIN "could not re-type the password after back-navigation recovery"
+    fi
+  else
+    product_red LOGIN "back-navigation recovery failed (the Open MediVault link was not clickable)"
+  fi
 fi
 RELOGIN_SUBMITTED=0
 if osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10; then
