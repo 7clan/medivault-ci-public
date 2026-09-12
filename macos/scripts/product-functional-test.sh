@@ -1143,9 +1143,14 @@ snap "10-dashboard" || true
 # =============================================================================
 note "=== PHASE 7: logout / login / wrong-password ==="
 # The profile pill shows the doctor name; clicking it opens the Sign Out menu.
+# The profile pill truncates the account name with an ellipsis ("MediVault
+# Test ..." — run 34698812086 first-red): click the VISIBLE prefix when the
+# full name is not OCR-findable.
 if ! v_click "$DOC_NAME" "11-logout-pill" "Sign Out"; then
-  snap "11-logout-failed" || true
-  product_red LOGOUT "the profile pill ('$DOC_NAME') could not be clicked to reach Sign Out"
+  if ! v_click "MediVault Test" "11-logout-pill-prefix" "Sign Out"; then
+    snap "11-logout-failed" || true
+    product_red LOGOUT "the profile pill ('$DOC_NAME' / its visible prefix) could not be clicked to reach Sign Out"
+  fi
 fi
 if ! v_click "Sign Out" "12-logout-confirm" "Sign In"; then
   snap "12-logout-confirm-failed" || true
@@ -1175,7 +1180,9 @@ snap "13-login-dashboard" || true
 
 # Wrong password: logout → login with a WRONG password → the honest error.
 if ! v_click "$DOC_NAME" "14-logout2-pill" "Sign Out"; then
-  product_red WRONG_PASSWORD "could not open the profile menu for the wrong-password attempt"
+  if ! v_click "MediVault Test" "14-logout2-pill-prefix" "Sign Out"; then
+    product_red WRONG_PASSWORD "could not open the profile menu for the wrong-password attempt"
+  fi
 fi
 if ! v_click "Sign Out" "14-logout2" "Sign In"; then
   product_red WRONG_PASSWORD "could not log out for the wrong-password attempt"
