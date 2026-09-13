@@ -868,6 +868,17 @@ scan_detail_page() { # <own-note> <foreign-1> <foreign-2>
   SCAN_OWN_SEEN=no; SCAN_FOREIGN_SEEN=no
   local own="$1" f1="$2" f2="$3"
   local i=0 last_hash=""
+  # (run 34786096512, class D) the detail view opens at the scroll offset
+  # CARRIED OVER from the dashboard — the note card at the TOP of the view
+  # was never seen by a down-only scan. Scroll UP to the top first (the
+  # rubber band stops the overshoot), then scan down through the whole view.
+  local up=0
+  while [ "$up" -lt 8 ]; do
+    scroll_burst up
+    sleep 1
+    up=$((up + 1))
+  done
+  probe "scan-detail: scrolled to the top of the detail view before the down-scan"
   while [ "$i" -lt 10 ]; do
     ocr_capture || true
     if [ -n "$last_hash" ] && [ "$LAST_OCR_HASH" = "$last_hash" ]; then
@@ -2216,7 +2227,7 @@ fi
 # The banner (top) shows the phone — check it there first, then scan the
 # whole detail view for the note + foreign data.
 if ! ocr_grep "+1 555 0100"; then
-  v_scroll_find "+1 555 0100" 8 || true
+  v_scroll_find "+1 555 0100" 6 || v_scroll_find "+1 555 0100" 5 no up || true
 fi
 if ocr_grep "+1 555 0100"; then
   probe "persistence: the EDITED phone (+1 555 0100) is visible — the edit survived the restart"
