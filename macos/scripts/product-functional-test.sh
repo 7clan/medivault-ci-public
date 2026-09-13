@@ -1496,11 +1496,39 @@ note "=== PHASE 7: logout / login / wrong-password ==="
 # The profile pill truncates the account name with an ellipsis ("MediVault
 # Test ..." — run 34698812086 first-red): click the VISIBLE prefix when the
 # full name is not OCR-findable.
-if ! v_click "$DOC_NAME" "11-logout-pill" "Sign Out"; then
-  if ! v_click "MediVault Test" "11-logout-pill-prefix" "Sign Out"; then
-    snap "11-logout-failed" || true
-    product_red LOGOUT "the profile pill ('$DOC_NAME' / its visible prefix) could not be clicked to reach Sign Out"
+open_profile_menu() { # <stem> — needle variants + an ANCHORED fallback
+  local stem="$1"
+  if v_click "$DOC_NAME" "${stem}-pill" "Sign Out"; then return 0; fi
+  if v_click "MediVault Test" "${stem}-pill-prefix" "Sign Out"; then return 0; fi
+  # (run 34779478099, class D) Apple Vision DROPPED the pill's text line in
+  # the fitted-window geometry (the pixels render identically to the runs
+  # where it was read). Anchor on the reliably-OCR'd header nav and click
+  # the right-aligned pill's center band; every candidate is VERIFIED by
+  # the Sign Out menu appearing.
+  ocr_capture || return 1
+  if ocr_lookup "Settings" "first" "label"; then
+    local cy cand
+    cy=$(( OCR_HIT_Y + (OCR_HIT_H / 2) ))
+    for cand in 800 850 750 900; do
+      probe "pill-anchored[$stem]: clicking the right-aligned header band at ($cand,$cy) — verified by the Sign Out menu"
+      "$MV_MOUSE" "$cand" "$cy" 2>>"$LOG" || true
+      sleep 2
+      ocr_capture || return 1
+      if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*Sign Out"; then
+        snap_file "$MV_SHOT" "${stem}-pill-anchored" || true
+        probe "pill-anchored[$stem]: the profile menu opened (Sign Out visible) via the anchored click"
+        return 0
+      fi
+      # dismiss anything accidentally opened before the next candidate
+      osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 53' 10 >/dev/null 2>&1 || true
+      sleep 1
+    done
   fi
+  return 1
+}
+if ! open_profile_menu "11-logout"; then
+  snap "11-logout-failed" || true
+  product_red LOGOUT "the profile pill ('$DOC_NAME' / its visible prefix / the anchored header band) could not be clicked to reach Sign Out"
 fi
 if ! v_click "Sign Out" "12-logout-confirm" "Sign In"; then
   snap "12-logout-confirm-failed" || true
@@ -1542,10 +1570,8 @@ cap LOGIN "$CAP_LOGIN"
 snap "13-login-dashboard" || true
 
 # Wrong password: logout → login with a WRONG password → the honest error.
-if ! v_click "$DOC_NAME" "14-logout2-pill" "Sign Out"; then
-  if ! v_click "MediVault Test" "14-logout2-pill-prefix" "Sign Out"; then
-    product_red WRONG_PASSWORD "could not open the profile menu for the wrong-password attempt"
-  fi
+if ! open_profile_menu "14-logout2"; then
+  product_red WRONG_PASSWORD "could not open the profile menu for the wrong-password attempt"
 fi
 if ! v_click "Sign Out" "14-logout2" "Sign In"; then
   product_red WRONG_PASSWORD "could not log out for the wrong-password attempt"
