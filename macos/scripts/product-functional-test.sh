@@ -590,6 +590,12 @@ ocr_lookup() { # <needle> [first|last] [exact|any|label]
       hits="$(printf '%s\n' "$OCR_TEXT" | grep -i -- "|[^|]*${needle}[^|]*|" || true)"
     fi
   fi
+  if [ -z "$hits" ] && [ "${needle// /}" != "$needle" ]; then
+    # Vision dropped the spaces in the rendered text: retry space-insensitively
+    # (the coords survive the strip — they carry no spaces)
+    hits="$(printf '%s\n' "$OCR_TEXT" | tr -d ' ' | grep -i -- "|[^|]*${needle// /}[^|]*|" || true)"
+    [ -n "$hits" ] && probe "ocr-lookup: '$needle' found space-insensitively (Vision dropped the spaces)"
+  fi
   [ -n "$hits" ] || return 1
   if [ "$which" = "last" ]; then
     hits="$(printf '%s\n' "$hits" | tail -1)"
@@ -606,6 +612,22 @@ ocr_lookup() { # <needle> [first|last] [exact|any|label]
   OCR_HIT_W="$(awk -v a="${w:-0}" -v s="$MV_SCALE" 'BEGIN{printf "%.0f", a/s}')"
   OCR_HIT_H="$(awk -v a="${h:-0}" -v s="$MV_SCALE" 'BEGIN{printf "%.0f", a/s}')"
   return 0
+}
+
+# Space-insensitive OCR text match (run 34781243249 first-red, class D):
+# Apple Vision sometimes DROPS the spaces in rendered text ("MediVaultTestDoctor"
+# for "MediVault Test Doctor" — the typed value WAS in the field, the needle
+# just could not match). Every text verification below falls back to a
+# space-stripped comparison; the logged probe records when it mattered.
+ocr_grep() { # <needle> [haystack-default-OCR_TEXT]
+  local needle="$1" hay="${2:-$OCR_TEXT}" nospace
+  if printf '%s\n' "$hay" | grep -qi -- "|[^|]*${needle}"; then return 0; fi
+  nospace="${needle// /}"
+  if [ -n "$nospace" ] && printf '%s\n' "$hay" | tr -d ' ' | grep -qi -- "|[^|]*${nospace}"; then
+    probe "ocr-grep: '$needle' matched space-insensitively (Vision dropped the spaces)"
+    return 0
+  fi
+  return 1
 }
 
 v_click() { # <needle> <stem> <expect-text> [first|last] [y-offset-points]
@@ -637,7 +659,7 @@ v_click() { # <needle> <stem> <expect-text> [first|last] [y-offset-points]
   ocr_capture || return 1
   snap_file "$MV_SHOT" "${stem}-after" || true
   local verified="no" why=""
-  if [ -n "$expect" ] && printf '%s\n' "$OCR_TEXT" | grep -qi -- "|[^|]*${expect}"; then
+  if [ -n "$expect" ] && ocr_grep "$expect"; then
     verified="yes"; why="expected text '$expect' is now visible"
   elif [ "$LAST_OCR_HASH" != "$before_hash" ]; then
     verified="yes"; why="visible screen change (hash-diff)"
@@ -754,7 +776,7 @@ v_scroll_find() { # <needle> <max-bursts> [arabic yes|no] [dir down|up]
     else
       ocr_capture || return 1
     fi
-    if [ -n "$OCR_TEXT" ] && printf '%s\n' "$OCR_TEXT" | grep -qi -- "|[^|]*${needle}"; then
+    if [ -n "$OCR_TEXT" ] && ocr_grep "$needle"; then
       probe "scroll-find: '$needle' is visible after $i scroll burst(s) ($dir)"
       return 0
     fi
@@ -777,7 +799,7 @@ v_scroll_find() { # <needle> <max-bursts> [arabic yes|no] [dir down|up]
 v_scroll_top() { # bounded scroll-up until a top-of-page marker is visible
   local max="${1:-10}"
   if v_scroll_find "GETTING STARTED" "$max" no up; then return 0; fi
-  if printf '%s\n' "$OCR_TEXT" | grep -qi -- "|[^|]*All caught up"; then
+  if ocr_grep "All caught up"; then
     probe "scroll-top: the TodaysOverview card is visible — the page is at the top"
     return 0
   fi
@@ -809,12 +831,12 @@ scan_detail_page() { # <own-note> <foreign-1> <foreign-2>
       break
     fi
     last_hash="$LAST_OCR_HASH"
-    if [ -n "$own" ] && printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*${own}"; then
+    if [ -n "$own" ] && ocr_grep "$own"; then
       SCAN_OWN_SEEN=yes
     fi
     local f
     for f in "$f1" "$f2"; do
-      if [ -n "$f" ] && printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*${f}"; then
+      if [ -n "$f" ] && ocr_grep "$f"; then
         SCAN_FOREIGN_SEEN=yes
         probe "scan-detail: FOREIGN note text is visible: '$f'"
       fi
@@ -862,7 +884,7 @@ v_click_edit_pencil() { # <patient-full-name> <stem>
       "$MV_MOUSE" "$cx" "$icy" 2>>"$LOG" || true
       sleep 2
       ocr_capture || return 1
-      if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*First Name"; then
+      if ocr_grep "First Name"; then
         snap_file "$MV_SHOT" "${stem}-open" || true
         probe "vclick-pencil[$stem]: the Edit Patient dialog opened (First Name visible)"
         return 0
@@ -879,7 +901,7 @@ v_click_edit_pencil() { # <patient-full-name> <stem>
     "$MV_MOUSE" "$tx" "$cy" 2>>"$LOG" || true
     sleep 2
     ocr_capture || return 1
-    if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*First Name"; then
+    if ocr_grep "First Name"; then
       snap_file "$MV_SHOT" "${stem}-open-fb" || true
       probe "vclick-pencil[$stem]: the Edit Patient dialog opened via the anchored fallback"
       return 0
@@ -945,7 +967,7 @@ v_type_into() { # <label-needle> <text> <stem> [secret yes|no] [arabic yes|no] [
       probe "vtype[$stem]: Arabic text not OCR-verified — the typed field state is on the screenshot; search/isolation behavior is the functional proof"
       return 0
     fi
-    if printf '%s\n' "$OCR_TEXT" | grep -qi -- "|[^|]*${text}"; then
+    if ocr_grep "$text"; then
       probe "vtype[$stem]: typed text is now VISIBLE on screen (verified)"
       return 0
     fi
@@ -981,7 +1003,7 @@ wait_for_ocr() { # <needle> <timeout_s> <label> — bounded wait until text is v
   local t0
   t0="$(date +%s)"
   while [ $(( $(date +%s) - t0 )) -le "$t" ]; do
-    if ocr_capture && printf '%s\n' "$OCR_TEXT" | grep -qi -- "|[^|]*${needle}"; then
+    if ocr_capture && ocr_grep "$needle"; then
       probe "wait_for_ocr[$label]: '$needle' visible after $(( $(date +%s) - t0 ))s"
       return 0
     fi
@@ -1264,7 +1286,7 @@ fi
 
 FIRST_RUN_CONTROL="RED"
 for needle in "Set up MediVault" "Local services" "Not registered"; do
-  if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*${needle}"; then
+  if ocr_grep "$needle"; then
     FIRST_RUN_CONTROL="GREEN ('$needle' visible pre-auth)"
     break
   fi
@@ -1397,7 +1419,7 @@ fi
 # opened by macOS instead of the webview navigating), the MediVault window
 # itself did NOT hand off — that is a product red, honestly labeled.
 SAFARI_WINS="$(ui_window_count "Safari")"
-if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*Create Your Account"; then
+if ocr_grep "Create Your Account"; then
   if [ "$SAFARI_WINS" != "0" ] && [ "$SAFARI_WINS" != "-1" ]; then
     probe "Safari has $SAFARI_WINS window(s) — checking whether the setup screen is in SAFARI, not the app (disambiguation)"
     # The MediVault window title is stable; if the app window still shows the
@@ -1469,7 +1491,7 @@ fi
 if [ "$SUBMITTED" = "0" ]; then
   # Scroll the real button into view (Page Down) and click it.
   ocr_capture || true
-  if ! printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*Create Account"; then
+  if ! ocr_grep "Create Account"; then
     osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 121' 10 >/dev/null 2>&1 || true
     sleep 1
   fi
@@ -1514,7 +1536,7 @@ open_profile_menu() { # <stem> — needle variants + an ANCHORED fallback
       "$MV_MOUSE" "$cand" "$cy" 2>>"$LOG" || true
       sleep 2
       ocr_capture || return 1
-      if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*Sign Out"; then
+      if ocr_grep "Sign Out"; then
         snap_file "$MV_SHOT" "${stem}-pill-anchored" || true
         probe "pill-anchored[$stem]: the profile menu opened (Sign Out visible) via the anchored click"
         return 0
@@ -1688,7 +1710,7 @@ create_patient() { # <first> <last> <note> <stem> <arabic yes|no>
     if osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10; then
       sleep 3
       ocr_capture || true
-      if [ -n "$OCR_TEXT" ] && ! printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*Add New Patient"; then
+      if [ -n "$OCR_TEXT" ] && ! ocr_grep "Add New Patient"; then
         PATIENT_SUBMITTED=1
         snap "${stem}-submit-enter" || true
         probe "the First-Name-field Return submitted the ${stem} patient form (below-the-fold footer + the Notes textarea trap — a real user's flow)"
@@ -1763,13 +1785,13 @@ sleep 2
 # Ensure the filtered row is on screen before the checks (below-the-fold list).
 v_scroll_find "$PAT_B_FIRST $PAT_B_LAST" 8 || true
 snap "20-search-jane" || true
-if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*$PAT_A_FIRST $PAT_A_LAST"; then
+if ocr_grep "$PAT_A_FIRST $PAT_A_LAST"; then
   # Jane filter should NOT show John (if it does, note it — the row list may
   # still show other sections; the isolation verdict comes from the detail
   # checks below, this is recorded)
   probe "search '$PAT_B_FIRST': John Test still visible on screen (may be a non-filtered section — recorded)"
 fi
-if ! printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*$PAT_B_FIRST $PAT_B_LAST"; then
+if ! ocr_grep "$PAT_B_FIRST $PAT_B_LAST"; then
   product_red PATIENT_SEARCH "searching for '$PAT_B_FIRST' did not surface Patient B"
 fi
 # Search for the Arabic name — the functional round-trip proof for patient C.
@@ -1777,7 +1799,7 @@ if v_type_into "Search patients" "محمد" "21-search-c" no yes yes; then
   sleep 2
   v_scroll_find "محمد" 8 yes || true
   snap "21-search-c" || true
-  if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*$PAT_A_FIRST $PAT_A_LAST\||[^|]*$PAT_B_FIRST $PAT_B_LAST"; then
+  if ocr_grep "$PAT_A_FIRST $PAT_A_LAST" || ocr_grep "$PAT_B_FIRST $PAT_B_LAST"; then
     probe "search 'محمد': other patients still visible — recorded (rows may include non-filter sections)"
   fi
 else
@@ -1854,7 +1876,7 @@ if ! v_click_edit_pencil "$PAT_A_FIRST $PAT_A_LAST" "23-edit-open"; then
   snap "23-edit-open-failed" || true
   product_red PATIENT_EDIT "the icon-only Edit Patient control could not be activated (all anchored attempts recorded)"
 fi
-if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*First Name"; then
+if ocr_grep "First Name"; then
   if ! v_type_into "Phone" "+1 555 0100" "24-edit-phone"; then
     product_red PATIENT_EDIT "could not type the new phone into the edit dialog"
   fi
@@ -1867,7 +1889,7 @@ if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*First Name"; then
   if osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10; then
     sleep 3
     ocr_capture || true
-    if [ -n "$OCR_TEXT" ] && ! printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*Edit Patient"; then
+    if [ -n "$OCR_TEXT" ] && ! ocr_grep "Edit Patient"; then
       EDIT_SAVED=1
       snap "24-edit-save-enter" || true
       probe "the focused-field Return saved the edit dialog (below-the-fold footer — a real user's flow)"
@@ -1951,7 +1973,7 @@ else
     # Honest fallback: the search itself is the isolation proof for C — the
     # Arabic search must NOT surface John/Jane's rows.
     ocr_capture || true
-    if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*$PAT_A_FIRST $PAT_A_LAST\||[^|]*$PAT_B_FIRST $PAT_B_LAST"; then
+    if ocr_grep "$PAT_A_FIRST $PAT_A_LAST" || ocr_grep "$PAT_B_FIRST $PAT_B_LAST"; then
       product_red PATIENT_DATA_ISOLATION "searching the Arabic name surfaced Patients A/B — the filter is not isolating C"
     fi
     probe "isolation check C (search-based): the Arabic search did not surface A/B rows"
@@ -1984,7 +2006,7 @@ launch_and_detect "persistence-reopen" 180
 # The first-run gate re-runs: status=enabled → health wait → hand-off →
 # login (session cookies may or may not persist — both are honest outcomes).
 if ! wait_for_ocr "Add Patient" 150 "dashboard-after-reopen"; then
-  if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*Sign In"; then
+  if ocr_grep "Sign In"; then
     probe "re-open reached the Sign In screen (webview session did not persist) — logging in again (honest outcome)"
     if ! v_type_into "Email" "$DOC_EMAIL" "30-relogin-email"; then
       product_red QUIT_REOPEN "could not type the email on the re-open login screen"
@@ -2022,13 +2044,13 @@ if ! v_type_into "Search patients" "$PAT_A_FIRST" "31-persist-a" no no yes; then
 fi
 sleep 2
 v_scroll_find "$PAT_A_FIRST $PAT_A_LAST" 8 || true
-printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*$PAT_A_FIRST $PAT_A_LAST" || product_red PATIENT_PERSISTENCE "Patient A does not appear in search after quit/reopen"
+ocr_grep "$PAT_A_FIRST $PAT_A_LAST" || product_red PATIENT_PERSISTENCE "Patient A does not appear in search after quit/reopen"
 snap "31-persistence-a" || true
 
 if v_type_into "Search patients" "$PAT_B_FIRST" "32-persist-b" no no yes; then
   sleep 2
   v_scroll_find "$PAT_B_FIRST $PAT_B_LAST" 8 || true
-  printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*$PAT_B_FIRST $PAT_B_LAST" || product_red PATIENT_PERSISTENCE "Patient B does not appear in search after quit/reopen"
+  ocr_grep "$PAT_B_FIRST $PAT_B_LAST" || product_red PATIENT_PERSISTENCE "Patient B does not appear in search after quit/reopen"
   snap "32-persistence-b" || true
 else
   product_red PATIENT_PERSISTENCE "could not search for Patient B after the restart"
@@ -2046,7 +2068,7 @@ if v_type_into "Search patients" "محمد" "33-persist-c" no yes yes; then
   else
     probe "persistence C: the Arabic row was not OCR-confirmed (Arabic OCR limits — creation + DB continuity evidence stands)"
   fi
-  if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*$PAT_A_FIRST $PAT_A_LAST\||[^|]*$PAT_B_FIRST $PAT_B_LAST"; then
+  if ocr_grep "$PAT_A_FIRST $PAT_A_LAST" || ocr_grep "$PAT_B_FIRST $PAT_B_LAST"; then
     probe "persistence C: other patients visible in the Arabic search result — recorded (non-filter sections may show)"
   fi
 else
@@ -2059,10 +2081,10 @@ if ! open_patient_detail "$PAT_A_FIRST $PAT_A_LAST" "34-persist-detail-a"; then
 fi
 # The banner (top) shows the phone — check it there first, then scan the
 # whole detail view for the note + foreign data.
-if ! printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*+1 555 0100"; then
+if ! ocr_grep "+1 555 0100"; then
   v_scroll_find "+1 555 0100" 8 || true
 fi
-if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*+1 555 0100"; then
+if ocr_grep "+1 555 0100"; then
   probe "persistence: the EDITED phone (+1 555 0100) is visible — the edit survived the restart"
 else
   product_red PATIENT_PERSISTENCE "the edited phone (+1 555 0100) is not visible on A's detail after the restart"
