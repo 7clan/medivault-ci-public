@@ -916,21 +916,32 @@ v_click_edit_pencil() { # <patient-full-name> <stem>
     probe "vclick-pencil[$stem]: patient name '$name' not found on screen — no anchor, no click"
     return 1
   fi
-  local cy x0
-  cy=$(( OCR_HIT_Y + (OCR_HIT_H / 2) ))
+  # (run 34788023216 forensics): the icons sit at the banner row's UPPER
+  # band — measured y 186..199 against the name's OCR box top y=207 — the
+  # old symmetric ±16 band around the name's center missed them entirely and
+  # the fixed fallbacks hit pure gradient. Scan an ASYMMETRIC band around
+  # (name_top - 13) ± 22 (covers name_top-35 .. name_top+9), then prefer the
+  # RIGHT-side clusters (x>700): the icons are [report | EDIT | trash].
+  local band_cy x0
+  band_cy=$(( OCR_HIT_Y - 13 ))
   x0=$(( OCR_HIT_X + OCR_HIT_W + 30 ))
-  probe "vclick-pencil[$stem]: anchor name '$name' at ($OCR_HIT_X,$OCR_HIT_Y) — icon band y=$cy, scan from x=$x0"
+  probe "vclick-pencil[$stem]: anchor name '$name' at ($OCR_HIT_X,$OCR_HIT_Y) — icon band center y=$band_cy, scan from x=$x0"
   if [ -n "$MV_ICONSCAN" ]; then
     local hits n hit cx icy
-    hits="$("$MV_ICONSCAN" "$MV_SHOT" "$MV_SCALE" "$x0" "$cy" "16" 2>>"$LOG" || true)"
+    hits="$("$MV_ICONSCAN" "$MV_SHOT" "$MV_SCALE" "$x0" "$band_cy" "22" 2>>"$LOG" || true)"
     n="$(printf '%s\n' "$hits" | grep -c '^ICON|' || true)"
     probe "vclick-pencil[$stem]: icon scan found $n white glyph cluster(s): $(printf '%s' "$hits" | tr '\n' ' ')"
-    if [ "${n:-0}" -ge 3 ]; then
-      hit="$(printf '%s\n' "$hits" | grep '^ICON|' | sed -n '2p')"
-    elif [ "${n:-0}" -ge 1 ]; then
-      hit="$(printf '%s\n' "$hits" | grep '^ICON|' | head -1)"
+    # right-side clusters first (the icon row); the MIDDLE of 3 is the pencil
+    local right_hits
+    right_hits="$(printf '%s\n' "$hits" | grep '^ICON|' | awk -F'|' '$2 > 700' | sort -t'|' -k2 -n)"
+    local rn
+    rn="$(printf '%s\n' "$right_hits" | grep -c '^ICON|' || true)"
+    if [ "${rn:-0}" -ge 3 ]; then
+      hit="$(printf '%s\n' "$right_hits" | sed -n '2p')"
+    elif [ "${rn:-0}" -ge 1 ]; then
+      hit="$(printf '%s\n' "$right_hits" | head -1)"
     else
-      hit=""
+      hit="$(printf '%s\n' "$hits" | grep '^ICON|' | head -1 || true)"
     fi
     if [ -n "$hit" ]; then
       cx="$(printf '%s' "$hit" | awk -F'|' '{print $2}')"
@@ -945,15 +956,19 @@ v_click_edit_pencil() { # <patient-full-name> <stem>
         return 0
       fi
       probe "vclick-pencil[$stem]: the cluster click did not open the edit dialog"
+      osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 53' 10 >/dev/null 2>&1 || true
+      sleep 1
     fi
   fi
-  # OCR-anchored fallback: the icon row is right-aligned on the name's band.
-  # Each candidate is VERIFIED; Escape dismisses anything opened by a miss.
-  local cand tx
-  for cand in 55 90 125; do
-    tx=$(( 1000 - cand ))
-    probe "vclick-pencil[$stem]: anchored fallback click at ($tx,$cy) (offset $cand from the right edge)"
-    "$MV_MOUSE" "$tx" "$cy" 2>>"$LOG" || true
+  # OCR-anchored fallback at the MEASURED icon band (icons y ≈ name_top-15;
+  # pencil ≈ x 902 with the fitted window). Each candidate is VERIFIED;
+  # Escape dismisses anything opened by a miss (report/trash).
+  local cand tx ty2
+  ty2=$(( OCR_HIT_Y - 15 ))
+  for cand in 902 920 884 860 944; do
+    tx="$cand"
+    probe "vclick-pencil[$stem]: anchored fallback click at ($tx,$ty2) (the measured icon band)"
+    "$MV_MOUSE" "$tx" "$ty2" 2>>"$LOG" || true
     sleep 2
     ocr_capture || return 1
     if ocr_grep "First Name"; then
