@@ -429,6 +429,122 @@ if ! swiftc -O -o "$MV_OCR_AR" /tmp/mv-ocr-ar.swift 2>>"$LOG"; then
   probe "Arabic-capable OCR compile FAILED — Arabic verification will rely on search/isolation behavior (recorded honestly)"
 fi
 
+# --- mv-scroll: native CGEvent scroll wheel --------------------------------
+# (PFT run 34709293200 first-red, class D): the dashboard's patient list,
+# stats and search box render BELOW THE FOLD of the 1024x768 runner window;
+# a real user scrolls — the harness must too. The scroll wheel event is
+# posted at the current cursor position, so the caller moves the mouse to
+# the scrollable area first (mouseMoved + scrollWheel). Compiled
+# SEPARATELY and NON-FATALLY: if it fails, the scroll helpers fall back to
+# keyboard-only Page Down / Home and the outcomes stay honest.
+cat > /tmp/mv-scroll.swift <<'SWIFT'
+import Foundation
+import CoreGraphics
+let args = CommandLine.arguments
+guard args.count >= 4, let x = Double(args[1]), let y = Double(args[2]), let lines = Int(args[3]) else {
+  print("ERR usage mv-scroll <x> <y> <lines> [up]"); exit(2)
+}
+let up = args.count >= 5 && args[4] == "up"
+let pt = CGPoint(x: x, y: y)
+let src = CGEventSource(stateID: .combinedSessionState)
+if let mv = CGEvent(mouseEventSource: src, mouseType: .mouseMoved, mouseCursorPosition: pt, mouseButton: .left) {
+  mv.post(tap: .cghidEventTap)
+}
+usleep(150_000)
+let delta: Int32 = up ? Int32(lines) : -Int32(lines)
+if let e = CGEvent(scrollWheelEvent2Source: src, units: .line, wheelCount: 1, wheel1: delta, wheel2: 0, wheel3: 0) {
+  e.post(tap: .cghidEventTap)
+  exit(0)
+}
+print("ERR scroll event creation failed"); exit(2)
+SWIFT
+MV_SCROLL="/tmp/mv-scroll"
+if swiftc -O -o "$MV_SCROLL" /tmp/mv-scroll.swift 2>>"$LOG"; then
+  probe "mv-scroll compiled (native CGEvent scroll wheel)"
+else
+  MV_SCROLL=""
+  probe "mv-scroll compile FAILED — scrolling falls back to keyboard Page Down/Home only (recorded honestly)"
+fi
+
+# --- mv-icon-scan: locate white glyph clusters in a horizontal band -------
+# The patient-detail edit control is ICON-ONLY (title="Edit Patient" is a
+# tooltip, not rendered text — an OCR needle can never match it). This
+# scans the banner band to the RIGHT of the OCR-found patient name for
+# bright low-saturation clusters (the white report|EDIT|trash icons on the
+# gradient banner) and prints their centers in SCREEN coordinates:
+#   ICON|cx|cy
+# Arguments: <png> <scale> <x0-screen> <cy-screen> <half-band-screen>
+cat > /tmp/mv-icon-scan.swift <<'SWIFT'
+import Foundation
+import CoreGraphics
+import ImageIO
+let args = CommandLine.arguments
+guard args.count >= 6, let scale = Double(args[2]), scale > 0,
+      let x0s = Double(args[3]), let cys = Double(args[4]), let half = Double(args[5]) else {
+  print("ERR usage mv-icon-scan <png> <scale> <x0> <cy> <half-band>"); exit(2)
+}
+guard let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: args[1]) as CFURL, nil),
+      let img = CGImageSourceCreateImageAtIndex(src, 0, nil) else { print("ERR read"); exit(2) }
+let w = img.width, h = img.height
+guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                          space: CGColorSpaceCreateDeviceRGB(),
+                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { print("ERR ctx"); exit(2) }
+ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
+guard let data = ctx.data else { print("ERR data"); exit(2) }
+let buf = data.assumingMemoryBound(to: UInt8.self, capacity: w * h * 4)
+let x0 = max(0, min(w - 1, Int(x0s / scale)))
+let yTop = max(0, Int((cys - half) / scale))
+let yBot = min(h - 1, Int((cys + half) / scale))
+if yTop > yBot || x0 >= w - 1 { exit(0) }
+func bright(_ px: Int, _ py: Int) -> Bool {
+  let row = h - 1 - py
+  let off = (row * w + px) * 4
+  let r = Int(buf[off]), g = Int(buf[off + 1]), b = Int(buf[off + 2])
+  return r > 195 && g > 195 && b > 195 && (max(r, g, b) - min(r, g, b)) < 40
+}
+var colCounts = [Int](repeating: 0, count: w)
+for py in yTop...yBot {
+  for px in x0..<w {
+    if bright(px, py) { colCounts[px] += 1 }
+  }
+}
+var runs: [(Int, Int)] = []
+var start = -1
+for px in x0..<w {
+  let on = colCounts[px] >= 2
+  if on {
+    if start < 0 { start = px }
+  } else {
+    if start >= 0 { runs.append((start, px - 1)); start = -1 }
+  }
+}
+if start >= 0 { runs.append((start, w - 1)) }
+var merged: [(Int, Int)] = []
+for r in runs {
+  if let last = merged.last, r.0 - last.1 <= 14 {
+    merged[merged.count - 1].1 = r.1
+  } else if r.1 - r.0 >= 4 {
+    merged.append(r)
+  }
+}
+for m in merged {
+  let cxImg = (m.0 + m.1) / 2
+  var ys: [Int] = []
+  for px in m.0...m.1 {
+    for py in yTop...yBot where bright(px, py) { ys.append(py); break }
+  }
+  let cyImg = ys.isEmpty ? (yTop + yBot) / 2 : ys.reduce(0, +) / ys.count
+  print("ICON|\(Int(Double(cxImg) * scale))|\(Int(Double(cyImg) * scale))")
+}
+SWIFT
+MV_ICONSCAN="/tmp/mv-icon-scan"
+if swiftc -O -o "$MV_ICONSCAN" /tmp/mv-icon-scan.swift 2>>"$LOG"; then
+  probe "mv-icon-scan compiled (white-glyph cluster locator for icon-only controls)"
+else
+  MV_ICONSCAN=""
+  probe "mv-icon-scan compile FAILED — the icon-only edit control will use the OCR-anchored fallback (recorded honestly)"
+fi
+
 ocr_capture() { # full-screen capture + OCR; sets OCR_TEXT / MV_SCALE / LAST_OCR_HASH
   if ! screencapture -x "$MV_SHOT" 2>>"$LOG"; then
     probe "ocr_capture: screencapture FAILED"
@@ -600,6 +716,178 @@ v_click_arabic() { # <needle> <stem> <expect-text-or-empty>
     return 0
   fi
   probe "vclick-ar[$stem]: NO visible change after the click"
+  return 1
+}
+
+# =============================================================================
+# Scrolling (the 1024x768 runner window cuts the dashboard at the GETTING
+# STARTED banner; the search box, stats and the PATIENT LIST are below the
+# fold — run 34709293200's first red was exactly this: the patient WAS
+# created through the real dialog but the needle could never be visible
+# without scrolling). A real user scrolls; the harness scrolls the same
+# way (native scroll wheel over the content, keyboard assist).
+# =============================================================================
+SCROLL_X="700"   # main content area: right of the app nav, below the header
+SCROLL_Y="480"
+
+scroll_burst() { # <down|up> [x] [y] [lines]
+  local dir="$1" x="${2:-$SCROLL_X}" y="${3:-$SCROLL_Y}" lines="${4:-12}"
+  if [ -n "$MV_SCROLL" ]; then
+    if [ "$dir" = "up" ]; then
+      "$MV_SCROLL" "$x" "$y" "$lines" up 2>>"$LOG" || true
+    else
+      "$MV_SCROLL" "$x" "$y" "$lines" 2>>"$LOG" || true
+    fi
+  fi
+}
+
+v_scroll_find() { # <needle> <max-bursts> [arabic yes|no] [dir down|up]
+  local needle="$1" max="${2:-10}" arabic="${3:-no}" dir="${4:-down}"
+  local i=0
+  while [ "$i" -lt "$max" ]; do
+    if [ "$arabic" = "yes" ] && [ -x "$MV_OCR_AR" ]; then
+      screencapture -x "$MV_SHOT" 2>>"$LOG" || return 1
+      "$MV_OCR_AR" "$MV_SHOT" > "$MV_LINES" 2>>"$LOG" || return 1
+      OCR_TEXT="$(grep '^LINE|' "$MV_LINES" 2>/dev/null || true)"
+      LAST_OCR_HASH="$(shasum -a 256 "$MV_SHOT" 2>/dev/null | awk '{print $1}')"
+      probe "ocr(ar): $(printf '%s\n' "$OCR_TEXT" | grep -c '^LINE|') lines — looking for '$needle'"
+    else
+      ocr_capture || return 1
+    fi
+    if [ -n "$OCR_TEXT" ] && printf '%s\n' "$OCR_TEXT" | grep -qi -- "|[^|]*${needle}"; then
+      probe "scroll-find: '$needle' is visible after $i scroll burst(s) ($dir)"
+      return 0
+    fi
+    scroll_burst "$dir"
+    if [ $(( (i + 1) % 3 )) -eq 0 ]; then
+      # keyboard assist (Page Down 121 / Home 115) — needs key focus in the page
+      if [ "$dir" = "up" ]; then
+        osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 115' 10 >/dev/null 2>&1 || true
+      else
+        osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 121' 10 >/dev/null 2>&1 || true
+      fi
+    fi
+    sleep 1
+    i=$((i + 1))
+  done
+  probe "scroll-find: '$needle' NOT visible after $max $dir scroll bursts"
+  return 1
+}
+
+v_scroll_top() { # bounded scroll-up until a top-of-page marker is visible
+  local max="${1:-10}"
+  if v_scroll_find "GETTING STARTED" "$max" no up; then return 0; fi
+  if printf '%s\n' "$OCR_TEXT" | grep -qi -- "|[^|]*All caught up"; then
+    probe "scroll-top: the TodaysOverview card is visible — the page is at the top"
+    return 0
+  fi
+  if printf '%s\n' "$OCR_TEXT" | grep -qi -- "|[^|]*Add Patient"; then
+    probe "scroll-top: the Add Patient quick action is visible — the page is at the top"
+    return 0
+  fi
+  probe "scroll-top: top-of-page markers not confirmed (recorded honestly)"
+  return 1
+}
+
+v_reveal_search_box() { # the search box sits below the fold; try down then up
+  if v_scroll_find "Search patients" 8; then return 0; fi
+  if v_scroll_find "Search patients" 6 no up; then return 0; fi
+  return 1
+}
+
+# Scan the whole patient-detail view in bounded scroll steps: the OWN note
+# must appear SOMEWHERE; the FOREIGN notes must appear NOWHERE. Sets
+# SCAN_OWN_SEEN / SCAN_FOREIGN_SEEN.
+scan_detail_page() { # <own-note> <foreign-1> <foreign-2>
+  SCAN_OWN_SEEN=no; SCAN_FOREIGN_SEEN=no
+  local own="$1" f1="$2" f2="$3"
+  local i=0 last_hash=""
+  while [ "$i" -lt 10 ]; do
+    ocr_capture || true
+    if [ -n "$last_hash" ] && [ "$LAST_OCR_HASH" = "$last_hash" ]; then
+      probe "scan-detail: the screen stopped changing — the bottom of the detail view is reached"
+      break
+    fi
+    last_hash="$LAST_OCR_HASH"
+    if [ -n "$own" ] && printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*${own}"; then
+      SCAN_OWN_SEEN=yes
+    fi
+    local f
+    for f in "$f1" "$f2"; do
+      if [ -n "$f" ] && printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*${f}"; then
+        SCAN_FOREIGN_SEEN=yes
+        probe "scan-detail: FOREIGN note text is visible: '$f'"
+      fi
+    done
+    scroll_burst down
+    sleep 1
+    i=$((i + 1))
+  done
+  probe "scan-detail complete: own-note=$SCAN_OWN_SEEN foreign-note=$SCAN_FOREIGN_SEEN (scrolled through the detail view)"
+}
+
+# Click the ICON-ONLY edit pencil in the patient-detail banner. The control
+# has no visible text (title="Edit Patient" is a tooltip) — an OCR needle
+# can never match it. Primary: pixel-scan the white glyph clusters right of
+# the OCR-found patient name on the banner (report | EDIT | trash) and click
+# the MIDDLE cluster. Fallback: OCR-anchored right-aligned estimates. Every
+# attempt is VERIFIED by the edit dialog's 'First Name' label appearing.
+v_click_edit_pencil() { # <patient-full-name> <stem>
+  local name="$1" stem="$2"
+  ocr_capture || return 1
+  if ! ocr_lookup "$name" "first"; then
+    probe "vclick-pencil[$stem]: patient name '$name' not found on screen — no anchor, no click"
+    return 1
+  fi
+  local cy x0
+  cy=$(( OCR_HIT_Y + (OCR_HIT_H / 2) ))
+  x0=$(( OCR_HIT_X + OCR_HIT_W + 30 ))
+  probe "vclick-pencil[$stem]: anchor name '$name' at ($OCR_HIT_X,$OCR_HIT_Y) — icon band y=$cy, scan from x=$x0"
+  if [ -n "$MV_ICONSCAN" ]; then
+    local hits n hit cx icy
+    hits="$("$MV_ICONSCAN" "$MV_SHOT" "$MV_SCALE" "$x0" "$cy" "16" 2>>"$LOG" || true)"
+    n="$(printf '%s\n' "$hits" | grep -c '^ICON|' || true)"
+    probe "vclick-pencil[$stem]: icon scan found $n white glyph cluster(s): $(printf '%s' "$hits" | tr '\n' ' ')"
+    if [ "${n:-0}" -ge 3 ]; then
+      hit="$(printf '%s\n' "$hits" | grep '^ICON|' | sed -n '2p')"
+    elif [ "${n:-0}" -ge 1 ]; then
+      hit="$(printf '%s\n' "$hits" | grep '^ICON|' | head -1)"
+    else
+      hit=""
+    fi
+    if [ -n "$hit" ]; then
+      cx="$(printf '%s' "$hit" | awk -F'|' '{print $2}')"
+      icy="$(printf '%s' "$hit" | awk -F'|' '{print $3}')"
+      probe "vclick-pencil[$stem]: clicking the icon cluster at ($cx,$icy) — verified by the dialog opening"
+      "$MV_MOUSE" "$cx" "$icy" 2>>"$LOG" || true
+      sleep 2
+      ocr_capture || return 1
+      if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*First Name"; then
+        snap_file "$MV_SHOT" "${stem}-open" || true
+        probe "vclick-pencil[$stem]: the Edit Patient dialog opened (First Name visible)"
+        return 0
+      fi
+      probe "vclick-pencil[$stem]: the cluster click did not open the edit dialog"
+    fi
+  fi
+  # OCR-anchored fallback: the icon row is right-aligned on the name's band.
+  # Each candidate is VERIFIED; Escape dismisses anything opened by a miss.
+  local cand tx
+  for cand in 55 90 125; do
+    tx=$(( 1000 - cand ))
+    probe "vclick-pencil[$stem]: anchored fallback click at ($tx,$cy) (offset $cand from the right edge)"
+    "$MV_MOUSE" "$tx" "$cy" 2>>"$LOG" || true
+    sleep 2
+    ocr_capture || return 1
+    if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*First Name"; then
+      snap_file "$MV_SHOT" "${stem}-open-fb" || true
+      probe "vclick-pencil[$stem]: the Edit Patient dialog opened via the anchored fallback"
+      return 0
+    fi
+    osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 53' 10 >/dev/null 2>&1 || true
+    sleep 1
+  done
+  probe "vclick-pencil[$stem]: the icon-only edit control could not be activated (all attempts recorded)"
   return 1
 }
 
@@ -1364,6 +1652,15 @@ create_patient() { # <first> <last> <note> <stem> <arabic yes|no>
     fi
   fi
   if [ "$PATIENT_SUBMITTED" = "0" ]; then
+    # Reveal the dialog's OWN footer (the submit button sits below the
+    # dialog's internal fold — scroll the DIALOG area, not the page), then
+    # click the real submit button.
+    local b=0
+    while [ "$b" -lt 4 ]; do
+      scroll_burst down 380 400
+      sleep 1
+      b=$((b + 1))
+    done
     if ! v_click_try_hits "Add Patient" "${stem}-submit" "$first"; then
       snap "${stem}-submit-failed" || true
       product_red "PATIENT_${stem}" "submitting the Add Patient form produced no visible change"
@@ -1374,37 +1671,53 @@ create_patient() { # <first> <last> <note> <stem> <arabic yes|no>
 
 # --- Patient A: John Test ---
 create_patient "$PAT_A_FIRST" "$PAT_A_LAST" "$PAT_A_NOTE" "16-patient-a"
-if ! wait_for_ocr "$PAT_A_FIRST $PAT_A_LAST" 60 "patient-a-listed"; then
+# The success toast (fixed overlay, ~5s) CONTAINS the patient's name — wait
+# it out before the needle search or it would false-positive the
+# "appears in the list" proof (never infer success from text that is not
+# the list row itself).
+sleep 6
+if ! v_scroll_find "$PAT_A_FIRST $PAT_A_LAST" 12; then
   snap "16-patient-a-not-listed" || true
-  product_red PATIENT_A "Patient A ($PAT_A_FIRST $PAT_A_LAST) is not visible after creation"
+  product_red PATIENT_A "Patient A ($PAT_A_FIRST $PAT_A_LAST) is not visible in the patient list after creation (dialog closed; the list was scrolled into view)"
 fi
-CAP_PATIENT_A="GREEN (created through the real Add Patient dialog; listed)"
+CAP_PATIENT_A="GREEN (created through the real Add Patient dialog; row visible in the list)"
 cap PATIENT_A "$CAP_PATIENT_A"
 snap "16-patient-a-listed" || true
+v_scroll_top 10 || true
 
 # --- Patient B: Jane Test ---
 create_patient "$PAT_B_FIRST" "$PAT_B_LAST" "$PAT_B_NOTE" "17-patient-b"
-if ! wait_for_ocr "$PAT_B_FIRST $PAT_B_LAST" 60 "patient-b-listed"; then
+sleep 6
+if ! v_scroll_find "$PAT_B_FIRST $PAT_B_LAST" 12; then
   snap "17-patient-b-not-listed" || true
-  product_red PATIENT_B "Patient B ($PAT_B_FIRST $PAT_B_LAST) is not visible after creation"
+  product_red PATIENT_B "Patient B ($PAT_B_FIRST $PAT_B_LAST) is not visible in the patient list after creation (dialog closed; the list was scrolled into view)"
 fi
-CAP_PATIENT_B="GREEN (created through the real Add Patient dialog; listed)"
+CAP_PATIENT_B="GREEN (created through the real Add Patient dialog; row visible in the list)"
 cap PATIENT_B "$CAP_PATIENT_B"
 snap "17-patient-b-listed" || true
+v_scroll_top 10 || true
 
 # --- Patient C: محمد تجريبي (Arabic first/last names; the note is English) ---
 create_patient "$PAT_C_FIRST" "$PAT_C_LAST" "$PAT_C_NOTE" "18-patient-c" yes
-sleep 2
-snap "18-patient-c-created" || true
-CAP_PATIENT_C="GREEN (Arabic patient created through the real dialog — search/isolation below is the functional proof)"
+sleep 6
+# The Arabic row proof uses the Arabic-capable OCR needle (محمد).
+if ! v_scroll_find "محمد" 12 yes; then
+  snap "18-patient-c-not-listed" || true
+  product_red PATIENT_C "Patient C (محمد تجريبي) is not visible in the patient list after creation (dialog closed; the list was scrolled into view; Arabic OCR)"
+fi
+CAP_PATIENT_C="GREEN (Arabic patient created through the real dialog; row visible in the list — search/isolation below is the functional proof)"
 cap PATIENT_C "$CAP_PATIENT_C"
+snap "18-patient-c-created" || true
 
 # --- Search: type into the REAL search box ---
 note "--- patient search (real search box) ---"
-if ! v_type_into "Search patients" "$PAT_B_FIRST" "20-search-jane"; then
+v_reveal_search_box || probe "WARN: the search box could not be scrolled into view — attempting the type anyway"
+if ! v_type_into "Search patients" "$PAT_B_FIRST" "20-search-jane" no no yes; then
   product_red PATIENT_SEARCH "could not type into the real patient search box"
 fi
 sleep 2
+# Ensure the filtered row is on screen before the checks (below-the-fold list).
+v_scroll_find "$PAT_B_FIRST $PAT_B_LAST" 8 || true
 snap "20-search-jane" || true
 if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*$PAT_A_FIRST $PAT_A_LAST"; then
   # Jane filter should NOT show John (if it does, note it — the row list may
@@ -1416,8 +1729,9 @@ if ! printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*$PAT_B_FIRST $PAT_B_LAST"; the
   product_red PATIENT_SEARCH "searching for '$PAT_B_FIRST' did not surface Patient B"
 fi
 # Search for the Arabic name — the functional round-trip proof for patient C.
-if v_type_into "Search patients" "محمد" "21-search-c" no yes; then
+if v_type_into "Search patients" "محمد" "21-search-c" no yes yes; then
   sleep 2
+  v_scroll_find "محمد" 8 yes || true
   snap "21-search-c" || true
   if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*$PAT_A_FIRST $PAT_A_LAST\||[^|]*$PAT_B_FIRST $PAT_B_LAST"; then
     probe "search 'محمد': other patients still visible — recorded (rows may include non-filter sections)"
@@ -1430,13 +1744,38 @@ cap PATIENT_SEARCH "$CAP_PATIENT_SEARCH"
 
 # --- Open each patient detail + isolation ---
 note "--- open each patient detail (isolation checks) ---"
+
+clear_search_box() { # click the search input, select-all, delete — a real user's flow
+  ocr_capture || return 1
+  if ! ocr_lookup "Search patients" "first" "label"; then
+    probe "clear-search: the search box is not on screen — nothing to clear"
+    return 1
+  fi
+  "$MV_MOUSE" "$OCR_HIT_X" "$(( OCR_HIT_Y + 6 ))" 2>>"$LOG" || return 1
+  sleep 1
+  osa 'tell application "System Events" to tell (first process whose name contains "edivault") to keystroke "a" using command down' 10 || true
+  sleep 1
+  osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 51' 10 || true
+  sleep 2
+  probe "clear-search: the search box was cleared (Cmd+A + Backspace)"
+  return 0
+}
+
 open_patient_detail() { # <full-name> <stem>
   local full="$1" stem="$2"
-  # Clear the search first (the clear X is not OCR-able; retype empty is
-  # unreliable — click the patient row from whatever list is visible).
+  # A search filter may be active from a previous step — clear it first so
+  # the FULL list is visible (the filtered list hides the other rows).
+  clear_search_box || true
   if ! v_click "$full" "${stem}-row" "$full"; then
-    snap "${stem}-row-failed" || true
-    return 1
+    if v_scroll_find "$full" 8; then
+      if ! v_click "$full" "${stem}-row-retry" "$full"; then
+        snap "${stem}-row-failed" || true
+        return 1
+      fi
+    else
+      snap "${stem}-row-failed" || true
+      return 1
+    fi
   fi
   sleep 2
   snap "${stem}-detail" || true
@@ -1447,25 +1786,29 @@ open_patient_detail() { # <full-name> <stem>
 if ! open_patient_detail "$PAT_A_FIRST $PAT_A_LAST" "22-detail-a"; then
   product_red PATIENT_DATA_ISOLATION "could not open Patient A's detail"
 fi
-if ! printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*${PAT_A_NOTE}"; then
-  product_red PATIENT_DATA_ISOLATION "Patient A's own note is not visible on A's detail screen"
+scan_detail_page "$PAT_A_NOTE" "$PAT_B_NOTE" "$PAT_C_NOTE"
+if [ "$SCAN_OWN_SEEN" != "yes" ]; then
+  product_red PATIENT_DATA_ISOLATION "Patient A's own note is not visible anywhere on A's detail screen (scanned)"
 fi
-if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*${PAT_B_NOTE}\||[^|]*${PAT_C_NOTE}"; then
+if [ "$SCAN_FOREIGN_SEEN" = "yes" ]; then
   product_red PATIENT_DATA_ISOLATION "Patient B/C's note data appears on Patient A's detail screen"
 fi
-probe "isolation check A: PASS (A's note visible, B/C's notes absent)"
+probe "isolation check A: PASS (A's note visible, B/C's notes absent across the scanned detail)"
 snap "22-detail-a-isolated" || true
 
 # --- Edit Patient A (the pencil in the detail banner → Edit Patient dialog) ---
 note "--- edit patient A (phone) ---"
-# The dialog scrolls internally (max-h-90vh) — verify it opened by a TOP
-# label ('First Name'), not the footer button ('Save Changes' can sit below
-# the fold — same class-D as run 34697721680).
-if ! v_click "Edit Patient" "23-edit-open" "First Name"; then
+# The pencil sits in the detail BANNER (top) — after the isolation scan the
+# page is scrolled to the bottom; scroll back up to the banner first.
+v_scroll_find "$PAT_A_FIRST $PAT_A_LAST" 10 no up || true
+# The edit control is ICON-ONLY (title="Edit Patient" is a tooltip, not
+# rendered text — an OCR needle can never match it): the pixel-scan
+# pencil clicker, verified by the dialog's 'First Name' label appearing.
+# The dialog scrolls internally (max-h-90vh) — 'Save Changes' can sit below
+# the dialog's internal fold (same class-D as run 34697721680).
+if ! v_click_edit_pencil "$PAT_A_FIRST $PAT_A_LAST" "23-edit-open"; then
   snap "23-edit-open-failed" || true
-  # The edit control is icon-only; try the geometric approach only if the
-  # dialog has not opened (the visible dialog IS the verification).
-  probe "the 'Edit Patient' control could not be OCR-clicked"
+  product_red PATIENT_EDIT "the icon-only Edit Patient control could not be activated (all anchored attempts recorded)"
 fi
 if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*First Name"; then
   if ! v_type_into "Phone" "+1 555 0100" "24-edit-phone"; then
@@ -1487,23 +1830,28 @@ if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*First Name"; then
     fi
   fi
   if [ "$EDIT_SAVED" = "0" ]; then
-    ocr_capture || true
-    if ! printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*Save Changes"; then
-      osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 121' 10 >/dev/null 2>&1 || true
+    # Reveal the dialog's OWN footer (scroll the DIALOG area — the 'Save
+    # Changes' button sits below the dialog's internal fold), then click.
+    EDIT_SB=0
+    while [ "$EDIT_SB" -lt 4 ]; do
+      scroll_burst down 380 400
       sleep 1
-    fi
-    if ! v_click "Save Changes" "24-edit-save" "$PAT_A_FIRST"; then
+      EDIT_SB=$((EDIT_SB + 1))
+    done
+    if ! v_click_try_hits "Save Changes" "24-edit-save" "$PAT_A_FIRST"; then
       snap "24-edit-save-failed" || true
       product_red PATIENT_EDIT "saving the edit produced no visible change"
     fi
   fi
+  # The edited value must be visible on the actual patient view (the banner
+  # shows the phone at the top; the contact card below shows it too).
   sleep 2
-  snap "24-edit-saved" || true
-  if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*+1 555 0100"; then
-    CAP_PATIENT_EDIT="GREEN (phone edited via the real dialog; new value visible)"
-  else
-    CAP_PATIENT_EDIT="GREEN (edit saved through the real dialog; the new phone may be off-screen — recorded honestly)"
+  if ! v_scroll_find "+1 555 0100" 8; then
+    snap "24-edit-phone-not-visible" || true
+    product_red PATIENT_EDIT "the updated phone (+1 555 0100) is not visible on the patient view after the edit dialog closed"
   fi
+  snap "24-edit-saved" || true
+  CAP_PATIENT_EDIT="GREEN (phone edited via the real dialog; the new value is visible on the patient view)"
 else
   product_red PATIENT_EDIT "the Edit Patient dialog never opened"
 fi
@@ -1513,42 +1861,57 @@ cap PATIENT_EDIT "$CAP_PATIENT_EDIT"
 # persistent header nav: click 'Dashboard' in the header).
 v_click "Dashboard" "25-back-to-dashboard" "Add Patient" || true
 wait_for_ocr "Add Patient" 45 "dashboard-back" || true
+v_scroll_top 10 || true
 
 if ! open_patient_detail "$PAT_B_FIRST $PAT_B_LAST" "26-detail-b"; then
   product_red PATIENT_DATA_ISOLATION "could not open Patient B's detail"
 fi
-if ! printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*${PAT_B_NOTE}"; then
-  product_red PATIENT_DATA_ISOLATION "Patient B's own note is not visible on B's detail screen"
+scan_detail_page "$PAT_B_NOTE" "$PAT_A_NOTE" "$PAT_C_NOTE"
+if [ "$SCAN_OWN_SEEN" != "yes" ]; then
+  product_red PATIENT_DATA_ISOLATION "Patient B's own note is not visible anywhere on B's detail screen (scanned)"
 fi
-if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*${PAT_A_NOTE}\||[^|]*${PAT_C_NOTE}"; then
+if [ "$SCAN_FOREIGN_SEEN" = "yes" ]; then
   product_red PATIENT_DATA_ISOLATION "Patient A/C's note data appears on Patient B's detail screen"
 fi
-probe "isolation check B: PASS (B's note visible, A/C's notes absent)"
+probe "isolation check B: PASS (B's note visible, A/C's notes absent across the scanned detail)"
 snap "26-detail-b-isolated" || true
 
 # Patient C detail: search the Arabic name, then click the Arabic row via the
 # Arabic-capable OCR (functional search round-trip + detail isolation).
 v_click "Dashboard" "27-back-to-dashboard-c" "Add Patient" || true
 wait_for_ocr "Add Patient" 45 "dashboard-back-c" || true
-if v_type_into "Search patients" "محمد" "27-search-c-detail" no yes; then
+v_scroll_top 10 || true
+v_reveal_search_box || true
+if v_type_into "Search patients" "محمد" "27-search-c-detail" no yes yes; then
   sleep 2
 fi
 snap "27-search-c-filtered" || true
 if v_click_arabic "محمد" "27-detail-c-row" ""; then
   sleep 2
   snap "27-detail-c" || true
-  if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*${PAT_A_NOTE}\||[^|]*${PAT_B_NOTE}"; then
+  scan_detail_page "$PAT_C_NOTE" "$PAT_A_NOTE" "$PAT_B_NOTE"
+  if [ "$SCAN_FOREIGN_SEEN" = "yes" ]; then
     product_red PATIENT_DATA_ISOLATION "Patient A/B's note data appears on Patient C's screen"
   fi
-  probe "isolation check C: no foreign notes visible on C's detail"
+  probe "isolation check C: no foreign notes visible on C's detail (scanned)"
 else
-  # Honest fallback: the search itself is the isolation proof for C — the
-  # Arabic search must NOT surface John/Jane's rows.
-  ocr_capture || true
-  if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*$PAT_A_FIRST $PAT_A_LAST\||[^|]*$PAT_B_FIRST $PAT_B_LAST"; then
-    product_red PATIENT_DATA_ISOLATION "searching the Arabic name surfaced Patients A/B — the filter is not isolating C"
+  if v_scroll_find "محمد" 8 yes && v_click_arabic "محمد" "27-detail-c-row-retry" ""; then
+    sleep 2
+    snap "27-detail-c" || true
+    scan_detail_page "$PAT_C_NOTE" "$PAT_A_NOTE" "$PAT_B_NOTE"
+    if [ "$SCAN_FOREIGN_SEEN" = "yes" ]; then
+      product_red PATIENT_DATA_ISOLATION "Patient A/B's note data appears on Patient C's screen"
+    fi
+    probe "isolation check C (after scroll-reveal): no foreign notes visible on C's detail (scanned)"
+  else
+    # Honest fallback: the search itself is the isolation proof for C — the
+    # Arabic search must NOT surface John/Jane's rows.
+    ocr_capture || true
+    if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*$PAT_A_FIRST $PAT_A_LAST\||[^|]*$PAT_B_FIRST $PAT_B_LAST"; then
+      product_red PATIENT_DATA_ISOLATION "searching the Arabic name surfaced Patients A/B — the filter is not isolating C"
+    fi
+    probe "isolation check C (search-based): the Arabic search did not surface A/B rows"
   fi
-  probe "isolation check C (search-based): the Arabic search did not surface A/B rows"
 fi
 CAP_ISOLATION="GREEN (A's detail shows only A's note; B's only B's; no cross-patient data observed)"
 cap PATIENT_DATA_ISOLATION "$CAP_ISOLATION"
@@ -1609,23 +1972,27 @@ snap "30-reopen-dashboard" || true
 
 # Persistence: all three patients with correct data after the restart.
 note "--- persistence checks ---"
-if ! v_type_into "Search patients" "$PAT_A_FIRST" "31-persist-a"; then
+v_reveal_search_box || probe "WARN: the search box could not be scrolled into view after reopen — attempting anyway"
+if ! v_type_into "Search patients" "$PAT_A_FIRST" "31-persist-a" no no yes; then
   product_red PATIENT_PERSISTENCE "could not search for Patient A after the restart"
 fi
 sleep 2
+v_scroll_find "$PAT_A_FIRST $PAT_A_LAST" 8 || true
 printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*$PAT_A_FIRST $PAT_A_LAST" || product_red PATIENT_PERSISTENCE "Patient A does not appear in search after quit/reopen"
 snap "31-persistence-a" || true
 
-if v_type_into "Search patients" "$PAT_B_FIRST" "32-persist-b"; then
+if v_type_into "Search patients" "$PAT_B_FIRST" "32-persist-b" no no yes; then
   sleep 2
+  v_scroll_find "$PAT_B_FIRST $PAT_B_LAST" 8 || true
   printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*$PAT_B_FIRST $PAT_B_LAST" || product_red PATIENT_PERSISTENCE "Patient B does not appear in search after quit/reopen"
   snap "32-persistence-b" || true
 else
   product_red PATIENT_PERSISTENCE "could not search for Patient B after the restart"
 fi
 
-if v_type_into "Search patients" "محمد" "33-persist-c" no yes; then
+if v_type_into "Search patients" "محمد" "33-persist-c" no yes yes; then
   sleep 2
+  v_scroll_find "محمد" 8 yes || true
   snap "33-persistence-c" || true
   # The Arabic row must still exist after the restart — the Arabic-capable
   # OCR is the visible proof (functional search round-trip already typed it).
@@ -1646,15 +2013,21 @@ fi
 if ! open_patient_detail "$PAT_A_FIRST $PAT_A_LAST" "34-persist-detail-a"; then
   product_red PATIENT_PERSISTENCE "could not open Patient A's detail after the restart"
 fi
-if ! printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*${PAT_A_NOTE}"; then
-  product_red PATIENT_PERSISTENCE "Patient A's note did not survive the quit/reopen"
+# The banner (top) shows the phone — check it there first, then scan the
+# whole detail view for the note + foreign data.
+if ! printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*+1 555 0100"; then
+  v_scroll_find "+1 555 0100" 8 || true
 fi
 if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*+1 555 0100"; then
   probe "persistence: the EDITED phone (+1 555 0100) is visible — the edit survived the restart"
 else
-  probe "persistence: the edited phone is not visible on screen (may be off-screen) — recorded honestly"
+  product_red PATIENT_PERSISTENCE "the edited phone (+1 555 0100) is not visible on A's detail after the restart"
 fi
-if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*${PAT_B_NOTE}\||[^|]*${PAT_C_NOTE}"; then
+scan_detail_page "$PAT_A_NOTE" "$PAT_B_NOTE" "$PAT_C_NOTE"
+if [ "$SCAN_OWN_SEEN" != "yes" ]; then
+  product_red PATIENT_PERSISTENCE "Patient A's note did not survive the quit/reopen (scanned)"
+fi
+if [ "$SCAN_FOREIGN_SEEN" = "yes" ]; then
   product_red PATIENT_PERSISTENCE "foreign patient data appeared on A's detail after the restart"
 fi
 CAP_PERSIST="GREEN (A/B/C all present after quit/reopen; A's note + edited phone survived; no foreign data)"
