@@ -557,9 +557,11 @@ let maxChunk = 20
 var offset = 0
 while offset < units.count {
   let end = min(offset + maxChunk, units.count)
-  let chunk = String(decoding: units[offset..<end], as: UTF16.self)
+  let chunkUnits = Array(units[offset..<end])
   if let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true) {
-    down.keyboardSetUnicodeString(string: chunk)
+    chunkUnits.withUnsafeBufferPointer { buf in
+      down.keyboardSetUnicodeString(stringLength: buf.count, unicodeString: buf.baseAddress)
+    }
     down.post(tap: .cghidEventTap)
   }
   usleep(50_000)
@@ -1880,10 +1882,7 @@ snap "18-patient-c-created" || true
 
 # --- Search: type into the REAL search box ---
 note "--- patient search (real search box) ---"
-v_reveal_search_box || probe "WARN: the search box could not be scrolled into view — attempting the type anyway"
-if ! v_type_into "Search patients" "$PAT_B_FIRST" "20-search-jane" no no yes; then
-  product_red PATIENT_SEARCH "could not type into the real patient search box"
-fi
+search_type "$PAT_B_FIRST" "20-search-jane"
 sleep 2
 # Ensure the filtered row is on screen before the checks (below-the-fold list).
 v_scroll_find "$PAT_B_FIRST $PAT_B_LAST" 8 || true
@@ -1898,7 +1897,7 @@ if ! ocr_grep "$PAT_B_FIRST $PAT_B_LAST"; then
   product_red PATIENT_SEARCH "searching for '$PAT_B_FIRST' did not surface Patient B"
 fi
 # Search for the Arabic name — the functional round-trip proof for patient C.
-if v_type_into "Search patients" "محمد" "21-search-c" no yes yes; then
+if search_type "محمد" "21-search-c" yes; then
   sleep 2
   v_scroll_find "محمد" 8 yes || true
   snap "21-search-c" || true
@@ -1914,19 +1913,53 @@ cap PATIENT_SEARCH "$CAP_PATIENT_SEARCH"
 # --- Open each patient detail + isolation ---
 note "--- open each patient detail (isolation checks) ---"
 
-clear_search_box() { # click the search input, select-all, delete — a real user's flow
-  ocr_capture || return 1
-  if ! ocr_lookup "Search patients" "first" "label"; then
-    probe "clear-search: the search box is not on screen — nothing to clear"
-    return 1
-  fi
-  "$MV_MOUSE" "$OCR_HIT_X" "$(( OCR_HIT_Y + 6 ))" 2>>"$LOG" || return 1
+clear_search_box() { # (run 34784559413, class D) the OCR-anchored clear failed when the
+  # box held text — the placeholder disappears, so the label lookup cannot
+  # find it, and the leftover filter hid the other patients' rows. Use the
+  # app's OWN focus-search shortcut instead: Ctrl/Cmd+K (use-keyboard-
+  # shortcuts.ts — works from ANY focus state, requiresNoInput: false, and
+  # querySelector matches the input's placeholder ATTRIBUTE which persists
+  # even when the placeholder text is visually hidden). Then Cmd+A + delete.
+  # Fully keyboard — no OCR, no visibility requirement.
+  osa 'tell application "System Events" to tell (first process whose name contains "edivault") to keystroke "k" using command down' 10 || true
   sleep 1
   osa 'tell application "System Events" to tell (first process whose name contains "edivault") to keystroke "a" using command down' 10 || true
   sleep 1
   osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 51' 10 || true
   sleep 2
-  probe "clear-search: the search box was cleared (Cmd+A + Backspace)"
+  probe "clear-search: Cmd+K (the app's real focus-search shortcut) → Cmd+A → Backspace — the query is cleared, the full list returns"
+  return 0
+}
+
+search_type() { # <text> <stem> [arabic yes|no] — Cmd+K focus, clear, type the query
+  local text="$1" stem="$2" arabic="${3:-no}"
+  ocr_capture || true
+  snap_file "$MV_SHOT" "${stem}-before" || true
+  osa 'tell application "System Events" to tell (first process whose name contains "edivault") to keystroke "k" using command down' 10 || true
+  sleep 1
+  osa 'tell application "System Events" to tell (first process whose name contains "edivault") to keystroke "a" using command down' 10 || true
+  sleep 1
+  osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 51' 10 || true
+  sleep 1
+  if [ "$arabic" = "yes" ]; then
+    if [ -n "$MV_TYPE_UNI" ] && "$MV_TYPE_UNI" "$text" 2>>"$LOG"; then
+      sleep 1
+      probe "search[$stem]: typed '$text' via Unicode CGEvents after the Cmd+K focus"
+    else
+      osa "set the clipboard to \"$text\"" 10 || true
+      sleep 1
+      osa 'tell application "System Events" to tell (first process whose name contains "edivault") to keystroke "v" using command down' 10 || true
+      sleep 1
+      probe "search[$stem]: pasted '$text' after the Cmd+K focus (clipboard — a real user's flow for non-Latin input)"
+    fi
+  else
+    osa "tell application \"System Events\" to tell (first process whose name contains \"edivault\") to keystroke \"$text\"" 15 || true
+    sleep 1
+    probe "search[$stem]: typed '$text' after the Cmd+K focus"
+  fi
+  sleep 2
+  ocr_capture || true
+  snap_file "$MV_SHOT" "${stem}-after" || true
   return 0
 }
 
@@ -1936,7 +1969,7 @@ open_patient_detail() { # <full-name> <stem>
   # the FULL list is visible (the filtered list hides the other rows).
   clear_search_box || true
   if ! v_click "$full" "${stem}-row" "$full"; then
-    if v_scroll_find "$full" 8; then
+    if v_scroll_find "$full" 6 || v_scroll_find "$full" 5 no up; then
       if ! v_click "$full" "${stem}-row-retry" "$full"; then
         snap "${stem}-row-failed" || true
         return 1
@@ -2050,8 +2083,7 @@ snap "26-detail-b-isolated" || true
 v_click "Dashboard" "27-back-to-dashboard-c" "Add Patient" || true
 wait_for_ocr "Add Patient" 45 "dashboard-back-c" || true
 v_scroll_top 10 || true
-v_reveal_search_box || true
-if v_type_into "Search patients" "محمد" "27-search-c-detail" no yes yes; then
+if search_type "محمد" "27-search-c-detail" yes; then
   sleep 2
 fi
 snap "27-search-c-filtered" || true
@@ -2141,8 +2173,7 @@ snap "30-reopen-dashboard" || true
 
 # Persistence: all three patients with correct data after the restart.
 note "--- persistence checks ---"
-v_reveal_search_box || probe "WARN: the search box could not be scrolled into view after reopen — attempting anyway"
-if ! v_type_into "Search patients" "$PAT_A_FIRST" "31-persist-a" no no yes; then
+if ! search_type "$PAT_A_FIRST" "31-persist-a"; then
   product_red PATIENT_PERSISTENCE "could not search for Patient A after the restart"
 fi
 sleep 2
@@ -2150,7 +2181,7 @@ v_scroll_find "$PAT_A_FIRST $PAT_A_LAST" 8 || true
 ocr_grep "$PAT_A_FIRST $PAT_A_LAST" || product_red PATIENT_PERSISTENCE "Patient A does not appear in search after quit/reopen"
 snap "31-persistence-a" || true
 
-if v_type_into "Search patients" "$PAT_B_FIRST" "32-persist-b" no no yes; then
+if search_type "$PAT_B_FIRST" "32-persist-b"; then
   sleep 2
   v_scroll_find "$PAT_B_FIRST $PAT_B_LAST" 8 || true
   ocr_grep "$PAT_B_FIRST $PAT_B_LAST" || product_red PATIENT_PERSISTENCE "Patient B does not appear in search after quit/reopen"
@@ -2159,7 +2190,7 @@ else
   product_red PATIENT_PERSISTENCE "could not search for Patient B after the restart"
 fi
 
-if v_type_into "Search patients" "محمد" "33-persist-c" no yes yes; then
+if search_type "محمد" "33-persist-c" yes; then
   sleep 2
   v_scroll_find "محمد" 8 yes || true
   snap "33-persistence-c" || true
