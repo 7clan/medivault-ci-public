@@ -491,7 +491,7 @@ guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, b
                           bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { print("ERR ctx"); exit(2) }
 ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
 guard let data = ctx.data else { print("ERR data"); exit(2) }
-let buf = data.assumingMemoryBound(to: UInt8.self, capacity: w * h * 4)
+let buf = data.bindMemory(to: UInt8.self, capacity: w * h * 4)
 let x0 = max(0, min(w - 1, Int(x0s / scale)))
 let yTop = max(0, Int((cys - half) / scale))
 let yBot = min(h - 1, Int((cys + half) / scale))
@@ -1156,6 +1156,24 @@ launch_and_detect() { # <label> [timeout] — robust launch + the bounded detect
   if [ -n "$MV_T_WINDOW" ]; then
     CAP_LAUNCH_TIMING="${CAP_LAUNCH_TIMING:+$CAP_LAUNCH_TIMING | }$label: launch→window=${MV_T_WINDOW}s"
   fi
+  fit_window
+}
+
+fit_window() { # (run 34777677885, class D) the app's 1280x800 window is
+  # CENTERED on the 1024x768 runner screen → it overhangs both edges
+  # (x ≈ -128..1152): the screenshot CLIPS the left ~128px of the window —
+  # the patient row's avatar, the 'Joh' of 'John Test' and the 'P' of
+  # 'Patients' were all cut off-screen, so the OCR needles could never
+  # match. Fit the window to the screen (position {0,25}, size {1024,700} —
+  # within the app's declared min 1024x680, resizable per tauri.conf).
+  [ "$MV_WINDOW" = "yes" ] || return 0
+  osa 'tell application "System Events" to tell (first process whose name contains "edivault") to set position of window 1 to {0, 25}' 10 || true
+  sleep 1
+  osa 'tell application "System Events" to tell (first process whose name contains "edivault") to set size of window 1 to {1024, 700}' 10 || true
+  sleep 1
+  if osa 'tell application "System Events" to tell (first process whose name contains "edivault") to get {position, size} of window 1' 8; then
+    probe "window fitted to the runner screen: {position, size} = $OSA_OUT (was overhanging x≈-128..1152 — the left 128px was clipped off-screen; the OCR needles now see the full window)"
+  fi
 }
 
 launch_and_detect "first-launch" 180
@@ -1657,7 +1675,7 @@ create_patient() { # <first> <last> <note> <stem> <arabic yes|no>
     # click the real submit button.
     local b=0
     while [ "$b" -lt 4 ]; do
-      scroll_burst down 380 400
+      scroll_burst down 500 400
       sleep 1
       b=$((b + 1))
     done
@@ -1834,7 +1852,7 @@ if printf '%s' "$OCR_TEXT" | grep -qi -- "|[^|]*First Name"; then
     # Changes' button sits below the dialog's internal fold), then click.
     EDIT_SB=0
     while [ "$EDIT_SB" -lt 4 ]; do
-      scroll_burst down 380 400
+      scroll_burst down 500 400
       sleep 1
       EDIT_SB=$((EDIT_SB + 1))
     done
