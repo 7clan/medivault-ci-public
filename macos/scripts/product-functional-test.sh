@@ -1994,22 +1994,17 @@ open_patient_detail() { # <full-name> <stem>
   # A search filter may be active from a previous step — clear it first so
   # the FULL list is visible (the filtered list hides the other rows).
   clear_search_box || true
-  # (run 34790106973, class D) scroll to the BOTTOM of the dashboard before
-  # the row click: the 'Recently Viewed' mini-cards sit ABOVE the list and
-  # carry STALE pre-edit patient snapshots (selectPatient does not refetch)
-  # — an OCR-first click hit the card and the detail rendered the pre-edit
-  # object (the edited phone appeared lost; the DB was fine). At the bottom
-  # only the REAL list rows are visible (the list is the last section; the
-  # footer bounds it), and 'last' further prefers the row over any card.
-  local b=0
-  while [ "$b" -lt 10 ]; do
-    scroll_burst down
-    sleep 1
-    b=$((b + 1))
-  done
-  if ! v_click "$full" "${stem}-row" "$full" "last"; then
+  # (runs 34790106973 + 34792248572, class D) reveal the REAL patient-list
+  # section (its header) before the row click: above the list sit the
+  # Recently Viewed mini-cards (stale pre-edit snapshots) and BELOW it sits
+  # the Activity Timeline (entries constructed as all-null skeletons — the
+  # P2 the product fix addresses). Scrolling to the section header puts the
+  # list rows in view; the rows are then the FIRST '$full' hits in reading
+  # order (the timeline entries come after them).
+  v_scroll_find "Recent Patients" 6 || v_scroll_find "Search Results" 6 || v_scroll_find "$full" 5 || true
+  if ! v_click "$full" "${stem}-row" "$full" "first"; then
     if v_scroll_find "$full" 6 || v_scroll_find "$full" 5 no up; then
-      if ! v_click "$full" "${stem}-row-retry" "$full" "last"; then
+      if ! v_click "$full" "${stem}-row-retry" "$full" "first"; then
         snap "${stem}-row-failed" || true
         return 1
       fi

@@ -164,6 +164,27 @@ export function PatientDetail({ patient }: PatientDetailProps) {
     loadDocuments()
   }, [loadDocuments])
 
+  // Refetch the patient record on mount: entry points can pass partial or
+  // stale snapshots — the activity timeline and the overview cards construct
+  // skeletons (all data fields null) and the recently-viewed cards carry
+  // pre-edit snapshots; without this refetch the detail view renders
+  // "No contact information added yet" for a patient who HAS data.
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch(`/api/patients/${patient.id}`, { credentials: 'include' })
+        if (res.ok && !cancelled) {
+          const fresh = (await res.json()) as PatientInfo
+          updateSelectedPatient(fresh)
+        }
+      } catch {
+        // the passed-in object remains the fallback
+      }
+    })()
+    return () => { cancelled = true }
+  }, [patient.id, updateSelectedPatient])
+
   // Load annotation counts for documents
   useEffect(() => {
     if (documents.length === 0) {
