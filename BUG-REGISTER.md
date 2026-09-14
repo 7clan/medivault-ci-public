@@ -44,3 +44,33 @@ Live findings are appended by the harness into the per-run artifact
 (filled per focus run — the harness appends numbered BUG-N entries with
 evidence screenshots, OCR context, and classification per the discipline
 above)
+
+---
+
+## Campaign findings
+
+### BUG-A1 [P3] PASSWORD_POLICY_MISMATCH (account focus, run 34885186221)
+
+- **Class**: P3 — record and continue
+- **Area**: account setup — password policy communication
+- **Detail**: the setup form's on-screen password checklist advertises
+  "8+ characters" and its client-side submit gate is 6, but the server
+  enforces a 10-character minimum (plus the four character classes) — a
+  password that satisfies EVERY on-screen checklist row (8 chars, upper +
+  lower + digit + special) is visibly rejected with
+  "Password must be at least 10 characters long" and no checklist row
+  explains it.
+- **Reproduction (real GUI)**: fill the one-time setup form with a valid
+  name, a valid email, and the checklist-compliant 8-char all-class
+  password in both masked fields → submit → the server rejection renders
+  in the form's error block (evidence: `su4-boundary-rejected.png`; the
+  OCR context in the run artifact reads the full rejection text).
+- **Clinic impact**: a doctor who follows the on-screen requirements
+  exactly gets an unexplained rejection — a first-run frustration
+  (data-quality adjacent, no security weakening: the enforced policy is
+  STRONGER than advertised).
+- **Proven in**: runs 34877260555 and 34885186221 (the boundary probe
+  GREEN both times — the rejection is deterministic).
+- **Suggested minimal fix (NOT applied — the frozen product is
+  read-only in this campaign)**: align the checklist copy ("10+
+  characters") and the client gate (≥10) with the enforced server policy.
