@@ -232,3 +232,46 @@ DMG_HASH GREEN, INSTALL GREEN, window/first-run/registration/SMAppService/
 API/PostgreSQL/handoff/account-creation ALL GREEN — the identical
 foundation the surface and account focuses proved; the patients-specific
 probes begin at PC0.
+
+---
+
+## Patients focus — RUN 2 (34904733614 @ 37b0369, 2026-09-14 22:33–22:57)
+
+**Outcome: P1-RED at PC1b — which PROVED to be a real P2 product defect
+(the dialog state leak), not the reported validation failure.**
+
+The D-fix from run 1 held perfectly: PC0 GREEN (the scroll fix opened the
+dialog; the cancel closed it verified; the count badge read 0 — the O→0
+normalization working), and PC1 GREEN (the multi-needle verdict caught the
+still-open dialog, `pc1-empty-dialog-still-open.png` + `pc1-rejected.png`
+with the native bubble — the run-1 false-P1 mechanism eliminated).
+
+PC1b (the last-name-only probe) then reported P1 "the first-name-empty
+submit CREATED a patient". The prove step (VLM reads of the run's own
+screenshots + the source) established what actually happened:
+
+1. The Patients stat card read **0** before PC1b and **1** after — a record
+   WAS created (the harness verdict was factually correct).
+2. `pc1b-lastonly-form-filled.png` shows the form's First Name containing
+   **'Scratch Pad'** — the data typed into PC0's CANCELED create — plus the
+   note leaked from PC1's rejected submit: **the AddPatientDialog never
+   resets its fields on close** (handleClose clears only the error state;
+   the reset exists solely on the success path).
+3. So the 'last-name-only' submit actually carried BOTH names ('Scratch
+   Pad' + 'Probe'), passed the native validation and the route's
+   first+last requirement legitimately, and created an unintended record.
+   The required-field validation itself works correctly (PC1 proved it
+   fires on a genuinely-empty form).
+
+**Disposition (P1/P2 first-red discipline):** reclassified P2
+(DIALOG_STATE_LEAK — a substantive data-integrity defect); the minimal
+product fix applied (add-patient-dialog resets its 7 fields + error on
+open via useEffect — the edit dialog's own established idiom; the edit
+dialog itself is not affected); the regression probe added to the battery
+(PC0 now reopens the dialog after the cancel and asserts the canceled
+'Scratch Pad' is absent — P2 fires if the leak recurs); full static
+validation re-run; targeted ARM64 rerun dispatched.
+
+Run-2 evidence preserved: artifact 10372732041 (47 files — 43 screenshots
+incl. the full PC0/PC1/PC1b chains, probes.log, registers) + the GUI job
+log + the VLM proof reads recorded in BUG-REGISTER.md.

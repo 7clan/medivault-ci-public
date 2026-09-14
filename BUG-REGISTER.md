@@ -127,3 +127,45 @@ above)
   misfire a false edit-P1).
 - **Evidence**: bug-01-PATIENTSCANCELCREATE.png, pc0-open-before.png,
   probes.log lines 190-193, artifact 10371696057.
+
+### BUG-P2 [P2] DIALOG_STATE_LEAK (patients focus, run 34904733614 — run 2)
+
+- **Class**: P2 — substantive functional defect (proven; minimal product fix
+  applied per the first-red discipline; the harness's initial P1 wording was
+  an interpretation error — the required validation itself works correctly)
+- **Area**: patients — Add Patient dialog state lifecycle
+- **Detail**: the AddPatientDialog does not reset its fields when the dialog
+  is closed/canceled — `handleClose` clears only the error state; the
+  7-field reset exists ONLY on the create-success path. A canceled create's
+  typed data silently persists and pre-fills the NEXT Add Patient session.
+- **Proof chain (run 34904733614)**: PC0 (fixed) opened the dialog, typed
+  'Scratch Pad' in First Name, canceled — the count stayed 0 (cancel itself
+  GREEN). PC1's rejected submit left 'an empty probe note' in the same
+  persistent state. PC1b (the last-name-only probe) reopened the dialog and
+  typed 'Probe' in Last Name — the VLM read of
+  `pc1b-lastonly-form-filled.png` proves the form showed First Name =
+  'Scratch Pad' (leaked) + Last Name = 'Probe' + the leaked note; the Enter
+  submit was therefore VALID, the POST carried BOTH names, and an unintended
+  'Scratch Pad Probe' record was created — the Patients stat card read 0
+  before (pc1-empty-open-before.png) and 1 after
+  (pc1b-lastonly-submit-enter.png + bug-01), the dialog closed on the
+  success path, and the harness correctly observed a creation (its P1
+  message misattributed the cause — the fields were not empty).
+- **Root cause (source)**: `src/components/add-patient-dialog.tsx`
+  handleClose clears `error` only; the edit-patient-dialog is NOT affected
+  (it re-syncs every field from the patient record on open via useEffect —
+  the same idiom the fix adopts).
+- **Clinic impact**: a receptionist who cancels a half-typed patient form
+  and later opens Add Patient for a DIFFERENT patient finds the old data
+  pre-filled; an inattentive submit creates a wrong/composite record in a
+  medical app (wrong-chart risk downstream).
+- **Fix (applied — minimal, the edit dialog's own idiom)**: a `useEffect`
+  on `open` resets all 7 fields + the error when the dialog opens.
+- **Regression test (added)**: the PC0 reopen probe — after the cancel
+  count check, the battery reopens the Add Patient dialog and asserts
+  'Scratch Pad' is ABSENT (P2 fires if the leak recurs); the fixed dialog
+  must reopen clean.
+- **Evidence**: pc1b-lastonly-form-filled.png (the leaked form),
+  pc1b-lastonly-submit-enter.png + bug-01-PATIENTSREQUIREDFIELDS.png
+  (Patients card = 1), pc1-empty-open-before.png (Patients card = 0),
+  probes.log lines 291-311, artifact 10372732041.

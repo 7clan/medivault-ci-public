@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -25,6 +25,24 @@ export function AddPatientDialog({ open, onOpenChange, onCreated }: AddPatientDi
   const [notes, setNotes] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+
+  // Reset the form when the dialog opens — canceled data must not leak into
+  // a later create session (P2, run 34904733614: a canceled 'Scratch Pad'
+  // pre-filled the next session, so a 'last-name-only' probe actually
+  // submitted both names and created an unintended record). The same
+  // open-sync idiom the edit dialog already uses.
+  useEffect(() => {
+    if (open) {
+      setFirstName('')
+      setLastName('')
+      setDateOfBirth('')
+      setPhone('')
+      setEmail('')
+      setAddress('')
+      setNotes('')
+      setError('')
+    }
+  }, [open])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()

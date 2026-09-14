@@ -3612,6 +3612,28 @@ focus_patients() {
     else
       bug P1 CANCEL_CREATE "after canceling a half-filled Add Patient dialog the patient count changed ($PC0_BEFORE → $PATIENTS_COUNT — a canceled create must not write a record)"
     fi
+    # P2 regression probe (run 34904733614): the canceled create's typed data
+    # must NOT leak into the next Add Patient session — observed: PC0's
+    # canceled 'Scratch Pad' persisted in the dialog state and pre-filled
+    # PC1b's form, so the 'last-name-only' probe actually submitted BOTH
+    # names and created an unintended 'Scratch Pad Probe' record (count 0→1,
+    # VLM-proven via pc1b-lastonly-form-filled.png + the Patients stat card).
+    # Product fix: add-patient-dialog resets its fields on open (useEffect).
+    v_scroll_top 10 || true
+    if v_click "Add Patient" "pc0-reopen" "First Name"; then
+      sleep 1
+      ocr_capture || true
+      if ocr_grep "Scratch Pad"; then
+        bug P2 DIALOG_STATE_LEAK "the canceled create's typed 'Scratch Pad' is STILL present in the reopened Add Patient dialog (canceled form data persisting across sessions — the run-34904733614 root cause)"
+        press_escape
+        sleep 1
+        ensure_dialog_closed "pc0-leak-close" add_patient_dialog_visible || true
+      else
+        qa_cap DIALOG_STATE_RESET "GREEN (the reopened Add Patient dialog is clean — the canceled 'Scratch Pad' did not persist; the run-34904733614 leak is fixed)"
+        surface_row "Dialog state reset" "Add Patient canceled then reopened" "7 empty fields" "canceled form data must not persist into the next create session" "canceled with 'Scratch Pad' typed → reopened → fields clean" "GREEN (clean reopen)" "pc0-reopen-after" "OK"
+        ensure_dialog_closed "pc0-reopen-close" add_patient_dialog_visible || true
+      fi
+    fi
   else
     bug D PATIENTS_CANCEL_CREATE "the Add Patient dialog could not be opened for the cancel-create probe"
   fi
