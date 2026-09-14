@@ -103,6 +103,87 @@ The final section of every run re-verifies the loopback-only binds
 (API 127.0.0.1:3001, PostgreSQL 127.0.0.1:55432 — no 0.0.0.0/::/LAN),
 the crash-report watch, and the teardown.
 
+## Patients focus — planned battery (pre-dispatch record)
+
+The patients focus (`exploratory-qa` focus=patients, ARM64, directive
+2026-09-15) exercises the patient lifecycle far deeper than the baseline
+through the visible GUI with synthetic data only. Every patient carries a
+UNIQUE sentinel note (`ONLY-JOHN-ALPHA`, `ONLY-JANE-BRAVO`,
+`ONLY-MOHAMMAD-CHARLIE`, `ONLY-ELODIE-DELTA`, `ONLY-OCONNOR-ECHO`,
+`ONLY-LONGNAME-FOXTROT`, `ONLY-ZED-DELETE`, plus three similar-name
+sentinels) — any foreign sentinel visible on a patient's detail is a P0
+cross-patient data leak (immediate stop). Unique phone DIGIT TOKENS
+(0101/0202/0304/0105/0106/1101/1102/1103/0199) make row targeting
+OCR-robust for the Arabic/accented/long-name patients (the search matches
+phone `contains`; digits type and OCR reliably).
+
+**Cohort (all synthetic, per the directive):** John Test (full data),
+Jane Test (optional fields ALL empty), محمد تجريبي (Arabic + international
+phone), Élodie Müller (accented Latin + accented address), O'Connor Test
+(apostrophe + dotted phone), Very Long Synthetic Patient Name For MediVault
+Testing (long values + the DOB digit-entry attempt), the similar-name trio
+John Tester / john test / John-Test-Hyphen (distinct sentinels — no merge,
+each opens its own record), and Zed Delete (the delete-battery target).
+
+**Create battery (PC):** cancel-create (count unchanged), empty-names
+submit (native required rejection, both the double-empty and the
+last-name-only forms), valid full-data create, optional-empty create,
+Arabic create, accented create, apostrophe create, long-values create,
+duplicate/similar-name trio (count 9, per-record sentinel verification),
+and the rapid double-submit create (exactly ONE Zed — count 10).
+
+**Visit scheduling enabler (PS):** a visit for John scheduled through the
+real dialog (patient select → today's default date → the anchored footer
+submit) — this enables the Today/Overview, Upcoming-Visits, and Calendar
+entry points. Scheduled while John is the only patient (the dropdown then
+holds exactly one item — no scroll ambiguity).
+
+**Isolation (PI):** a full scroll-scan of every cohort patient's detail —
+own sentinel present, ALL 8 foreign sentinels absent (P0 on any leak).
+
+**Edit battery (PE, before the entry-point proofs so the stale-snapshot
+regression is armed — John's recentlyViewed cache holds his PRE-EDIT phone
+from the isolation scans):** cancel-edit (typed value absent), multi-field
+edit (John's phone + note — the edit that arms the regression),
+single-field edit (Élodie's phone), consecutive edits (O'Connor ×2),
+Unicode edit (Élodie's accented address), clear-optional-field (Élodie's
+phone → NULL; the skeleton empty-state must NOT appear), Arabic edit
+(Muhammad's mixed note), and the untouched-patient check (Zed's exact data
+after the whole battery).
+
+**Entry-point consistency (PV — the P2 5ede518 stale/skeleton regression:
+every entry point must render the AUTHORITATIVE record, John's EDITED
+phone):** (1) the Recent-Patients list row, (2) the search-result row
+(searched by the EDITED phone token — also proves the search index reflects
+edits), (3) the Recently Viewed mini-card (a STALE pre-edit cached object —
+the refetch must win), (4) the Activity Timeline entry (a NAME-ONLY
+skeleton object), (5) the Cmd+P Quick Patient Switcher, (6) the Today's
+Overview `Next:` chip (name-only skeleton), (7) the Upcoming Visits card
+(partial object), (8) the Calendar week-view visit chip (partial object).
+Probes 6-8 are honest NOT-EXERCISED records if the visit scheduling hits a
+harness limit (per the directive's "if present" allowance).
+
+**Delete battery (PDEL):** cancel-delete (Zed kept), confirm-delete (the
+record gone, the search finds nothing, the count back to 9, the app returns
+to the dashboard), the post-delete Recently-Viewed ghost entry (the stale
+localStorage chip for the deleted patient — P3 if it renders cached data),
+and no resurrection after the restart.
+
+**Human-mistake navigation (PNAV):** open → immediate switch, edit →
+navigate away (the abandoned edit must not save), rapid switching ×3
+(each sentinel verified), search → open → clear → reopen, and logout
+WHILE ON a patient detail → no patient data logged-out → re-login → the
+same record intact (login budget: ≤3 of 5 in a fresh run).
+
+**Patient-level persistence (PP):** quit → supervisor/API/PostgreSQL
+health → relaunch (either session path, recorded honestly) → count 9,
+John's edited values + sentinel, Muhammad's Arabic-mixed note, isolation
+intact, and Zed still gone. The dedicated persistence focus still comes
+later.
+
+The final section of the run re-verifies the loopback-only binds, the
+crash-report watch, and the teardown.
+
 ## Cumulative campaign status
 
 (to be updated after each focus: capability fields, screenshot totals,

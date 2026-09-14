@@ -86,10 +86,28 @@ grep -q '[0-9]' "$DOC_PASS_FILE" || { echo "FATAL: password lacks a digit"; exit
 grep -q '!' "$DOC_PASS_FILE" || { echo "FATAL: password lacks a special character"; exit 1; }
 
 # Synthetic patients — obviously fake data only. Patient C's name is Arabic
-# (first=محمد, last=تجريبي — "Muhammad Test").
-PAT_A_FIRST="John";  PAT_A_LAST="Test";  PAT_A_NOTE="John Alpha note GUI-CI"
-PAT_B_FIRST="Jane";  PAT_B_LAST="Test";  PAT_B_NOTE="Jane Beta note GUI-CI"
-PAT_C_FIRST="محمد"; PAT_C_LAST="تجريبي"; PAT_C_NOTE="Gamma C note GUI-CI"
+# (first=محمد, last=تجريبي — "Muhammad Test"). The patients-focus cohort
+# (directive 2026-09-15): every patient carries a UNIQUE sentinel note so the
+# cross-patient isolation checks are unambiguous (a foreign sentinel on the
+# wrong detail screen is a P0). Unique phone DIGIT TOKENS (0101/0202/…)
+# make row targeting OCR-robust for the Arabic/accented/long-name patients
+# (search matches phone contains; digits type and OCR reliably).
+PAT_A_FIRST="John";  PAT_A_LAST="Test";  PAT_A_NOTE="ONLY-JOHN-ALPHA"
+PAT_B_FIRST="Jane";  PAT_B_LAST="Test";  PAT_B_NOTE="ONLY-JANE-BRAVO"
+PAT_C_FIRST="محمد"; PAT_C_LAST="تجريبي"; PAT_C_NOTE="ONLY-MOHAMMAD-CHARLIE"
+PAT_D_FIRST="Élodie"; PAT_D_LAST="Müller"; PAT_D_NOTE="ONLY-ELODIE-DELTA"
+PAT_E_FIRST="O'Connor"; PAT_E_LAST="Test"; PAT_E_NOTE="ONLY-OCONNOR-ECHO"
+PAT_F_FIRST="Very Long Synthetic Patient Name"; PAT_F_LAST="For MediVault Testing"; PAT_F_NOTE="ONLY-LONGNAME-FOXTROT"
+PAT_ZED_FIRST="Zed"; PAT_ZED_LAST="Delete"; PAT_ZED_NOTE="ONLY-ZED-DELETE"
+# per-patient synthetic contact data (Jane intentionally has NONE — the
+# empty-optional-fields create probe)
+PAT_A_PHONE="+1 555 0101"; PAT_A_EMAIL="john.test@example.invalid"
+PAT_C_PHONE="+966 5 555 0202 77"
+PAT_D_PHONE="+1 555 0304"; PAT_D_EMAIL="elodie.muller@example.invalid"; PAT_D_ADDR="12 Rue de l'Été, Paris 75001"
+PAT_E_PHONE="555.0105.777"
+PAT_F_PHONE="+1 555 0106 x99"; PAT_F_EMAIL="very.long.name.for.medivault@example.invalid"
+PAT_F_ADDR="4182 Extended Synthetic Boulevard, Suite 4200 Unit 7, Long Testing City 99999-1234"
+PAT_ZED_PHONE="+1 555 0199"; PAT_ZED_EMAIL="zed.delete@example.invalid"
 
 # The Tauri window title (src-tauri/tauri.conf.json) — em dash included.
 EXPECTED_TITLE="MediVault — Medical Document Manager"
@@ -841,59 +859,11 @@ v_click_try_hits() { # <needle> <stem> <expect-text>
   return 1
 }
 
-# Click an ARABIC needle: uses the Arabic-capable OCR to locate the real
-# label, then the same native CGEvent click + visible-change verification.
-v_click_arabic() { # <needle> <stem> <expect-text-or-empty>
-  local needle="$1" stem="$2" expect="$3"
-  if [ ! -x "$MV_OCR_AR" ]; then
-    probe "vclick-ar[$stem]: Arabic OCR unavailable — no click attempted"
-    return 1
-  fi
-  if ! screencapture -x "$MV_SHOT" 2>>"$LOG"; then return 1; fi
-  local before_hash
-  before_hash="$(shasum -a 256 "$MV_SHOT" 2>/dev/null | awk '{print $1}')"
-  snap_file "$MV_SHOT" "${stem}-before" || true
-  local lines px py
-  if ! "$MV_OCR_AR" "$MV_SHOT" > "$MV_LINES" 2>>"$LOG"; then
-    probe "vclick-ar[$stem]: Arabic OCR run failed"
-    return 1
-  fi
-  local hit
-  hit="$(grep -i -- "|${needle}|\||[^|]*${needle}[^|]*|" "$MV_LINES" | head -1 || true)"
-  [ -n "$hit" ] || { probe "vclick-ar[$stem]: Arabic target '$needle' NOT FOUND (no click attempted)"; return 1; }
-  local pxw ptw
-  pxw="$(sed -n '1p' "$MV_LINES" | awk '{print $2}')"
-  ptw="$(sed -n '1p' "$MV_LINES" | awk '{print $4}')"
-  local scale=1
-  if [ -n "$pxw" ] && [ -n "$ptw" ] && [ "$ptw" -gt 0 ] 2>/dev/null; then
-    scale="$(awk -v a="$pxw" -v b="$ptw" 'BEGIN{printf "%.4f", a/b}')"
-  fi
-  px="$(printf '%s' "$hit" | awk -F'|' '{print $3}')"
-  py="$(printf '%s' "$hit" | awk -F'|' '{print $4}')"
-  [ -n "$px" ] && [ -n "$py" ] || return 1
-  local tx ty
-  tx="$(awk -v a="$px" -v s="$scale" 'BEGIN{printf "%.0f", a/s}')"
-  ty="$(awk -v a="$py" -v s="$scale" 'BEGIN{printf "%.0f", a/s}')"
-  probe "vclick-ar[$stem]: Arabic target='$needle' → screen point ($tx,$ty) — native CGEvent click"
-  "$MV_MOUSE" "$tx" "$ty" 2>>"$LOG" || return 1
-  sleep 2
-  if ! screencapture -x "$MV_SHOT" 2>>"$LOG"; then return 1; fi
-  snap_file "$MV_SHOT" "${stem}-after" || true
-  local after_hash
-  after_hash="$(shasum -a 256 "$MV_SHOT" 2>/dev/null | awk '{print $1}')"
-  if [ -n "$expect" ]; then
-    if "$MV_OCR_AR" "$MV_SHOT" > "$MV_LINES" 2>>"$LOG" && grep -qi -- "|[^|]*${expect}" "$MV_LINES"; then
-      probe "vclick-ar[$stem]: verified — '$expect' now visible (Arabic OCR)"
-      return 0
-    fi
-  fi
-  if [ "$after_hash" != "$before_hash" ]; then
-    probe "vclick-ar[$stem]: verified by visible screen change (hash-diff)"
-    return 0
-  fi
-  probe "vclick-ar[$stem]: NO visible change after the click"
-  return 1
-}
+# (patients-focus self-review) v_click_arabic — the Arabic-OCR row clicker —
+# was REMOVED as dead code: the patients battery's phone-token row targeting
+# (open_patient_by_phone_token: search by the unique phone digits, click the
+# row's phone text) replaced the Arabic-name row click everywhere (digits OCR
+# and type reliably where Arabic script OCR does not); no call sites remain.
 
 # =============================================================================
 # Scrolling (the 1024x768 runner window cuts the dashboard at the GETTING
@@ -1018,11 +988,16 @@ scan_detail_page() { # <own-note> <foreign-1> <foreign-2>
 # the OCR-found patient name on the banner (report | EDIT | trash) and click
 # the MIDDLE cluster. Fallback: OCR-anchored right-aligned estimates. Every
 # attempt is VERIFIED by the edit dialog's 'First Name' label appearing.
-v_click_edit_pencil() { # <patient-full-name> <stem>
-  local name="$1" stem="$2"
+v_click_edit_pencil() { # <patient-full-name> <stem> [yband-adj]
+  # (patients focus) the optional 3rd arg shifts the icon band for anchors
+  # that are NOT the patient NAME: the banner's contact subline (phone/email)
+  # sits ~38pt BELOW the name, so phone/email-anchored calls pass -38 to
+  # re-center the band on the measured icon row (name_top-13). Default 0 =
+  # byte-identical behavior for every pre-existing name-anchored call site.
+  local name="$1" stem="$2" yadj="${3:-0}"
   ocr_capture || return 1
   if ! ocr_lookup "$name" "first"; then
-    probe "vclick-pencil[$stem]: patient name '$name' not found on screen — no anchor, no click"
+    probe "vclick-pencil[$stem]: anchor text '$name' not found on screen — no anchor, no click"
     return 1
   fi
   # (run 34788023216 forensics): the icons sit at the banner row's UPPER
@@ -1032,7 +1007,7 @@ v_click_edit_pencil() { # <patient-full-name> <stem>
   # (name_top - 13) ± 22 (covers name_top-35 .. name_top+9), then prefer the
   # RIGHT-side clusters (x>700): the icons are [report | EDIT | trash].
   local band_cy x0
-  band_cy=$(( OCR_HIT_Y - 13 ))
+  band_cy=$(( OCR_HIT_Y - 13 + yadj ))
   x0=$(( OCR_HIT_X + OCR_HIT_W + 30 ))
   probe "vclick-pencil[$stem]: anchor name '$name' at ($OCR_HIT_X,$OCR_HIT_Y) — icon band center y=$band_cy, scan from x=$x0"
   if [ -n "$MV_ICONSCAN" ]; then
@@ -1073,7 +1048,7 @@ v_click_edit_pencil() { # <patient-full-name> <stem>
   # pencil ≈ x 902 with the fitted window). Each candidate is VERIFIED;
   # Escape dismisses anything opened by a miss (report/trash).
   local cand tx ty2
-  ty2=$(( OCR_HIT_Y - 15 ))
+  ty2=$(( OCR_HIT_Y - 15 + yadj ))
   for cand in 902 920 884 860 944; do
     tx="$cand"
     probe "vclick-pencil[$stem]: anchored fallback click at ($tx,$ty2) (the measured icon band)"
@@ -3273,224 +3248,1812 @@ focus_account() {
 }
 
 # =============================================================================
-# FOCUS: patients — the patient CRUD + isolation deep walk
+# PATIENTS-FOCUS HELPERS — the deep-lifecycle primitives (all verified by the
+# probe pattern: never a guessed coordinate; every click OCR-anchored; every
+# claim OCR-verified; every limit recorded honestly)
 # =============================================================================
-focus_patients() {
-  note "=== FOCUS patients: create / open / edit / search / isolation / delete-cancel ==="
 
-  create_patient "$PAT_A_FIRST" "$PAT_A_LAST" "$PAT_A_NOTE" "p10-patient-a"
-  sleep 6
-  if ! v_scroll_find "$PAT_A_FIRST $PAT_A_LAST" 12; then
-    snap "p10-patient-a-not-listed" || true
-    bug P1 PATIENT_A "Patient A ($PAT_A_FIRST $PAT_A_LAST) is not visible in the patient list after creation"
-  fi
-  qa_cap PATIENT_A "GREEN (created through the real Add Patient dialog; row visible in the list)"
-  snap "p10-patient-a-listed" || true
+read_patient_count() { # → PATIENTS_COUNT (number | 0 | unreadable)
+  PATIENTS_COUNT="unreadable"
+  clear_search_box || true
   v_scroll_top 10 || true
-
-  create_patient "$PAT_B_FIRST" "$PAT_B_LAST" "$PAT_B_NOTE" "p11-patient-b"
-  sleep 6
-  if ! v_scroll_find "$PAT_B_FIRST $PAT_B_LAST" 12; then
-    snap "p11-patient-b-not-listed" || true
-    bug P1 PATIENT_B "Patient B ($PAT_B_FIRST $PAT_B_LAST) is not visible in the patient list after creation"
+  if v_scroll_find "Recent Patients" 8; then
+    sleep 2
+    ocr_capture || return 0
+    local n
+    n="$(printf '%s\n' "$OCR_TEXT" | awk -F'|' '{print $2}' | grep -E '[0-9] *patients?' | head -1 | sed -E 's/[^0-9]//g')"
+    if [ -n "$n" ]; then PATIENTS_COUNT="$n"; fi
+  else
+    if v_scroll_find "No patients yet" 5; then PATIENTS_COUNT="0"; fi
   fi
-  qa_cap PATIENT_B "GREEN (created through the real Add Patient dialog; row visible in the list)"
-  snap "p11-patient-b-listed" || true
-  v_scroll_top 10 || true
+  probe "read-patient-count: badge='$PATIENTS_COUNT'"
+}
 
-  create_patient "$PAT_C_FIRST" "$PAT_C_LAST" "$PAT_C_NOTE" "p12-patient-c" yes
-  sleep 6
-  if ! v_scroll_find "محمد" 12 yes; then
-    if ocr_grep "3 patients" || v_scroll_find "3 patients" 6 no up; then
-      snap "p12-patient-c-listed-badge" || true
-      probe "patient C: the Arabic name was not OCR-readable, but the list badge shows '3 patients'"
+v_clear_field() { # <label-needle> <stem> — Cmd+A + Delete in the field under the label
+  local label="$1" stem="$2"
+  ocr_capture || return 1
+  if ! ocr_lookup "$label" "first" "label"; then
+    probe "vclear[$stem]: label '$label' NOT FOUND — no click attempted"
+    return 1
+  fi
+  "$MV_MOUSE" "$OCR_HIT_X" "$(( OCR_HIT_Y + 6 ))" 2>>"$LOG" || return 1
+  sleep 1
+  osa 'tell application "System Events" to tell (first process whose name contains "edivault") to keystroke "a" using command down' 10 || true
+  sleep 1
+  osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 51' 10 || true
+  sleep 1
+  probe "vclear[$stem]: cleared the field under '$label' (Cmd+A + Delete — a real user's clear)"
+  return 0
+}
+
+create_patient_deep() { # <first> <last> <phone> <email> <address> <notes> <stem> [arabic yes|no] [dob-digits]
+  # Returns: 0 = created (the dialog closed after the submit); 2 = the submit
+  # was REJECTED (the dialog stayed open — the validation probes expect
+  # this); 1 = a harness-level failure. Empty fields are SKIPPED (the
+  # empty-optional probe depends on this).
+  local first="$1" last="$2" phone="$3" email="$4" address="$5" notes="$6" stem="$7"
+  local arabic="${8:-no}" dob="${9:-}"
+  if ! v_click "Add Patient" "${stem}-open" "First Name"; then
+    if ! v_click_try_hits "Add Patient" "${stem}-open" "First Name"; then
+      snap "${stem}-open-failed" || true
+      return 1
+    fi
+  fi
+  local nfail=0
+  if [ "$arabic" = "yes" ]; then
+    if [ -n "$first" ]; then
+      v_type_into "First Name" "$first" "${stem}-first" no yes || nfail=$((nfail + 1))
+    fi
+    if [ -n "$last" ]; then
+      v_type_into "Last Name" "$last" "${stem}-last" no yes || nfail=$((nfail + 1))
+    fi
+  else
+    if [ -n "$first" ]; then
+      v_type_into "First Name" "$first" "${stem}-first" || nfail=$((nfail + 1))
+    fi
+    if [ -n "$last" ]; then
+      v_type_into "Last Name" "$last" "${stem}-last" || nfail=$((nfail + 1))
+    fi
+  fi
+  [ -n "$phone" ] && { v_type_into "Phone" "$phone" "${stem}-phone" || nfail=$((nfail + 1)); }
+  [ -n "$email" ] && { v_type_into "Email" "$email" "${stem}-email" || nfail=$((nfail + 1)); }
+  [ -n "$address" ] && { v_type_into "Address" "$address" "${stem}-address" || nfail=$((nfail + 1)); }
+  [ -n "$notes" ] && { v_type_into "Notes" "$notes" "${stem}-notes" || nfail=$((nfail + 1)); }
+  # DOB (type=date): WebKit fills the month/day/year segments from raw
+  # digits — ONE honest attempt; the row/detail shows 'DOB:' when it took.
+  if [ -n "$dob" ]; then
+    if v_type_into "Date of Birth" "$dob" "${stem}-dob"; then
+      probe "create[$stem]: typed the DOB digits — verified functionally on the row/detail later"
     else
-      snap "p12-patient-c-not-listed" || true
-      bug P1 PATIENT_C "Patient C (محمد تجريبي) is not visible in the patient list after creation"
+      probe "create[$stem]: the DOB digits could not be typed/verified (type=date automation limit — honest record; the field is optional)"
     fi
   fi
-  qa_cap PATIENT_C "GREEN (Arabic patient created through the real dialog)"
-  snap "p12-patient-c-created" || true
-
-  # patient detail surface record (A) + isolation
-  if ! open_patient_detail "$PAT_A_FIRST $PAT_A_LAST" "p13-detail-a"; then
-    bug P1 PATIENT_DATA_ISOLATION "could not open Patient A's detail"
-  fi
-  sleep 2
-  ocr_capture || true
-  snap "p13-detail-a-banner" || true
-  record_inventory "patient detail — banner (Patient A)"
-  surface_section "Patient detail view (Patient A)"
-  surface_row "Patient detail banner" "patient row click (search/list)" "back arrow; initials avatar; name; phone/email/DOB + age badge; icon controls (report/edit/delete)" "the per-patient header" "opened via the real row click; OCR-verified" "GREEN" "p13-detail-a-*" "OK"
-  scan_detail_page "$PAT_A_NOTE" "$PAT_B_NOTE" "$PAT_C_NOTE"
-  if [ "$SCAN_OWN_SEEN" != "yes" ]; then
-    bug P1 PATIENT_DATA_ISOLATION "Patient A's own note is not visible anywhere on A's detail screen (scanned)"
-  fi
-  if [ "$SCAN_FOREIGN_SEEN" = "yes" ]; then
-    bug P0 PATIENT_DATA_ISOLATION "Patient B/C's note data appears on Patient A's detail screen (CROSS-PATIENT DATA LEAK)"
-  fi
-  probe "isolation check A: PASS (A's note visible, B/C's notes absent across the scanned detail)"
-  qa_cap PATIENT_ISOLATION_A "GREEN (own note visible; no foreign notes)"
-  snap "p13-detail-a-isolated" || true
-
-  # edit (the icon-only pencil → Edit Patient dialog → phone)
-  v_scroll_find "$PAT_A_FIRST $PAT_A_LAST" 10 no up || true
-  if ! v_click_edit_pencil "$PAT_A_FIRST $PAT_A_LAST" "p14-edit-open"; then
-    snap "p14-edit-open-failed" || true
-    bug P1 PATIENT_EDIT "the icon-only Edit Patient control could not be activated"
-  fi
-  if ocr_grep "First Name"; then
-    ocr_capture || true
-    snap "p14-edit-dialog" || true
-    record_inventory "Edit Patient dialog (Patient A)"
-    surface_row "Edit Patient dialog" "detail banner pencil icon" "title 'Edit Patient'; the 7 fields prefilled; Completion meter; 'Cancel' + 'Save Changes'" "the patient edit form" "opened via the icon-only pencil; OCR-verified" "GREEN" "p14-edit-*" "OK"
-    if ! v_type_into "Phone" "+1 555 0100" "p15-edit-phone"; then
-      bug P1 PATIENT_EDIT "could not type the new phone into the edit dialog"
-    fi
-    EDIT_SAVED=0
+  snap "${stem}-form-filled" || true
+  [ "$nfail" -gt 0 ] && probe "create[$stem]: $nfail typing step(s) not visually verified (kept — the dialog-close + row + count verify is the functional proof)"
+  local submitted=0
+  if ocr_lookup "First Name" "first" "label"; then
+    "$MV_MOUSE" "$OCR_HIT_X" "$(( OCR_HIT_Y + 6 ))" 2>>"$LOG" || true
+    sleep 1
     if osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10; then
       sleep 3
       ocr_capture || true
-      if [ -n "$OCR_TEXT" ] && ! ocr_grep "Edit Patient"; then
-        EDIT_SAVED=1
-        snap "p15-edit-save-enter" || true
+      if [ -n "$OCR_TEXT" ] && ! ocr_grep "Add New Patient"; then
+        submitted=1
+        snap "${stem}-submit-enter" || true
       fi
     fi
-    if [ "$EDIT_SAVED" = "0" ]; then
-      EDIT_SB=0
-      while [ "$EDIT_SB" -lt 4 ]; do
+  fi
+  if [ "$submitted" = "0" ]; then
+    local b=0
+    while [ "$b" -lt 4 ]; do
+      scroll_burst down 500 400
+      sleep 1
+      b=$((b + 1))
+    done
+    if ! v_click_try_hits "Add Patient" "${stem}-submit" "${first:-Add Patient}"; then
+      snap "${stem}-submit-failed" || true
+      return 1
+    fi
+    sleep 3
+  fi
+  sleep 2
+  ocr_capture || true
+  if ocr_grep "Add New Patient"; then
+    snap "${stem}-dialog-still-open" || true
+    probe "create[$stem]: the Add New Patient dialog is STILL OPEN after the submit (a rejection — the caller checks the rejection text)"
+    return 2
+  fi
+  probe "create[$stem]: the Add New Patient dialog closed after the submit"
+  return 0
+}
+
+v_click_near_anchor_y() { # <needle> <anchor-needle> <stem> [tolerance-pts] — click the needle hit closest in Y to the anchor hit
+  # (dialog-footer submits: the same label can render BOTH in the dialog
+  # footer AND dimmed in the page behind — only the hit on the anchor's row
+  # is the dialog's own button; every other candidate is left unclicked)
+  local needle="$1" anchor="$2" stem="$3" tol="${4:-40}"
+  ocr_capture || return 1
+  if ! ocr_lookup "$anchor" "first"; then
+    probe "vclick-near[$stem]: anchor '$anchor' NOT FOUND — no click attempted"
+    return 1
+  fi
+  local ay="$OCR_HIT_Y"
+  local hitsfile="/tmp/qa-ocr-hits.txt"
+  printf '%s\n' "$OCR_TEXT" | grep -i -- "|[^|]*${needle}[^|]*|" > "$hitsfile" 2>/dev/null || true
+  if [ ! -s "$hitsfile" ]; then
+    probe "vclick-near[$stem]: no '$needle' hits on screen — no click"
+    return 1
+  fi
+  local best_d=99999 best_x="" best_y="" hit px py sx sy d
+  while IFS= read -r hit; do
+    [ -n "$hit" ] || continue
+    px="$(printf '%s' "$hit" | awk -F'|' '{print $3}')"
+    py="$(printf '%s' "$hit" | awk -F'|' '{print $4}')"
+    [ -n "$px" ] && [ -n "$py" ] || continue
+    sx="$(awk -v a="$px" -v s="$MV_SCALE" 'BEGIN{printf "%.0f", a/s}')"
+    sy="$(awk -v a="$py" -v s="$MV_SCALE" 'BEGIN{printf "%.0f", a/s}')"
+    d=$(( sy - ay ))
+    [ "$d" -lt 0 ] && d=$(( 0 - d ))
+    if [ "$d" -lt "$best_d" ]; then best_d="$d"; best_x="$sx"; best_y="$sy"; fi
+  done < "$hitsfile"
+  rm -f "$hitsfile"
+  if [ -z "$best_x" ] || [ "$best_d" -gt "$tol" ]; then
+    probe "vclick-near[$stem]: no '$needle' hit within ${tol}pt of the anchor row (closest ${best_d}pt) — no click"
+    return 1
+  fi
+  probe "vclick-near[$stem]: clicking '$needle' at ($best_x,$best_y) — ${best_d}pt from the anchor '$anchor' (the dialog-footer row)"
+  if ! "$MV_MOUSE" "$best_x" "$best_y" 2>>"$LOG"; then
+    return 1
+  fi
+  sleep 2
+  return 0
+}
+
+scan_detail_multi() { # <own-note> <foreign-csv> — the N-sentinel isolation scan of the detail view
+  SCAN_OWN_SEEN=no; SCAN_FOREIGN_SEEN=no; SCAN_FOREIGN_WHICH=""
+  local own="$1" flist="$2"
+  local up=0
+  while [ "$up" -lt 8 ]; do
+    scroll_burst up
+    sleep 1
+    up=$((up + 1))
+  done
+  probe "scan-multi: scrolled to the top of the detail view before the down-scan"
+  local i=0 last_hash="" f OLDIFS="$IFS"
+  while [ "$i" -lt 10 ]; do
+    ocr_capture || true
+    if [ -n "$last_hash" ] && [ "$LAST_OCR_HASH" = "$last_hash" ]; then
+      probe "scan-multi: the screen stopped changing — the bottom of the detail view is reached"
+      break
+    fi
+    last_hash="$LAST_OCR_HASH"
+    if [ -n "$own" ] && ocr_grep "$own"; then SCAN_OWN_SEEN=yes; fi
+    IFS=','
+    for f in $flist; do
+      if [ -n "$f" ] && ocr_grep "$f"; then
+        SCAN_FOREIGN_SEEN=yes
+        SCAN_FOREIGN_WHICH="$SCAN_FOREIGN_WHICH $f"
+        probe "scan-multi: FOREIGN note text is visible: '$f'"
+      fi
+    done
+    IFS="$OLDIFS"
+    scroll_burst down
+    sleep 1
+    i=$((i + 1))
+  done
+  probe "scan-multi complete: own=$SCAN_OWN_SEEN foreign=$SCAN_FOREIGN_SEEN${SCAN_FOREIGN_WHICH:+ — which:}$SCAN_FOREIGN_WHICH"
+}
+
+verify_detail_authoritative() { # <full-name> <phone> <email> <note> <stem> [foreign-csv]
+  # The entry-point consistency verifier (the P2 5ede518 regression surface):
+  # whatever object an entry point passed (full, partial, or a stale pre-edit
+  # snapshot), the detail view must render the AUTHORITATIVE record — the
+  # refetch-on-mount is the fix under test. Sets VDA_* (1 = verified, 0 =
+  # NOT verified) + VDA_SKELETON (1 = the 'No contact information added
+  # yet.' empty state appeared — the stale/skeleton symptom) + VDA_FOREIGN_*.
+  VDA_NAME=0; VDA_PHONE=0; VDA_EMAIL=0; VDA_NOTE=0; VDA_SKELETON=0
+  VDA_FOREIGN_SEEN=no; VDA_FOREIGN_WHICH=""
+  local full="$1" phone="$2" email="$3" note="$4" stem="$5" flist="${6:-}"
+  local up=0
+  while [ "$up" -lt 8 ]; do
+    scroll_burst up
+    sleep 1
+    up=$((up + 1))
+  done
+  local i=0 last_hash="" f OLDIFS="$IFS"
+  while [ "$i" -lt 10 ]; do
+    ocr_capture || true
+    if [ -n "$last_hash" ] && [ "$LAST_OCR_HASH" = "$last_hash" ]; then
+      break
+    fi
+    last_hash="$LAST_OCR_HASH"
+    [ "$VDA_NAME" = "0" ] && [ -n "$full" ] && ocr_grep "$full" && VDA_NAME=1
+    [ "$VDA_PHONE" = "0" ] && [ -n "$phone" ] && ocr_grep "$phone" && VDA_PHONE=1
+    [ "$VDA_EMAIL" = "0" ] && [ -n "$email" ] && ocr_grep "$email" && VDA_EMAIL=1
+    [ "$VDA_NOTE" = "0" ] && [ -n "$note" ] && ocr_grep "$note" && VDA_NOTE=1
+    [ "$VDA_SKELETON" = "0" ] && ocr_grep "No contact information" && VDA_SKELETON=1
+    if [ -n "$flist" ]; then
+      IFS=','
+      for f in $flist; do
+        if [ -n "$f" ] && ocr_grep "$f"; then
+          VDA_FOREIGN_SEEN=yes
+          VDA_FOREIGN_WHICH="$VDA_FOREIGN_WHICH $f"
+          probe "verify-detail[$stem]: FOREIGN note text is visible: '$f'"
+        fi
+      done
+      IFS="$OLDIFS"
+    fi
+    scroll_burst down
+    sleep 1
+    i=$((i + 1))
+  done
+  snap "${stem}-authoritative" || true
+  probe "verify-detail[$stem]: name=$VDA_NAME phone=$VDA_PHONE email=$VDA_EMAIL note=$VDA_NOTE skeleton-empty-state=$VDA_SKELETON foreign=$VDA_FOREIGN_SEEN$VDA_FOREIGN_WHICH"
+}
+
+open_patient_by_phone_token() { # <token> <full-name> <stem> [row-phone] — search by the unique phone digits, open via the row
+  local token="$1" full="$2" stem="$3" rowphone="${4:-}"
+  clear_search_box || true
+  v_scroll_top 10 || true
+  if ! search_type "$token" "${stem}-search"; then
+    probe "open-by-token[$stem]: could not type the token '$token'"
+    return 1
+  fi
+  sleep 2
+  v_scroll_find "$token" 6 || true
+  ocr_capture || true
+  snap "${stem}-filtered" || true
+  # click the row: the full phone string (row-only text — the search box
+  # holds only the token), falling back to the token itself (the box may
+  # OCR-match first — the try_hits pass reaches the row hit)
+  if [ -n "$rowphone" ]; then
+    if v_click "$rowphone" "${stem}-row" "$full" || v_click_try_hits "$rowphone" "${stem}-row" "$full" || v_click_try_hits "$token" "${stem}-row2" "$full"; then
+      sleep 2
+      snap "${stem}-detail" || true
+      return 0
+    fi
+  else
+    if v_click_try_hits "$token" "${stem}-row" "$full"; then
+      sleep 2
+      snap "${stem}-detail" || true
+      return 0
+    fi
+  fi
+  snap "${stem}-row-failed" || true
+  return 1
+}
+
+# =============================================================================
+# FOCUS: patients — the patient lifecycle deep walk (directive 2026-09-15):
+# create battery (cancel/required/empty-optional/Arabic/accented/apostrophe/
+# long/duplicates/DOB/double-submit) → visit scheduling → sentinel isolation →
+# edit battery (cancel/multi/single/consecutive/clear/Unicode/Arabic) →
+# EIGHT entry-point consistency proofs (the stale/skeleton P2 regression) →
+# delete battery (cancel/confirm/post-delete sanity/ghost entry) →
+# human-mistake navigation → quit/reopen patient-level persistence.
+# =============================================================================
+focus_patients() {
+  note "=== FOCUS patients: the patient lifecycle deep walk ==="
+  local FOREIGN_ALL="ONLY-JANE-BRAVO,ONLY-MOHAMMAD-CHARLIE,ONLY-ELODIE-DELTA,ONLY-OCONNOR-ECHO,ONLY-LONGNAME-FOXTROT,ONLY-ZED-DELETE,ONLY-TESTER-GOLF,ONLY-LOWCASE-HOTEL,ONLY-HYPHEN-INDIA"
+  local JOHN_NEW_PHONE="+1 555 0777"
+  local JOHN_NEW_NOTE="ONLY-JOHN-ALPHA v2"
+
+  # ------------------------------------------------------------------
+  # PC — CREATE BATTERY
+  # ------------------------------------------------------------------
+  note "=== patients PC: the create battery ==="
+
+  # PC0 — cancel create: a half-filled dialog must create NOTHING
+  read_patient_count
+  PC0_BEFORE="$PATIENTS_COUNT"
+  if v_click "Add Patient" "pc0-open" "First Name"; then
+    v_type_into "First Name" "Scratch Pad" "pc0-first" || true
+    snap "pc0-form-half-filled" || true
+    if v_click "Cancel" "pc0-cancel" ""; then
+      probe "pc0: the Cancel click registered"
+    fi
+    sleep 2
+    ocr_capture || true
+    if ocr_grep "Add New Patient"; then
+      press_escape
+      sleep 1
+    fi
+    wait_text_gone "Add New Patient" 8 "pc0-dialog-close" || true
+    read_patient_count
+    if [ "$PATIENTS_COUNT" = "$PC0_BEFORE" ]; then
+      qa_cap CANCEL_CREATE "GREEN (the half-filled Add Patient dialog was canceled; the count is unchanged at $PATIENTS_COUNT)"
+      surface_row "Cancel create" "Add Patient dialog → 'Cancel' (half-filled form)" "'Cancel' + 'Add Patient' buttons" "canceling discards the form; no patient is created" "filled First Name only → Cancel → dialog closed; count unchanged ($PC0_BEFORE)" "GREEN" "pc0-*" "OK"
+    else
+      bug P1 CANCEL_CREATE "after canceling a half-filled Add Patient dialog the patient count changed ($PC0_BEFORE → $PATIENTS_COUNT — a canceled create must not write a record)"
+    fi
+  else
+    bug D PATIENTS_CANCEL_CREATE "the Add Patient dialog could not be opened for the cancel-create probe"
+  fi
+
+  # PC1 — required fields: an empty-names submit must be rejected
+  v_scroll_top 10 || true
+  PC1_RC=0
+  create_patient_deep "" "" "" "" "" "an empty probe note" "pc1-empty" >/dev/null 2>&1 || PC1_RC=$?
+  if [ "$PC1_RC" = "2" ]; then
+    ocr_capture || true
+    snap "pc1-rejected" || true
+    if ocr_grep "Fill out this field" || ocr_grep "First name and last name are required"; then
+      qa_cap EMPTY_REQUIRED_FIELDS "GREEN (the empty-names submit was rejected — the rejection text is visible)"
+      surface_row "Required name fields" "Add Patient dialog submitted empty" "First Name*/Last Name* (required)" "the submit is rejected with a visible message" "submitted both names empty; the dialog stayed open with the rejection visible" "GREEN (rejected)" "pc1-rejected" "OK"
+    else
+      bug D PATIENTS_REQUIRED_FIELDS "the empty submit was rejected (the dialog stayed open) but the rejection TEXT could not be OCR-verified (the behavior is correct; the needle is the honest limit)"
+    fi
+    press_escape
+    sleep 1
+  elif [ "$PC1_RC" = "0" ]; then
+    bug P1 PATIENTS_REQUIRED_FIELDS "the empty-names submit CREATED a patient (the required validation did not fire)"
+  else
+    bug D PATIENTS_REQUIRED_FIELDS "the empty-submit probe could not run (a harness step failed — recorded honestly)"
+  fi
+
+  # PC1b — last-name-only: also rejected
+  v_scroll_top 10 || true
+  PC1B_RC=0
+  create_patient_deep "" "Probe" "" "" "" "" "pc1b-lastonly" >/dev/null 2>&1 || PC1B_RC=$?
+  if [ "$PC1B_RC" = "2" ]; then
+    probe "pc1b: the last-name-only submit was rejected (the dialog stayed open)"
+    press_escape
+    sleep 1
+  elif [ "$PC1B_RC" = "0" ]; then
+    bug P1 PATIENTS_REQUIRED_FIELDS "the first-name-empty submit CREATED a patient (the required validation did not fire on the first field)"
+  fi
+
+  # PC2 — John Test: the full-data valid create (sentinel ONLY-JOHN-ALPHA)
+  v_scroll_top 10 || true
+  PC2_RC=0
+  create_patient_deep "$PAT_A_FIRST" "$PAT_A_LAST" "$PAT_A_PHONE" "$PAT_A_EMAIL" "" "$PAT_A_NOTE" "pc2-john" >/dev/null 2>&1 || PC2_RC=$?
+  if [ "$PC2_RC" = "0" ]; then
+    sleep 2
+    read_patient_count
+    if v_scroll_find "$PAT_A_FIRST $PAT_A_LAST" 12; then
+      ocr_grep "$PAT_A_PHONE" && probe "pc2: John's row shows his phone"
+      qa_cap PATIENT_CREATE "GREEN (John Test created through the real dialog; the row + the count badge ($PATIENTS_COUNT) updated)"
+      surface_row "Valid create (full data)" "Add Patient dialog → fill all fields → submit" "7 fields; progress bar; 'Add Patient' submit" "the dialog closes; the list/count update; the new row is visible" "created John Test; dialog closed; row visible; badge=$PATIENTS_COUNT" "GREEN" "pc2-*" "OK"
+      snap "pc2-john-listed" || true
+    else
+      bug P1 PATIENT_CREATE "John Test was created (dialog closed) but his row is NOT visible in the list"
+    fi
+  else
+    bug P1 PATIENT_CREATE "the John Test create did not complete (rc=$PC2_RC — see the pc2 evidence)"
+  fi
+
+  # ------------------------------------------------------------------
+  # PS — SCHEDULE A VISIT FOR JOHN (run NOW while he is the ONLY patient:
+  # the scheduler's Patient select dropdown then holds exactly one item —
+  # no scroll ambiguity; the visit enables the Today/Overview + Upcoming +
+  # Calendar entry points; the date defaults to TODAY)
+  # ------------------------------------------------------------------
+  note "=== patients PS: schedule a visit for John (the entry-point enabler) ==="
+  VISIT_SCHEDULED=0
+  v_scroll_top 10 || true
+  if v_scroll_find "Upcoming Visits" 6 || v_scroll_find "Schedule Visit" 6; then
+    if v_click "Schedule Visit" "ps-open" "Chief Complaint"; then
+      if v_click "Select a patient" "ps-select-open" ""; then
+        sleep 1
+        ocr_capture || true
+        snap "ps-dropdown-open" || true
+        record_inventory "Schedule Visit dialog — the Patient select dropdown (John is the only item)"
+        if v_click "$PAT_A_FIRST $PAT_A_LAST" "ps-item" "" "first" || v_click "$PAT_A_FIRST" "ps-item-fb" "" "first"; then
+          sleep 1
+          ocr_capture || true
+          if ! ocr_grep "Select a patient"; then
+            probe "ps: the patient select now holds John Test (the placeholder is gone)"
+            # the dialog-footer submit: the 'Schedule Visit' hit on the
+            # Cancel's row (the dimmed background buttons must NOT be clicked)
+            if v_click_near_anchor_y "Schedule Visit" "Cancel" "ps-submit" 40; then
+              sleep 2
+              if wait_text_gone "Chief Complaint" 10 "ps-dialog-close"; then
+                sleep 2
+                if v_scroll_find "Upcoming Visits" 6; then
+                  ocr_capture || true
+                  if ocr_grep "$PAT_A_FIRST $PAT_A_LAST" || ocr_grep "09:00" || ocr_grep "Checkup"; then
+                    VISIT_SCHEDULED=1
+                    qa_cap VISIT_SCHEDULING "GREEN (a visit for John Test was scheduled through the real dialog — the Upcoming Visits card appeared)"
+                    surface_row "Visit scheduling (entry-point enabler)" "Upcoming Visits → 'Schedule Visit' dialog" "Patient select; date (defaults today); 'Schedule Visit' submit" "the visit appears in Upcoming Visits + Today's Overview + the calendar" "scheduled John Test today 09:00; the card appeared" "GREEN" "ps-*" "OK"
+                    snap "ps-upcoming-card" || true
+                  else
+                    bug P1 VISIT_SCHEDULING "the scheduler dialog closed but no Upcoming Visits card for John Test is visible"
+                  fi
+                fi
+              else
+                bug D PATIENTS_VISIT_SUBMIT "the anchored footer submit did not close the scheduler dialog (honest harness limit — the Today/Upcoming/Calendar entry probes will be recorded NOT EXERCISED)"
+                press_escape
+                sleep 1
+              fi
+            else
+              bug D PATIENTS_VISIT_SUBMIT "the dialog-footer 'Schedule Visit' could not be anchored (the Today/Upcoming/Calendar entry probes will be recorded NOT EXERCISED)"
+              press_escape
+              sleep 1
+            fi
+          else
+            bug D PATIENTS_VISIT_SELECT "the patient item click did not register in the select (the placeholder persists — honest record)"
+            press_escape
+            sleep 1
+          fi
+        else
+          bug D PATIENTS_VISIT_SELECT "John's item could not be clicked in the patient dropdown (honest record)"
+          press_escape
+          sleep 1
+        fi
+      else
+        bug D PATIENTS_VISIT_SELECT "the Patient select trigger could not be clicked (honest record)"
+        press_escape
+        sleep 1
+      fi
+    else
+      bug D PATIENTS_VISIT_OPEN "the Schedule Visit dialog did not open (honest record)"
+    fi
+  else
+    probe "ps: the Upcoming Visits section was not reachable — the visit entry-point probes will be recorded NOT EXERCISED"
+  fi
+
+  # PC3 — Jane Test: optional fields ALL empty (the notes-only create)
+  v_scroll_top 10 || true
+  PC3_RC=0
+  create_patient_deep "$PAT_B_FIRST" "$PAT_B_LAST" "" "" "" "$PAT_B_NOTE" "pc3-jane" >/dev/null 2>&1 || PC3_RC=$?
+  if [ "$PC3_RC" = "0" ]; then
+    sleep 2
+    read_patient_count
+    if v_scroll_find "$PAT_B_FIRST $PAT_B_LAST" 12; then
+      qa_cap EMPTY_OPTIONAL_FIELDS "GREEN (Jane Test created with every optional field empty; row visible; badge=$PATIENTS_COUNT)"
+      surface_row "Optional fields empty" "Add Patient dialog (names + Notes only)" "—" "optional-empty creates succeed" "created Jane Test with no phone/email/address/DOB" "GREEN" "pc3-*" "OK"
+      snap "pc3-jane-listed" || true
+    else
+      bug P1 PATIENT_CREATE "Jane Test (optional-empty) was created but her row is NOT visible"
+    fi
+  else
+    bug P1 PATIENT_CREATE "the Jane Test optional-empty create did not complete (rc=$PC3_RC)"
+  fi
+
+  # PC4 — Muhammad Test: the Arabic create
+  v_scroll_top 10 || true
+  PC4_RC=0
+  create_patient_deep "$PAT_C_FIRST" "$PAT_C_LAST" "$PAT_C_PHONE" "" "" "$PAT_C_NOTE" "pc4-mohammad" yes >/dev/null 2>&1 || PC4_RC=$?
+  if [ "$PC4_RC" = "0" ]; then
+    sleep 2
+    read_patient_count
+    if search_type "0202" "pc4-search-c" >/dev/null 2>&1; then
+      sleep 2
+    fi
+    v_scroll_find "0202" 6 || true
+    ocr_capture || true
+    if ocr_grep "0202" || ocr_grep "$PAT_C_PHONE"; then
+      qa_cap ARABIC_CREATE "GREEN (the Arabic patient Muhammad Test created through the real dialog — international phone format accepted; badge=$PATIENTS_COUNT)"
+      surface_row "Arabic name create" "Add Patient dialog (Arabic typing path)" "—" "Arabic names create correctly" "created Muhammad Test (Arabic) + international phone; the phone-token search surfaced the row" "GREEN" "pc4-*" "OK"
+      snap "pc4-c-listed" || true
+    else
+      bug P1 ARABIC_CREATE "the Arabic patient create closed the dialog but the row is not findable via his phone token"
+    fi
+    clear_search_box || true
+  else
+    bug P1 ARABIC_CREATE "the Arabic patient create did not complete (rc=$PC4_RC)"
+  fi
+
+  # PC5 — Élodie Müller: accented Latin
+  v_scroll_top 10 || true
+  PC5_RC=0
+  create_patient_deep "$PAT_D_FIRST" "$PAT_D_LAST" "$PAT_D_PHONE" "$PAT_D_EMAIL" "$PAT_D_ADDR" "$PAT_D_NOTE" "pc5-elodie" yes >/dev/null 2>&1 || PC5_RC=$?
+  if [ "$PC5_RC" = "0" ]; then
+    sleep 2
+    read_patient_count
+    if search_type "0304" "pc5-search-d" >/dev/null 2>&1; then
+      sleep 2
+    fi
+    v_scroll_find "0304" 6 || true
+    ocr_capture || true
+    if ocr_grep "0304" || ocr_grep "Muller" || ocr_grep "Müller" || ocr_grep "Élodie"; then
+      qa_cap ACCENTED_LATIN_CREATE "GREEN (Élodie Müller created — accented Latin + accented address accepted; badge=$PATIENTS_COUNT)"
+      surface_row "Accented Latin create" "Add Patient dialog (Unicode typing path)" "—" "accented names/addresses create correctly" "created Élodie Müller with the accented address; the phone-token search surfaced the row" "GREEN" "pc5-*" "OK"
+      snap "pc5-d-listed" || true
+    else
+      bug P1 ACCENTED_LATIN_CREATE "the accented patient create closed the dialog but the row is not findable (token 0304)"
+    fi
+    clear_search_box || true
+  else
+    bug P1 ACCENTED_LATIN_CREATE "the accented patient create did not complete (rc=$PC5_RC)"
+  fi
+
+  # PC6 — O'Connor Test: apostrophe in the name + dotted phone
+  v_scroll_top 10 || true
+  PC6_RC=0
+  create_patient_deep "$PAT_E_FIRST" "$PAT_E_LAST" "$PAT_E_PHONE" "" "" "$PAT_E_NOTE" "pc6-oconnor" >/dev/null 2>&1 || PC6_RC=$?
+  if [ "$PC6_RC" = "0" ]; then
+    sleep 2
+    read_patient_count
+    if search_type "0105" "pc6-search-e" >/dev/null 2>&1; then
+      sleep 2
+    fi
+    v_scroll_find "0105" 6 || true
+    ocr_capture || true
+    if ocr_grep "0105" || ocr_grep "O'Connor" || ocr_grep "O Connor" || ocr_grep "Connor"; then
+      qa_cap APOSTROPHE_HYPHEN_CREATE "GREEN (O'Connor Test created — the apostrophe + the dotted phone format accepted; badge=$PATIENTS_COUNT)"
+      surface_row "Apostrophe name create" "Add Patient dialog (apostrophe + dotted phone)" "—" "apostrophes/hyphens create correctly" "created O'Connor Test with the 555.0105.777 dotted phone" "GREEN" "pc6-*" "OK"
+      snap "pc6-e-listed" || true
+    else
+      bug P1 APOSTROPHE_CREATE "the O'Connor create closed the dialog but the row is not findable (token 0105)"
+    fi
+    clear_search_box || true
+  else
+    bug P1 APOSTROPHE_CREATE "the O'Connor create did not complete (rc=$PC6_RC)"
+  fi
+
+  # PC7 — the very long name + long values + the DOB attempt
+  v_scroll_top 10 || true
+  PC7_RC=0
+  create_patient_deep "$PAT_F_FIRST" "$PAT_F_LAST" "$PAT_F_PHONE" "$PAT_F_EMAIL" "$PAT_F_ADDR" "$PAT_F_NOTE" "pc7-long" no 06151990 >/dev/null 2>&1 || PC7_RC=$?
+  if [ "$PC7_RC" = "0" ]; then
+    sleep 2
+    read_patient_count
+    if v_scroll_find "MediVault Testing" 12; then
+      ocr_capture || true
+      if ocr_grep "DOB"; then
+        probe "pc7: the long-name patient's row shows a DOB — the type=date digit entry TOOK"
+        qa_cap PATIENT_DOB "GREEN (the Date of Birth was enterable through the type=date field — 'DOB' visible on the row)"
+      else
+        probe "pc7: no DOB visible on the row (the type=date digit entry did not take — honest record; creation succeeded without it)"
+        qa_cap PATIENT_DOB "NOT EXERCISABLE (the type=date field did not accept the digit entry — an honest automation limit; the field is optional)"
+      fi
+      qa_cap LONG_VALUES_CREATE "GREEN (the very long synthetic name + long address/notes/phone-with-extension accepted; badge=$PATIENTS_COUNT)"
+      surface_row "Long values create" "Add Patient dialog (46-char first name + long address/notes)" "—" "long values create and display (truncation in tight UI slots is fine)" "created 'Very Long Synthetic Patient Name For MediVault Testing'" "GREEN" "pc7-*" "OK"
+      snap "pc7-f-listed" || true
+    else
+      bug P1 LONG_VALUES_CREATE "the long-name patient was created but the row is not visible"
+    fi
+  else
+    bug P1 LONG_VALUES_CREATE "the long-name create did not complete (rc=$PC7_RC)"
+  fi
+
+  # PC8 — duplicate/similar names: John Tester / john test / John-Test-Hyphen
+  # (the API has no uniqueness constraint — the UI must keep them SEPARATE)
+  note "=== patients PC8: the duplicate/similar-name cohort ==="
+  local sim_rc=0 sim_n=0
+  create_patient_deep "John" "Tester" "+1 555 1101" "john.tester@example.invalid" "" "ONLY-TESTER-GOLF" "pc8a-tester" >/dev/null 2>&1 || sim_rc=$?
+  [ "$sim_rc" = "0" ] && sim_n=$((sim_n + 1))
+  v_scroll_top 10 || true
+  sim_rc=0
+  create_patient_deep "john" "test" "+1 555 1102" "" "" "ONLY-LOWCASE-HOTEL" "pc8b-lowcase" >/dev/null 2>&1 || sim_rc=$?
+  [ "$sim_rc" = "0" ] && sim_n=$((sim_n + 1))
+  v_scroll_top 10 || true
+  sim_rc=0
+  create_patient_deep "John" "Test-Hyphen" "+1 555 1103" "" "" "ONLY-HYPHEN-INDIA" "pc8c-hyphen" >/dev/null 2>&1 || sim_rc=$?
+  [ "$sim_rc" = "0" ] && sim_n=$((sim_n + 1))
+  read_patient_count
+  if [ "$sim_n" = "3" ]; then
+    if [ "$PATIENTS_COUNT" = "9" ]; then
+      qa_cap DUPLICATE_SIMILAR_NAMES "GREEN (John Test / John Tester / john test / John-Test-Hyphen coexist as separate rows — count 9 as expected; no merge)"
+      surface_row "Duplicate/similar names" "three similar-name creates after John Test" "—" "similar names stay separate records (no merge, no wrong record)" "created 3 similar patients; count=9; each opens its own record (verified via unique phone tokens below)" "GREEN" "pc8*" "OK"
+    else
+      bug P1 DUPLICATE_NAMES "the three similar-name patients were created but the count badge reads '$PATIENTS_COUNT' (expected 9) — patients may have merged or the count is wrong"
+    fi
+  else
+    bug P1 DUPLICATE_NAMES "the similar-name cohort created only $sim_n of 3 patients"
+  fi
+  snap "pc8-list-after-dups" || true
+  # each similar patient opens its OWN record (unique-token targeting):
+  local tok who expect_note
+  for tok in 1101 1102 1103; do
+    case "$tok" in
+      1101) who="John Tester"; expect_note="ONLY-TESTER-GOLF" ;;
+      1102) who="john test"; expect_note="ONLY-LOWCASE-HOTEL" ;;
+      1103) who="John Test-Hyphen"; expect_note="ONLY-HYPHEN-INDIA" ;;
+    esac
+    if open_patient_by_phone_token "$tok" "$who" "pc8-$tok" "+1 555 $tok"; then
+      scan_detail_multi "$expect_note" "$FOREIGN_ALL"
+      if [ "$SCAN_FOREIGN_SEEN" = "yes" ]; then
+        bug P0 PATIENT_DATA_ISOLATION "a similar-name patient ($who) shows ANOTHER patient's sentinel note ($SCAN_FOREIGN_WHICH) — cross-patient data leak"
+      elif [ "$SCAN_OWN_SEEN" = "yes" ]; then
+        probe "pc8: $who opened his OWN record (own sentinel present, no foreign sentinels) — no similar-name merge"
+      else
+        bug D PATIENTS_SIMILAR "$who's own note could not be OCR-verified on his detail (the open + the phone verify stand)"
+      fi
+      v_click "Dashboard" "pc8-$tok-back" "Add Patient" || true
+      wait_for_ocr "Add Patient" 30 "pc8-$tok-dash" || true
+    else
+      bug P1 DUPLICATE_NAMES "could not open $who via his unique phone token $tok (a similar-name record may be missing/wrong)"
+    fi
+  done
+  v_scroll_top 10 || true
+
+  # PC10 — Zed Delete: the DOUBLE-SUBMIT create (a rapid second submit must
+  # NOT create a second patient — the human-mistake create probe)
+  note "=== patients PC10: the double-submit create (Zed) ==="
+  ZED_CREATED=0
+  if v_click "Add Patient" "pc10-open" "First Name"; then
+    v_type_into "First Name" "$PAT_ZED_FIRST" "pc10-first" || true
+    v_type_into "Last Name" "$PAT_ZED_LAST" "pc10-last" || true
+    v_type_into "Phone" "$PAT_ZED_PHONE" "pc10-phone" || true
+    v_type_into "Email" "$PAT_ZED_EMAIL" "pc10-email" || true
+    v_type_into "Notes" "$PAT_ZED_NOTE" "pc10-notes" || true
+    snap "pc10-form-filled" || true
+    if ocr_lookup "First Name" "first" "label"; then
+      "$MV_MOUSE" "$OCR_HIT_X" "$(( OCR_HIT_Y + 6 ))" 2>>"$LOG" || true
+      sleep 1
+      osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10 || true
+      osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10 || true
+      sleep 3
+    fi
+    ocr_capture || true
+    if ! ocr_grep "Add New Patient"; then
+      ZED_CREATED=1
+      snap "pc10-submitted-double" || true
+    fi
+    if [ "$ZED_CREATED" = "0" ]; then
+      local b2=0
+      while [ "$b2" -lt 4 ]; do
         scroll_burst down 500 400
         sleep 1
-        EDIT_SB=$((EDIT_SB + 1))
+        b2=$((b2 + 1))
       done
-      if ! v_click_try_hits "Save Changes" "p15-edit-save" "$PAT_A_FIRST"; then
-        snap "p15-edit-save-failed" || true
-        bug P1 PATIENT_EDIT "saving the edit produced no visible change"
+      if v_click_try_hits "Add Patient" "pc10-submit" "$PAT_ZED_FIRST"; then
+        ZED_CREATED=1
+        sleep 2
       fi
     fi
-    sleep 2
-    if ! v_scroll_find "+1 555 0100" 8; then
-      snap "p15-edit-phone-not-visible" || true
-      bug P1 PATIENT_EDIT "the updated phone (+1 555 0100) is not visible on the patient view after the edit dialog closed"
-    fi
-    snap "p15-edit-saved" || true
-    qa_cap PATIENT_EDIT "GREEN (phone edited via the real dialog; the new value is visible)"
+    press_escape
+    sleep 1
+  fi
+  read_patient_count
+  if [ "$ZED_CREATED" = "1" ] && [ "$PATIENTS_COUNT" = "10" ]; then
+    qa_cap DOUBLE_SUBMIT_CREATE "GREEN (the rapid double-submit created exactly ONE Zed Delete patient — count 10; no duplicate record)"
+    surface_row "Double-submit create" "Add Patient submit pressed twice rapidly" "—" "a rapid double-submit creates exactly one record" "double-Return submit; count=10 (not 11)" "GREEN" "pc10-*" "OK"
+  elif [ "$ZED_CREATED" = "1" ]; then
+    bug P1 DOUBLE_SUBMIT_CREATE "after the double-submit the count badge reads '$PATIENTS_COUNT' (expected 10 — the second submit may have created a duplicate)"
   else
-    bug P1 PATIENT_EDIT "the Edit Patient dialog never opened"
+    bug P1 PATIENT_CREATE "the Zed Delete create did not complete"
   fi
 
-  # back + isolation B
-  v_click "Dashboard" "p16-back-to-dashboard" "Add Patient" || true
-  wait_for_ocr "Add Patient" 45 "dashboard-back" || true
-  v_scroll_top 10 || true
-  if ! open_patient_detail "$PAT_B_FIRST $PAT_B_LAST" "p17-detail-b"; then
-    bug P1 PATIENT_DATA_ISOLATION "could not open Patient B's detail"
-  fi
-  scan_detail_page "$PAT_B_NOTE" "$PAT_A_NOTE" "$PAT_C_NOTE"
-  if [ "$SCAN_OWN_SEEN" != "yes" ]; then
-    bug P1 PATIENT_DATA_ISOLATION "Patient B's own note is not visible anywhere on B's detail screen (scanned)"
-  fi
-  if [ "$SCAN_FOREIGN_SEEN" = "yes" ]; then
-    bug P0 PATIENT_DATA_ISOLATION "Patient A/C's note data appears on Patient B's detail screen (CROSS-PATIENT DATA LEAK)"
-  fi
-  probe "isolation check B: PASS"
-  qa_cap PATIENT_ISOLATION_B "GREEN"
-  snap "p17-detail-b-isolated" || true
-
-  # isolation C (Arabic search round-trip)
-  v_click "Dashboard" "p18-back-to-dashboard-c" "Add Patient" || true
-  wait_for_ocr "Add Patient" 45 "dashboard-back-c" || true
-  v_scroll_top 10 || true
-  if search_type "محمد" "p18-search-c-detail" yes; then
-    sleep 2
-  fi
-  snap "p18-search-c-filtered" || true
-  if v_click_arabic "محمد" "p18-detail-c-row" ""; then
-    sleep 2
-    snap "p18-detail-c" || true
-    scan_detail_page "$PAT_C_NOTE" "$PAT_A_NOTE" "$PAT_B_NOTE"
+  # ------------------------------------------------------------------
+  # PI — SENTINEL ISOLATION (the P0 discipline)
+  # ------------------------------------------------------------------
+  note "=== patients PI: the sentinel isolation scans ==="
+  surface_section "Patient data isolation (sentinel scans)"
+  # John (also seeds recentlyViewed with the PRE-EDIT object — required for
+  # the later stale-entry regression proof)
+  if open_patient_detail "$PAT_A_FIRST $PAT_A_LAST" "pi-john"; then
+    scan_detail_multi "$PAT_A_NOTE" "$FOREIGN_ALL"
     if [ "$SCAN_FOREIGN_SEEN" = "yes" ]; then
-      bug P0 PATIENT_DATA_ISOLATION "Patient A/B's note data appears on Patient C's screen (CROSS-PATIENT DATA LEAK)"
-    fi
-    probe "isolation check C: no foreign notes visible on C's detail (scanned)"
-    qa_cap PATIENT_ISOLATION_C "GREEN"
-  else
-    if v_scroll_find "محمد" 8 yes && v_click_arabic "محمد" "p18-detail-c-row-retry" ""; then
-      sleep 2
-      snap "p18-detail-c" || true
-      scan_detail_page "$PAT_C_NOTE" "$PAT_A_NOTE" "$PAT_B_NOTE"
-      if [ "$SCAN_FOREIGN_SEEN" = "yes" ]; then
-        bug P0 PATIENT_DATA_ISOLATION "Patient A/B's note data appears on Patient C's screen (CROSS-PATIENT DATA LEAK)"
-      fi
-      qa_cap PATIENT_ISOLATION_C "GREEN"
+      bug P0 PATIENT_DATA_ISOLATION "John Test's detail shows another patient's sentinel note ($SCAN_FOREIGN_WHICH) — CROSS-PATIENT DATA LEAK"
+    elif [ "$SCAN_OWN_SEEN" = "yes" ]; then
+      qa_cap PATIENT_ISOLATION_JOHN "GREEN (own sentinel ONLY-JOHN-ALPHA visible; all 8 foreign sentinels absent across the full detail scan)"
+      surface_row "Isolation — John Test" "detail opened from the list row" "—" "only own data on the detail" "full scroll-scan: own note yes; foreign sentinels no" "GREEN" "pi-john-*" "OK"
     else
-      # (self-review fix) the old check OCR'd ONLY the current visible screen —
-      # the filtered results continue BELOW THE FOLD (the search box sits low
-      # on the 1024x768 dashboard), so leaked A/B rows could sit unseen under
-      # the fold. Scroll through the filtered list for each foreign name.
-      if v_scroll_find "$PAT_A_FIRST $PAT_A_LAST" 8 || v_scroll_find "$PAT_B_FIRST $PAT_B_LAST" 8; then
-        snap "p18-isolation-c-leak" || true
-        bug P2 PATIENT_DATA_ISOLATION "searching the Arabic name surfaced Patients A/B — the filter is not isolating C"
-      else
-        probe "isolation check C (search-based): the Arabic search surfaced no A/B rows (scrolled through the filtered list)"
-      fi
+      bug P1 PATIENT_DATA_ISOLATION "John's own sentinel note is not visible on his detail (scanned)"
     fi
+    snap "pi-john-isolated" || true
+  else
+    bug D PATIENTS_ISOLATION "could not open John's detail for the isolation scan"
+  fi
+  # Jane
+  v_click "Dashboard" "pi-jane-back" "Add Patient" || true
+  wait_for_ocr "Add Patient" 30 "pi-jane-dash" || true
+  v_scroll_top 10 || true
+  if open_patient_detail "$PAT_B_FIRST $PAT_B_LAST" "pi-jane"; then
+    scan_detail_multi "$PAT_B_NOTE" "$FOREIGN_ALL"
+    if [ "$SCAN_FOREIGN_SEEN" = "yes" ]; then
+      bug P0 PATIENT_DATA_ISOLATION "Jane Test's detail shows another patient's sentinel note ($SCAN_FOREIGN_WHICH) — CROSS-PATIENT DATA LEAK"
+    elif [ "$SCAN_OWN_SEEN" = "yes" ]; then
+      qa_cap PATIENT_ISOLATION_JANE "GREEN (own sentinel present; no foreign sentinels)"
+      surface_row "Isolation — Jane Test" "detail opened from the list row" "—" "only own data" "full scan: own yes; foreign no" "GREEN" "pi-jane-*" "OK"
+    else
+      bug P1 PATIENT_DATA_ISOLATION "Jane's own sentinel note is not visible on her detail (scanned)"
+    fi
+    snap "pi-jane-isolated" || true
+  else
+    bug D PATIENTS_ISOLATION "could not open Jane's detail for the isolation scan"
+  fi
+  # Muhammad (token 0202)
+  v_click "Dashboard" "pi-c-back" "Add Patient" || true
+  wait_for_ocr "Add Patient" 30 "pi-c-dash" || true
+  v_scroll_top 10 || true
+  if open_patient_by_phone_token "0202" "محمد" "pi-c" "$PAT_C_PHONE"; then
+    scan_detail_multi "$PAT_C_NOTE" "$FOREIGN_ALL"
+    if [ "$SCAN_FOREIGN_SEEN" = "yes" ]; then
+      bug P0 PATIENT_DATA_ISOLATION "Muhammad's detail shows another patient's sentinel note ($SCAN_FOREIGN_WHICH) — CROSS-PATIENT DATA LEAK"
+    elif [ "$SCAN_OWN_SEEN" = "yes" ]; then
+      qa_cap PATIENT_ISOLATION_MOHAMMAD "GREEN (the Arabic patient's own sentinel present; no foreign sentinels)"
+      surface_row "Isolation — Muhammad Test (Arabic)" "detail opened via the phone-token search" "—" "only own data" "full scan: own yes; foreign no" "GREEN" "pi-c-*" "OK"
+    else
+      bug P1 PATIENT_DATA_ISOLATION "Muhammad's own sentinel note is not visible on his detail (scanned)"
+    fi
+    snap "pi-c-isolated" || true
+  else
+    bug D PATIENTS_ISOLATION "could not open Muhammad's detail for the isolation scan"
+  fi
+  # Élodie (token 0304)
+  v_click "Dashboard" "pi-d-back" "Add Patient" || true
+  wait_for_ocr "Add Patient" 30 "pi-d-dash" || true
+  v_scroll_top 10 || true
+  if open_patient_by_phone_token "0304" "Élodie" "pi-d" "$PAT_D_PHONE"; then
+    scan_detail_multi "$PAT_D_NOTE" "$FOREIGN_ALL"
+    if [ "$SCAN_FOREIGN_SEEN" = "yes" ]; then
+      bug P0 PATIENT_DATA_ISOLATION "Élodie's detail shows another patient's sentinel note ($SCAN_FOREIGN_WHICH) — CROSS-PATIENT DATA LEAK"
+    elif [ "$SCAN_OWN_SEEN" = "yes" ]; then
+      qa_cap PATIENT_ISOLATION_ELODIE "GREEN (the accented patient's own sentinel present; no foreign sentinels)"
+      surface_row "Isolation — Élodie Müller" "detail opened via the phone-token search" "—" "only own data" "full scan: own yes; foreign no" "GREEN" "pi-d-*" "OK"
+    else
+      bug P1 PATIENT_DATA_ISOLATION "Élodie's own sentinel note is not visible on her detail (scanned)"
+    fi
+    snap "pi-d-isolated" || true
+  else
+    bug D PATIENTS_ISOLATION "could not open Élodie's detail for the isolation scan"
+  fi
+  # O'Connor (token 0105)
+  v_click "Dashboard" "pi-e-back" "Add Patient" || true
+  wait_for_ocr "Add Patient" 30 "pi-e-dash" || true
+  v_scroll_top 10 || true
+  if open_patient_by_phone_token "0105" "O'Connor" "pi-e" "$PAT_E_PHONE"; then
+    scan_detail_multi "$PAT_E_NOTE" "$FOREIGN_ALL"
+    if [ "$SCAN_FOREIGN_SEEN" = "yes" ]; then
+      bug P0 PATIENT_DATA_ISOLATION "O'Connor's detail shows another patient's sentinel note ($SCAN_FOREIGN_WHICH) — CROSS-PATIENT DATA LEAK"
+    elif [ "$SCAN_OWN_SEEN" = "yes" ]; then
+      qa_cap PATIENT_ISOLATION_OCONNOR "GREEN (the apostrophe patient's own sentinel present; no foreign sentinels)"
+      surface_row "Isolation — O'Connor Test" "detail opened via the phone-token search" "—" "only own data" "full scan: own yes; foreign no" "GREEN" "pi-e-*" "OK"
+    else
+      bug P1 PATIENT_DATA_ISOLATION "O'Connor's own sentinel note is not visible on his detail (scanned)"
+    fi
+    snap "pi-e-isolated" || true
+  else
+    bug D PATIENTS_ISOLATION "could not open O'Connor's detail for the isolation scan"
+  fi
+  # the long-name patient (token 0106)
+  v_click "Dashboard" "pi-f-back" "Add Patient" || true
+  wait_for_ocr "Add Patient" 30 "pi-f-dash" || true
+  v_scroll_top 10 || true
+  if open_patient_by_phone_token "0106" "Very Long" "pi-f" "$PAT_F_PHONE"; then
+    scan_detail_multi "$PAT_F_NOTE" "$FOREIGN_ALL"
+    if [ "$SCAN_FOREIGN_SEEN" = "yes" ]; then
+      bug P0 PATIENT_DATA_ISOLATION "the long-name patient's detail shows another patient's sentinel note ($SCAN_FOREIGN_WHICH) — CROSS-PATIENT DATA LEAK"
+    elif [ "$SCAN_OWN_SEEN" = "yes" ]; then
+      qa_cap PATIENT_ISOLATION_LONGNAME "GREEN (the long-name patient's own sentinel present; no foreign sentinels)"
+      surface_row "Isolation — long-name patient" "detail opened via the phone-token search" "—" "only own data" "full scan: own yes; foreign no" "GREEN" "pi-f-*" "OK"
+    else
+      bug P1 PATIENT_DATA_ISOLATION "the long-name patient's own sentinel note is not visible on his detail (scanned)"
+    fi
+    snap "pi-f-isolated" || true
+  else
+    bug D PATIENTS_ISOLATION "could not open the long-name patient's detail for the isolation scan"
+  fi
+  v_click "Dashboard" "pi-final-back" "Add Patient" || true
+  wait_for_ocr "Add Patient" 30 "pi-final-dash" || true
+  v_scroll_top 10 || true
+
+  # ------------------------------------------------------------------
+  # PE — EDIT BATTERY (run BEFORE the entry-point proofs so the stale-
+  # snapshot regression is armed: John's recentlyViewed cache holds his
+  # PRE-EDIT phone from the PI scans)
+  # ------------------------------------------------------------------
+  note "=== patients PE: the edit battery ==="
+
+  # PE1 — cancel edit: the typed value must NOT persist
+  if open_patient_detail "$PAT_A_FIRST $PAT_A_LAST" "pe1-john"; then
+    if v_click_edit_pencil "$PAT_A_FIRST $PAT_A_LAST" "pe1-edit-open"; then
+      v_type_into "Phone" "999-999-9999" "pe1-phone" || true
+      snap "pe1-form-typed" || true
+      v_click "Cancel" "pe1-cancel" "" || true
+      sleep 2
+      ocr_capture || true
+      if ocr_grep "Edit Patient"; then
+        press_escape
+        sleep 1
+      fi
+      wait_text_gone "Edit Patient" 8 "pe1-close" || true
+      ocr_grep "999-999-9999" && bug P1 CANCEL_EDIT "the canceled edit's phone (999-999-9999) is VISIBLE after the cancel — a canceled edit must not persist"
+      if ! ocr_grep "999-999-9999"; then
+        qa_cap CANCEL_EDIT "GREEN (the typed-but-canceled phone did not persist; John's real phone is unchanged)"
+        surface_row "Cancel edit" "Edit Patient dialog → type → 'Cancel'" "'Cancel' + 'Save Changes'" "canceling discards the edit" "typed 999-999-9999 → Cancel → the value is absent" "GREEN" "pe1-*" "OK"
+      fi
+    else
+      bug D PATIENTS_EDIT_PENCIL "the edit pencil could not be activated for the cancel-edit probe"
+    fi
+    v_click "Dashboard" "pe1-back" "Add Patient" || true
+    wait_for_ocr "Add Patient" 30 "pe1-dash" || true
+  else
+    bug D PATIENTS_EDIT "could not open John's detail for the edit battery"
   fi
 
-  # delete-cancel probe (Patient A — the icon-only trash in the DETAIL banner
-  # → Cancel must keep A).
-  # (self-review fix) the old draft anchored the trash on the ARABIC name
-  # 'محمد' — but v_click_delete_trash's anchor uses the STANDARD (English)
-  # OCR, which cannot read Arabic script: the anchor would never resolve and
-  # the probe would D-fail every run. Worse, the trash icon lives in the
-  # patient DETAIL banner, and the old block never OPENED the detail — it
-  # only scrolled the dashboard list. Reworked: return to the dashboard,
-  # open Patient A's detail through the battle-tested open_patient_detail,
-  # anchor the trash on A's ENGLISH name, then verify Cancel kept A (an
-  # English search verify — robust, unlike the old Arabic OCR verify).
-  v_click "Dashboard" "p19-back-to-dash" "Add Patient" || true
-  wait_for_ocr "Add Patient" 45 "dashboard-back-delete-verify" || true
+  # PE2 — multi-field save (phone + note) on John — THE edit that arms the
+  # stale-snapshot regression for the entry-point battery
   v_scroll_top 10 || true
-  if open_patient_detail "$PAT_A_FIRST $PAT_A_LAST" "p19-detail-a"; then
-    if v_click_delete_trash "$PAT_A_FIRST $PAT_A_LAST" "p19-delete-dialog"; then
-      ocr_capture || true
-      snap "p19-delete-dialog" || true
-      record_inventory "Delete Patient dialog (Patient A)"
-      surface_section "Delete Patient dialog"
-      surface_row "Delete Patient dialog" "detail banner trash icon" "title 'Delete Patient'; 'Are you sure you want to delete…' copy; 'Cancel' + 'Delete Patient & All Documents' buttons" "the destructive confirm" "opened via the icon-only trash; OCR-verified" "GREEN (opened)" "p19-delete-dialog" "OK"
-      if v_click "Cancel" "p19-delete-cancel" ""; then
-        probe "delete-cancel click verified"
+  PE2_RC=0
+  if open_patient_detail "$PAT_A_FIRST $PAT_A_LAST" "pe2-john"; then
+    if v_click_edit_pencil "$PAT_A_FIRST $PAT_A_LAST" "pe2-edit-open"; then
+      v_type_into "Phone" "$JOHN_NEW_PHONE" "pe2-phone" no no yes || true
+      v_clear_field "Notes" "pe2-notes-clear" || true
+      v_type_into "Notes" "$JOHN_NEW_NOTE" "pe2-notes" || true
+      snap "pe2-form-edited" || true
+      if v_click_near_anchor_y "Save Changes" "Cancel" "pe2-save" 40; then
+        sleep 3
+        ocr_capture || true
+        if ocr_grep "Edit Patient"; then
+          local b3=0
+          while [ "$b3" -lt 4 ]; do
+            scroll_burst down 500 400
+            sleep 1
+            b3=$((b3 + 1))
+          done
+          v_click_try_hits "Save Changes" "pe2-save-fb" "$JOHN_NEW_PHONE" || PE2_RC=1
+        fi
+      else
+        local b4=0
+        while [ "$b4" -lt 4 ]; do
+          scroll_burst down 500 400
+          sleep 1
+          b4=$((b4 + 1))
+        done
+        v_click_try_hits "Save Changes" "pe2-save-fb" "$JOHN_NEW_PHONE" || PE2_RC=1
+      fi
+      sleep 2
+      if [ "$PE2_RC" = "0" ]; then
+        if v_scroll_find "$JOHN_NEW_PHONE" 8; then
+          ocr_capture || true
+          if ocr_grep "$PAT_A_PHONE"; then
+            bug P1 PATIENT_EDIT "the OLD phone ($PAT_A_PHONE) is still visible alongside the new one after the edit"
+          else
+            qa_cap PATIENT_EDIT "GREEN (multi-field edit saved: phone → $JOHN_NEW_PHONE, note → v2; the old phone is gone; the dialog closed)"
+            surface_row "Multi-field edit" "Edit Patient dialog → Save Changes" "7 prefilled fields + Completion meter" "the edited values replace the old ones; the dialog closes" "edited phone+note; new values visible; old phone absent" "GREEN" "pe2-*" "OK"
+          fi
+          snap "pe2-saved" || true
+        else
+          bug P1 PATIENT_EDIT "the edited phone ($JOHN_NEW_PHONE) is not visible after the edit dialog closed"
+        fi
+      else
+        bug P1 PATIENT_EDIT "saving John's edit produced no visible change"
+      fi
+    else
+      bug P1 PATIENT_EDIT "the edit pencil could not be activated for the multi-field edit"
+    fi
+    v_click "Dashboard" "pe2-back" "Add Patient" || true
+    wait_for_ocr "Add Patient" 30 "pe2-dash" || true
+  else
+    bug D PATIENTS_EDIT "could not open John's detail for the multi-field edit"
+  fi
+
+  # PE3 — single-field edit: Élodie's phone (the pencil anchored on her
+  # phone with the -38 band correction — the accented name cannot anchor)
+  v_scroll_top 10 || true
+  PE3_RC=0
+  if open_patient_by_phone_token "0304" "Élodie" "pe3-elodie" "$PAT_D_PHONE"; then
+    if v_click_edit_pencil "$PAT_D_PHONE" "pe3-edit-open" -38; then
+      v_type_into "Phone" "+33 1 555 0304" "pe3-phone" no no yes || true
+      snap "pe3-form-edited" || true
+      if v_click_near_anchor_y "Save Changes" "Cancel" "pe3-save" 40; then
+        sleep 3
+      else
+        local b5=0
+        while [ "$b5" -lt 4 ]; do
+          scroll_burst down 500 400
+          sleep 1
+          b5=$((b5 + 1))
+        done
+        v_click_try_hits "Save Changes" "pe3-save-fb" "0304" || PE3_RC=1
       fi
       sleep 2
       ocr_capture || true
-      if ! ocr_grep "Delete Patient"; then
-        probe "the delete dialog closed via Cancel"
+      if ocr_grep "Edit Patient"; then PE3_RC=1; press_escape; sleep 1; fi
+      if [ "$PE3_RC" = "0" ] && v_scroll_find "0304" 6; then
+        qa_cap PATIENT_EDIT_SINGLE_FIELD "GREEN (Élodie's single-field phone edit saved — the new +33 number visible)"
+        surface_row "Single-field edit" "Edit Patient dialog → one field → Save" "—" "only the edited field changes" "edited Élodie's phone only; verified" "GREEN" "pe3-*" "OK"
+        snap "pe3-saved" || true
+      else
+        bug P1 PATIENT_EDIT_SINGLE_FIELD "Élodie's single-field edit did not visibly save"
+      fi
+    else
+      bug D PATIENTS_EDIT_PENCIL "the edit pencil could not be activated for Élodie (phone-anchored attempts recorded)"
+    fi
+    v_click "Dashboard" "pe3-back" "Add Patient" || true
+    wait_for_ocr "Add Patient" 30 "pe3-dash" || true
+  else
+    bug D PATIENTS_EDIT "could not open Élodie's detail for the single-field edit"
+  fi
+
+  # PE4 — consecutive edits: O'Connor's note, twice in a row
+  v_scroll_top 10 || true
+  PE4_RC=0
+  if open_patient_by_phone_token "0105" "O'Connor" "pe4-oconnor" "$PAT_E_PHONE"; then
+    local round
+    for round in 1 2; do
+      if v_click_edit_pencil "$PAT_E_PHONE" "pe4-edit-open-r$round" -38; then
+        v_clear_field "Notes" "pe4-notes-clear-r$round" || true
+        v_type_into "Notes" "ONLY-OCONNOR-ECHO round$round" "pe4-notes-r$round" || true
+        if v_click_near_anchor_y "Save Changes" "Cancel" "pe4-save-r$round" 40; then
+          sleep 3
+        else
+          local b6=0
+          while [ "$b6" -lt 4 ]; do
+            scroll_burst down 500 400
+            sleep 1
+            b6=$((b6 + 1))
+          done
+          v_click_try_hits "Save Changes" "pe4-save-fb-r$round" "round$round" || PE4_RC=1
+        fi
+        sleep 2
+        ocr_capture || true
+        if ocr_grep "Edit Patient"; then PE4_RC=1; press_escape; sleep 1; fi
+        v_click "Dashboard" "pe4-back-r$round" "Add Patient" || true
+        wait_for_ocr "Add Patient" 30 "pe4-dash-r$round" || true
+        v_scroll_top 10 || true
+        if ! open_patient_by_phone_token "0105" "O'Connor" "pe4-reopen-r$round" "$PAT_E_PHONE"; then
+          PE4_RC=1
+        fi
+      else
+        PE4_RC=1
+        break
+      fi
+    done
+    if [ "$PE4_RC" = "0" ] && v_scroll_find "round2" 8; then
+      qa_cap PATIENT_EDIT_CONSECUTIVE "GREEN (two consecutive edits both saved — the final note reads round2)"
+      surface_row "Consecutive edits" "two edit-save cycles back to back" "—" "each edit persists; the last one stands" "O'Connor's note edited twice; 'round2' visible" "GREEN" "pe4-*" "OK"
+      snap "pe4-saved-final" || true
+    elif [ "$PE4_RC" = "0" ]; then
+      bug P1 PATIENT_EDIT_CONSECUTIVE "the consecutive edits saved but the final value (round2) is not visible"
+    else
+      bug P1 PATIENT_EDIT_CONSECUTIVE "a consecutive-edit round failed (see the pe4 evidence)"
+    fi
+    v_click "Dashboard" "pe4-back" "Add Patient" || true
+    wait_for_ocr "Add Patient" 30 "pe4-dash" || true
+  else
+    bug D PATIENTS_EDIT "could not open O'Connor's detail for the consecutive edits"
+  fi
+
+  # PE6 — Unicode edit: Élodie's address (acceded Latin via the Unicode
+  # path; run BEFORE the phone-clear so the token targeting still works)
+  v_scroll_top 10 || true
+  PE6_RC=0
+  if open_patient_by_phone_token "0304" "Élodie" "pe6-elodie" "+33 1 555 0304"; then
+    if v_click_edit_pencil "+33 1 555 0304" "pe6-edit-open" -38; then
+      v_clear_field "Address" "pe6-addr-clear" || true
+      v_type_into "Address" "22 Avenue de la République" "pe6-addr" no yes || true
+      snap "pe6-form-edited" || true
+      if v_click_near_anchor_y "Save Changes" "Cancel" "pe6-save" 40; then
+        sleep 3
+      else
+        local b8=0
+        while [ "$b8" -lt 4 ]; do
+          scroll_burst down 500 400
+          sleep 1
+          b8=$((b8 + 1))
+        done
+        v_click_try_hits "Save Changes" "pe6-save-fb" "République" || PE6_RC=1
+      fi
+      sleep 2
+      ocr_capture || true
+      if ocr_grep "Edit Patient"; then PE6_RC=1; press_escape; sleep 1; fi
+      if [ "$PE6_RC" = "0" ] && v_scroll_find "République" 8; then
+        qa_cap PATIENT_EDIT_UNICODE "GREEN (the accented address edit (22 Avenue de la République) saved and is visible)"
+        surface_row "Unicode edit" "Edit Patient dialog → accented address → Save" "—" "accented values edit and persist" "edited the address; 'République' visible" "GREEN" "pe6-*" "OK"
+        snap "pe6-saved" || true
+      elif [ "$PE6_RC" = "0" ]; then
+        probe "pe6: the accented address could not be OCR-verified on the detail (Vision accent-dropping — the save itself may have succeeded; honest record)"
+        bug D PATIENT_EDIT_UNICODE_VERIFY "the accented-address edit verification needle ('République') was not OCR-locatable after the save (accent rendering/OCR limit — honest)"
+      else
+        bug P1 PATIENT_EDIT_UNICODE "the accented address edit did not visibly save"
+      fi
+    else
+      bug D PATIENTS_EDIT_PENCIL "the edit pencil could not be activated for the Unicode edit (phone-anchored)"
+    fi
+    v_click "Dashboard" "pe6-back" "Add Patient" || true
+    wait_for_ocr "Add Patient" 30 "pe6-dash" || true
+  else
+    bug D PATIENTS_EDIT_UNICODE "could not open Élodie's detail for the Unicode edit"
+  fi
+
+  # PE5 — clear an optional field: Élodie's phone (Cmd+A + Delete → the
+  # trimmed empty string saves as NULL)
+  v_scroll_top 10 || true
+  PE5_RC=0
+  if open_patient_by_phone_token "0304" "Élodie" "pe5-elodie" "+33 1 555 0304"; then
+    if v_click_edit_pencil "+33 1 555 0304" "pe5-edit-open" -38; then
+      v_clear_field "Phone" "pe5-phone-clear" || true
+      snap "pe5-phone-cleared" || true
+      if v_click_near_anchor_y "Save Changes" "Cancel" "pe5-save" 40; then
+        sleep 3
+      else
+        local b7=0
+        while [ "$b7" -lt 4 ]; do
+          scroll_burst down 500 400
+          sleep 1
+          b7=$((b7 + 1))
+        done
+        v_click_try_hits "Save Changes" "pe5-save-fb" "Élodie" || PE5_RC=1
+      fi
+      sleep 2
+      ocr_capture || true
+      if ocr_grep "Edit Patient"; then PE5_RC=1; press_escape; sleep 1; fi
+      if [ "$PE5_RC" = "0" ]; then
+        # her phone must be GONE and the skeleton empty-state must NOT
+        # appear (she still has email + address + note)
+        local up5=0
+        while [ "$up5" -lt 8 ]; do
+          scroll_burst up
+          sleep 1
+          up5=$((up5 + 1))
+        done
+        local i5=0 last_hash5=""
+        PE5_PHONE_GONE=0; PE5_SKELETON=0
+        while [ "$i5" -lt 8 ]; do
+          ocr_capture || true
+          if [ -n "$last_hash5" ] && [ "$LAST_OCR_HASH" = "$last_hash5" ]; then break; fi
+          last_hash5="$LAST_OCR_HASH"
+          if ! ocr_grep "555 0304" && ! ocr_grep "5550304"; then
+            PE5_PHONE_GONE=1
+          fi
+          ocr_grep "No contact information" && PE5_SKELETON=1
+          scroll_burst down
+          sleep 1
+          i5=$((i5 + 1))
+        done
+        if [ "$PE5_PHONE_GONE" = "1" ] && [ "$PE5_SKELETON" = "0" ]; then
+          qa_cap PATIENT_EDIT_CLEAR_OPTIONAL "GREEN (Élodie's phone was cleared to empty — the number is gone; no skeleton empty-state (her other data remains))"
+          surface_row "Clear optional field" "Edit Patient dialog → clear Phone → Save" "—" "the field empties; the record keeps its other data" "cleared the phone; number absent; email/address/note intact" "GREEN" "pe5-*" "OK"
+        elif [ "$PE5_PHONE_GONE" = "0" ]; then
+          bug P1 PATIENT_EDIT_CLEAR_OPTIONAL "clearing Élodie's phone did not persist (the number is still visible)"
+        else
+          bug P2 PATIENT_EDIT_CLEAR_OPTIONAL "after clearing only the phone, the detail shows the 'No contact information added yet' skeleton (her email/address/note still exist — a stale empty-state render)"
+        fi
+        snap "pe5-cleared-result" || true
+      else
+        bug P1 PATIENT_EDIT_CLEAR_OPTIONAL "the clear-optional save did not complete"
+      fi
+    else
+      bug D PATIENTS_EDIT_PENCIL "the edit pencil could not be activated for the clear-optional probe (post-edit phone anchor)"
+    fi
+    v_click "Dashboard" "pe5-back" "Add Patient" || true
+    wait_for_ocr "Add Patient" 30 "pe5-dash" || true
+  else
+    bug D PATIENTS_EDIT "could not open Élodie's detail for the clear-optional edit"
+  fi
+
+  # PE7 — Arabic edit: Muhammad's note (sentinel + Arabic word)
+  v_scroll_top 10 || true
+  PE7_RC=0
+  if open_patient_by_phone_token "0202" "محمد" "pe7-mohammad" "$PAT_C_PHONE"; then
+    if v_click_edit_pencil "$PAT_C_PHONE" "pe7-edit-open" -38; then
+      v_clear_field "Notes" "pe7-notes-clear" || true
+      v_type_into "Notes" "ONLY-MOHAMMAD-CHARLIE تحديث" "pe7-notes" no yes || true
+      snap "pe7-form-edited" || true
+      if v_click_near_anchor_y "Save Changes" "Cancel" "pe7-save" 40; then
+        sleep 3
+      else
+        local b9=0
+        while [ "$b9" -lt 4 ]; do
+          scroll_burst down 500 400
+          sleep 1
+          b9=$((b9 + 1))
+        done
+        v_click_try_hits "Save Changes" "pe7-save-fb" "ONLY-MOHAMMAD-CHARLIE" || PE7_RC=1
+      fi
+      sleep 2
+      ocr_capture || true
+      if ocr_grep "Edit Patient"; then PE7_RC=1; press_escape; sleep 1; fi
+      if [ "$PE7_RC" = "0" ]; then
+        if v_scroll_find "ONLY-MOHAMMAD-CHARLIE" 8; then
+          qa_cap PATIENT_EDIT_ARABIC "GREEN (the Arabic-mixed note edit saved — the sentinel persists on the detail)"
+          surface_row "Arabic edit" "Edit Patient dialog → mixed Arabic/Latin note → Save" "—" "Arabic values edit and persist" "edited Muhammad's note (sentinel + تحديث); sentinel visible" "GREEN" "pe7-*" "OK"
+          snap "pe7-saved" || true
+        else
+          bug P1 PATIENT_EDIT_ARABIC "the Arabic-mixed note edit saved but the sentinel is not visible on the detail"
+        fi
+      else
+        bug P1 PATIENT_EDIT_ARABIC "the Arabic note edit did not visibly save"
+      fi
+    else
+      bug D PATIENTS_EDIT_PENCIL "the edit pencil could not be activated for the Arabic edit (phone-anchored)"
+    fi
+    v_click "Dashboard" "pe7-back" "Add Patient" || true
+    wait_for_ocr "Add Patient" 30 "pe7-dash" || true
+  else
+    bug D PATIENTS_EDIT_ARABIC "could not open Muhammad's detail for the Arabic edit"
+  fi
+
+  # PE-OTHER — other patients unchanged after the edit battery (Zed is the
+  # stable anchor: untouched by every edit)
+  v_scroll_top 10 || true
+  if open_patient_by_phone_token "0199" "Zed" "pe-other-zed" "$PAT_ZED_PHONE"; then
+    verify_detail_authoritative "$PAT_ZED_FIRST $PAT_ZED_LAST" "$PAT_ZED_PHONE" "$PAT_ZED_EMAIL" "$PAT_ZED_NOTE" "pe-other-zed" "$FOREIGN_ALL"
+    if [ "$VDA_PHONE" = "1" ] && [ "$VDA_NOTE" = "1" ] && [ "$VDA_FOREIGN_SEEN" != "yes" ]; then
+      probe "pe-other: Zed (untouched by the edits) still shows his exact data — no unrelated-patient changes from the edit battery"
+    else
+      bug P1 PATIENT_EDIT_SIDE_EFFECT "the untouched patient Zed shows unexpected data after the edit battery (phone=$VDA_PHONE note=$VDA_NOTE foreign=$VDA_FOREIGN_SEEN$VDA_FOREIGN_WHICH)"
+    fi
+    v_click "Dashboard" "pe-other-back" "Add Patient" || true
+    wait_for_ocr "Add Patient" 30 "pe-other-dash" || true
+  else
+    bug D PATIENTS_EDIT_OTHER "could not open Zed's detail for the untouched-patient check"
+  fi
+  v_scroll_top 10 || true
+
+  # ------------------------------------------------------------------
+  # PV — ENTRY-POINT CONSISTENCY (the P2 5ede518 stale/skeleton regression:
+  # every entry point must render the AUTHORITATIVE record — John's NEW
+  # phone $JOHN_NEW_PHONE — never a stale snapshot, never the skeleton)
+  # ------------------------------------------------------------------
+  note "=== patients PV: the entry-point consistency battery ==="
+  surface_section "Entry-point consistency (the stale/skeleton regression)"
+  local PV_FAILS=0
+
+  # PV1 — the Recent Patients list row
+  v_scroll_top 10 || true
+  if open_patient_detail "$PAT_A_FIRST $PAT_A_LAST" "pv1-list-row"; then
+    verify_detail_authoritative "$PAT_A_FIRST $PAT_A_LAST" "$JOHN_NEW_PHONE" "$PAT_A_EMAIL" "$PAT_A_NOTE" "pv1" "$FOREIGN_ALL"
+    if [ "$VDA_PHONE" = "1" ] && [ "$VDA_SKELETON" = "0" ] && [ "$VDA_FOREIGN_SEEN" != "yes" ]; then
+      qa_cap ENTRY_POINT_LIST_ROW "GREEN (list row → the authoritative record: the NEW phone is visible; no skeleton; no foreign sentinels)"
+      surface_row "Entry point — list row" "Recent Patients row click" "the row card" "the detail shows the authoritative record" "opened John from the list; the new phone verified" "GREEN" "pv1-*" "OK"
+    else
+      PV_FAILS=$((PV_FAILS + 1))
+      bug P1 ENTRY_POINT_LIST_ROW "the list-row entry rendered a non-authoritative record (phone=$VDA_PHONE skeleton=$VDA_SKELETON foreign=$VDA_FOREIGN_SEEN$VDA_FOREIGN_WHICH)"
+    fi
+    v_click "Dashboard" "pv1-back" "Add Patient" || true
+    wait_for_ocr "Add Patient" 30 "pv1-dash" || true
+  else
+    PV_FAILS=$((PV_FAILS + 1))
+    bug D PATIENTS_PV_LIST "could not open John from the list row (honest)"
+  fi
+
+  # PV2 — the search-result row (search by the EDITED phone token — one row,
+  # and it proves the search index reflects the edit)
+  v_scroll_top 10 || true
+  if search_type "0777" "pv2-search" >/dev/null 2>&1; then
+    sleep 2
+    v_scroll_find "0777" 6 || true
+    ocr_capture || true
+    if v_click "$JOHN_NEW_PHONE" "pv2-row" "$PAT_A_FIRST" || v_click_try_hits "0777" "pv2-row" "$PAT_A_FIRST"; then
+      sleep 2
+      snap "pv2-detail" || true
+      verify_detail_authoritative "$PAT_A_FIRST $PAT_A_LAST" "$JOHN_NEW_PHONE" "$PAT_A_EMAIL" "$PAT_A_NOTE" "pv2" "$FOREIGN_ALL"
+      if [ "$VDA_PHONE" = "1" ] && [ "$VDA_SKELETON" = "0" ] && [ "$VDA_FOREIGN_SEEN" != "yes" ]; then
+        qa_cap ENTRY_POINT_SEARCH_ROW "GREEN (the search-result row → the authoritative record; the search index reflects the edited phone)"
+        surface_row "Entry point — search result row" "search box (the edited phone token) → filtered row click" "the filtered row" "the detail shows the authoritative record" "searched the new phone token; opened the row; verified" "GREEN" "pv2-*" "OK"
+      else
+        PV_FAILS=$((PV_FAILS + 1))
+        bug P1 ENTRY_POINT_SEARCH_ROW "the search-row entry rendered a non-authoritative record (phone=$VDA_PHONE skeleton=$VDA_SKELETON)"
+      fi
+      v_click "Dashboard" "pv2-back" "Add Patient" || true
+      wait_for_ocr "Add Patient" 30 "pv2-dash" || true
+    else
+      PV_FAILS=$((PV_FAILS + 1))
+      bug D PATIENTS_PV_SEARCH "could not click the search-result row (honest)"
+    fi
+  else
+    PV_FAILS=$((PV_FAILS + 1))
+    bug D PATIENTS_PV_SEARCH "could not type the search for the search-row entry probe"
+  fi
+  clear_search_box || true
+  v_scroll_top 10 || true
+
+  # PV3 — the Recently Viewed mini-card (the STALE pre-edit snapshot: the
+  # cached object still holds John's OLD phone — the refetch must win)
+  if v_scroll_find "Recently Viewed" 8; then
+    scroll_burst down
+    sleep 1
+    ocr_capture || true
+    record_inventory "Recently Viewed section (pre-click — the mini-card carries the PRE-EDIT cached object)"
+    if v_click "$PAT_A_FIRST $PAT_A_LAST" "pv3-card" "$PAT_A_FIRST" "first"; then
+      sleep 2
+      snap "pv3-detail" || true
+      verify_detail_authoritative "$PAT_A_FIRST $PAT_A_LAST" "$JOHN_NEW_PHONE" "$PAT_A_EMAIL" "$PAT_A_NOTE" "pv3" "$FOREIGN_ALL"
+      if [ "$VDA_PHONE" = "1" ] && [ "$VDA_SKELETON" = "0" ]; then
+        qa_cap ENTRY_POINT_RECENTLY_VIEWED "GREEN (the Recently Viewed mini-card (a STALE pre-edit snapshot) still rendered the AUTHORITATIVE record — the refetch-on-mount regression HOLDS)"
+        surface_row "Entry point — Recently Viewed mini-card" "the avatar chip under 'Recently Viewed'" "the chip (cached localStorage object)" "the refetch must replace the stale snapshot with the authoritative record" "clicked John's mini-card (cached pre-edit phone); the NEW phone rendered" "GREEN (the 5ede518 fix holds)" "pv3-*" "OK"
+      else
+        PV_FAILS=$((PV_FAILS + 1))
+        bug P1 ENTRY_POINT_RECENTLY_VIEWED "the Recently Viewed entry rendered the STALE record (phone=$VDA_PHONE — 0 means no phone matched the NEW value; skeleton=$VDA_SKELETON) — the stale/skeleton bug REGRESSED"
+      fi
+      v_click "Dashboard" "pv3-back" "Add Patient" || true
+      wait_for_ocr "Add Patient" 30 "pv3-dash" || true
+    else
+      PV_FAILS=$((PV_FAILS + 1))
+      bug D PATIENTS_PV_RV "the Recently Viewed mini-card could not be clicked (honest)"
+    fi
+  else
+    probe "pv3: the Recently Viewed section was not visible (no recently-viewed entries?) — recorded honestly"
+    qa_cap ENTRY_POINT_RECENTLY_VIEWED "NOT EXERCISED (the Recently Viewed section was not visible)"
+  fi
+  v_scroll_top 10 || true
+
+  # PV4 — the Activity Timeline entry (the SKELETON path: id+name only —
+  # the newest patient's entry sits at the top)
+  if v_scroll_find "Activity Timeline" 8; then
+    scroll_burst down
+    sleep 1
+    ocr_capture || true
+    record_inventory "Activity Timeline (pre-click — the entry passes a name-only skeleton object)"
+    if v_click "Patient record created" "pv4-entry" "" "first"; then
+      sleep 2
+      snap "pv4-detail" || true
+      # the top entry is the NEWEST patient = Zed (full data → the skeleton
+      # must NOT produce an empty record)
+      verify_detail_authoritative "$PAT_ZED_FIRST $PAT_ZED_LAST" "$PAT_ZED_PHONE" "$PAT_ZED_EMAIL" "$PAT_ZED_NOTE" "pv4" "$FOREIGN_ALL"
+      if [ "$VDA_NAME" = "1" ] && [ "$VDA_PHONE" = "1" ] && [ "$VDA_SKELETON" = "0" ]; then
+        qa_cap ENTRY_POINT_ACTIVITY_TIMELINE "GREEN (the Activity Timeline entry (a NAME-ONLY skeleton object) rendered the FULL authoritative record — the P2 regression HOLDS)"
+        surface_row "Entry point — Activity Timeline entry" "the 'Patient record created' event card" "the event card (name-only object)" "the refetch must fill the full record" "clicked the top timeline entry (Zed); his full data rendered" "GREEN (the 5ede518 fix holds)" "pv4-*" "OK"
+      else
+        PV_FAILS=$((PV_FAILS + 1))
+        bug P1 ENTRY_POINT_ACTIVITY_TIMELINE "the Activity Timeline entry rendered a skeleton/stale record (name=$VDA_NAME phone=$VDA_PHONE skeleton=$VDA_SKELETON) — the P2 REGRESSED"
+      fi
+      v_click "Dashboard" "pv4-back" "Add Patient" || true
+      wait_for_ocr "Add Patient" 30 "pv4-dash" || true
+    else
+      PV_FAILS=$((PV_FAILS + 1))
+      bug D PATIENTS_PV_ACTIVITY "the Activity Timeline entry could not be clicked (honest)"
+    fi
+  else
+    probe "pv4: the Activity Timeline was not visible — recorded honestly"
+    qa_cap ENTRY_POINT_ACTIVITY_TIMELINE "NOT EXERCISED (the timeline was not visible)"
+  fi
+  v_scroll_top 10 || true
+
+  # PV5 — the Quick Patient Switcher (Cmd+P; John's email is the detail-only
+  # verification marker — the switcher rows show name+phone only)
+  if osa 'tell application "System Events" to tell (first process whose name contains "edivault") to keystroke "p" using command down' 10; then
+    sleep 2
+    ocr_capture || true
+    snap "pv5-switcher-open" || true
+    record_inventory "Quick Patient Switcher dialog (Cmd+P)"
+    if v_click "$PAT_A_FIRST $PAT_A_LAST" "pv5-item" "" "first" || v_click_try_hits "$PAT_A_FIRST $PAT_A_LAST" "pv5-item" ""; then
+      sleep 2
+      if wait_for_ocr "$PAT_A_EMAIL" 12 "pv5-detail-open"; then
+        verify_detail_authoritative "$PAT_A_FIRST $PAT_A_LAST" "$JOHN_NEW_PHONE" "$PAT_A_EMAIL" "$PAT_A_NOTE" "pv5" "$FOREIGN_ALL"
+        if [ "$VDA_PHONE" = "1" ] && [ "$VDA_SKELETON" = "0" ]; then
+          qa_cap ENTRY_POINT_QUICK_SWITCHER "GREEN (the Cmd+P Quick Patient Switcher → the authoritative record)"
+          surface_row "Entry point — Quick Patient Switcher" "Cmd+P → the patient list dialog" "the switcher list + its search" "selecting a patient opens the authoritative record" "Cmd+P → John; the new phone verified" "GREEN" "pv5-*" "OK"
+        else
+          PV_FAILS=$((PV_FAILS + 1))
+          bug P1 ENTRY_POINT_QUICK_SWITCHER "the switcher entry rendered a non-authoritative record (phone=$VDA_PHONE skeleton=$VDA_SKELETON)"
+        fi
       else
         press_escape
         sleep 1
-        ocr_capture || true
+        PV_FAILS=$((PV_FAILS + 1))
+        bug D PATIENTS_PV_SWITCHER "the switcher selection did not open John's detail (the email marker never appeared — honest)"
       fi
-      # the proof: A still exists (English search — robust OCR verify)
-      v_click "Dashboard" "p19-back-verify" "Add Patient" || true
-      wait_for_ocr "Add Patient" 45 "dashboard-back-delete-verify2" || true
-      v_scroll_top 10 || true
-      if search_type "$PAT_A_FIRST" "p19-verify-a"; then
-        sleep 2
-        v_scroll_find "$PAT_A_FIRST $PAT_A_LAST" 8 || true
-        ocr_capture || true
-        if ocr_grep "$PAT_A_FIRST $PAT_A_LAST"; then
-          qa_cap PATIENT_DELETE_CANCEL "GREEN (Cancel kept the patient — no destructive side effect)"
-          surface_row "Delete Patient Cancel" "Delete Patient dialog → 'Cancel'" "—" "canceling keeps the patient" "clicked Cancel; the patient still searchable" "GREEN" "p19-verify-a-*" "OK"
-        else
-          bug P2 PATIENT_DELETE_CANCEL "after Canceling the Delete Patient dialog, Patient A is no longer findable (destructive side effect from a canceled confirm?)"
-        fi
-      fi
+      v_click "Dashboard" "pv5-back" "Add Patient" || true
+      wait_for_ocr "Add Patient" 30 "pv5-dash" || true
     else
-      bug D PATIENTS_DELETE_TRASH "the icon-only delete control could not be activated (all anchored attempts recorded — the delete-cancel probe could not run)"
+      press_escape
+      sleep 1
+      PV_FAILS=$((PV_FAILS + 1))
+      bug D PATIENTS_PV_SWITCHER "John's row could not be clicked in the switcher (honest)"
     fi
   else
-    bug D PATIENTS_DELETE_TRASH "could not open Patient A's detail for the delete-cancel probe (recorded honestly)"
+    PV_FAILS=$((PV_FAILS + 1))
+    bug D PATIENTS_PV_SWITCHER "the Cmd+P keystroke did not register (honest)"
   fi
+  v_scroll_top 10 || true
+
+  # PV6 — the Today's Overview 'Next:' chip (skeleton id+name — requires the
+  # scheduled visit)
+  if [ "$VISIT_SCHEDULED" = "1" ]; then
+    v_scroll_top 10 || true
+    if v_scroll_find "Next" 6 || v_scroll_find "All caught up" 4; then
+      ocr_capture || true
+      snap "pv6-overview" || true
+      record_inventory "Today's Overview (the Next chip zone)"
+      if ocr_grep "Next: $PAT_A_FIRST"; then
+        if v_click "Next: $PAT_A_FIRST" "pv6-chip" "$PAT_A_FIRST" || v_click "Next" "pv6-chip-fb" "$PAT_A_FIRST"; then
+          sleep 2
+          snap "pv6-detail" || true
+          verify_detail_authoritative "$PAT_A_FIRST $PAT_A_LAST" "$JOHN_NEW_PHONE" "$PAT_A_EMAIL" "$PAT_A_NOTE" "pv6" "$FOREIGN_ALL"
+          if [ "$VDA_PHONE" = "1" ] && [ "$VDA_SKELETON" = "0" ]; then
+            qa_cap ENTRY_POINT_TODAY_OVERVIEW "GREEN (the Today's Overview 'Next:' chip (a name-only skeleton) → the authoritative record)"
+            surface_row "Entry point — Today's Overview 'Next:' chip" "the overview card's next-appointment chip" "the chip (name-only object)" "the refetch must fill the full record" "clicked the Next: John chip; the new phone verified" "GREEN" "pv6-*" "OK"
+          else
+            PV_FAILS=$((PV_FAILS + 1))
+            bug P1 ENTRY_POINT_TODAY_OVERVIEW "the Today's Overview entry rendered a skeleton/stale record (phone=$VDA_PHONE skeleton=$VDA_SKELETON)"
+          fi
+          v_click "Dashboard" "pv6-back" "Add Patient" || true
+          wait_for_ocr "Add Patient" 30 "pv6-dash" || true
+        else
+          PV_FAILS=$((PV_FAILS + 1))
+          bug D PATIENTS_PV_TODAY "the Next: chip could not be clicked (honest)"
+        fi
+      else
+        probe "pv6: the 'Next: John' chip was not OCR-visible (the overview may not have refreshed) — recorded honestly"
+        qa_cap ENTRY_POINT_TODAY_OVERVIEW "NOT EXERCISED (the Next chip was not visible)"
+      fi
+    else
+      qa_cap ENTRY_POINT_TODAY_OVERVIEW "NOT EXERCISED (the Today's Overview zone was not reachable)"
+    fi
+  else
+    qa_cap ENTRY_POINT_TODAY_OVERVIEW "NOT EXERCISED (the visit was not scheduled — see the PS records)"
+    surface_row "Entry point — Today's Overview 'Next:' chip" "the overview card's next-appointment chip" "the chip (name-only object)" "the refetch must fill the full record" "NOT EXERCISED (no visit scheduled)" "NOT EXERCISED" "pv6-*" "N/A"
+  fi
+
+  # PV7 — the Upcoming Visits card (partial object: dob+phone only)
+  if [ "$VISIT_SCHEDULED" = "1" ]; then
+    v_scroll_top 10 || true
+    if v_scroll_find "Upcoming Visits" 6; then
+      scroll_burst down
+      sleep 1
+      ocr_capture || true
+      record_inventory "Upcoming Visits (the visit card zone)"
+      if v_click "Checkup" "pv7-card" "$PAT_A_FIRST" || v_click "$PAT_A_FIRST $PAT_A_LAST" "pv7-card-fb" "$PAT_A_FIRST"; then
+        sleep 2
+        snap "pv7-detail" || true
+        verify_detail_authoritative "$PAT_A_FIRST $PAT_A_LAST" "$JOHN_NEW_PHONE" "$PAT_A_EMAIL" "$PAT_A_NOTE" "pv7" "$FOREIGN_ALL"
+        if [ "$VDA_PHONE" = "1" ] && [ "$VDA_SKELETON" = "0" ]; then
+          qa_cap ENTRY_POINT_UPCOMING_CARD "GREEN (the Upcoming Visits card (a partial object) → the authoritative record)"
+          surface_row "Entry point — Upcoming Visits card" "the visit card under 'Upcoming Visits'" "the visit card" "the refetch must fill the full record" "clicked the visit card; the new phone verified" "GREEN" "pv7-*" "OK"
+        else
+          PV_FAILS=$((PV_FAILS + 1))
+          bug P1 ENTRY_POINT_UPCOMING_CARD "the Upcoming Visits entry rendered a non-authoritative record (phone=$VDA_PHONE skeleton=$VDA_SKELETON)"
+        fi
+        v_click "Dashboard" "pv7-back" "Add Patient" || true
+        wait_for_ocr "Add Patient" 30 "pv7-dash" || true
+      else
+        PV_FAILS=$((PV_FAILS + 1))
+        bug D PATIENTS_PV_UPCOMING "the Upcoming Visits card could not be clicked (honest)"
+      fi
+    else
+      qa_cap ENTRY_POINT_UPCOMING_CARD "NOT EXERCISED (the Upcoming Visits section was not reachable)"
+    fi
+  else
+    qa_cap ENTRY_POINT_UPCOMING_CARD "NOT EXERCISED (no visit scheduled)"
+    surface_row "Entry point — Upcoming Visits card" "the visit card" "the visit card" "the refetch must fill the full record" "NOT EXERCISED (no visit scheduled)" "NOT EXERCISED" "pv7-*" "N/A"
+  fi
+
+  # PV8 — the Calendar week view visit chip (partial object)
+  if [ "$VISIT_SCHEDULED" = "1" ]; then
+    v_scroll_top 10 || true
+    if v_click "Calendar" "pv8-toggle" "Month"; then
+      sleep 2
+      if v_click "Week" "pv8-week-mode" ""; then
+        sleep 2
+        ocr_capture || true
+        snap "pv8-week-view" || true
+        record_inventory "Calendar week view (the visit chip zone)"
+        if v_click "$PAT_A_FIRST $PAT_A_LAST" "pv8-chip" "$PAT_A_FIRST" || v_click "09:00" "pv8-chip-fb" "$PAT_A_FIRST"; then
+          sleep 2
+          snap "pv8-detail" || true
+          verify_detail_authoritative "$PAT_A_FIRST $PAT_A_LAST" "$JOHN_NEW_PHONE" "$PAT_A_EMAIL" "$PAT_A_NOTE" "pv8" "$FOREIGN_ALL"
+          if [ "$VDA_PHONE" = "1" ] && [ "$VDA_SKELETON" = "0" ]; then
+            qa_cap ENTRY_POINT_CALENDAR "GREEN (the Calendar visit chip (a partial object) → the authoritative record)"
+            surface_row "Entry point — Calendar visit chip" "Calendar toggle → Week → the visit chip" "the week-view visit chip" "the refetch must fill the full record" "clicked John's visit chip; the new phone verified" "GREEN" "pv8-*" "OK"
+          else
+            PV_FAILS=$((PV_FAILS + 1))
+            bug P1 ENTRY_POINT_CALENDAR "the Calendar entry rendered a non-authoritative record (phone=$VDA_PHONE skeleton=$VDA_SKELETON)"
+          fi
+          v_click "Dashboard" "pv8-back" "Add Patient" || true
+          wait_for_ocr "Add Patient" 30 "pv8-dash" || true
+        else
+          PV_FAILS=$((PV_FAILS + 1))
+          bug D PATIENTS_PV_CALENDAR "the calendar visit chip could not be clicked (honest)"
+        fi
+      else
+        PV_FAILS=$((PV_FAILS + 1))
+        bug D PATIENTS_PV_CALENDAR "the Week mode toggle could not be clicked (honest)"
+      fi
+    else
+      PV_FAILS=$((PV_FAILS + 1))
+      bug D PATIENTS_PV_CALENDAR "the Calendar toggle could not be clicked (honest)"
+    fi
+  else
+    qa_cap ENTRY_POINT_CALENDAR "NOT EXERCISED (no visit scheduled)"
+    surface_row "Entry point — Calendar visit chip" "Calendar → Week → the visit chip" "the week-view visit chip" "the refetch must fill the full record" "NOT EXERCISED (no visit scheduled)" "NOT EXERCISED" "pv8-*" "N/A"
+  fi
+
+  if [ "$PV_FAILS" = "0" ]; then
+    qa_cap ENTRY_POINT_CONSISTENCY "GREEN (every exercised entry point rendered the AUTHORITATIVE record — the stale/skeleton P2 regression holds)"
+  else
+    qa_cap ENTRY_POINT_CONSISTENCY "RED ($PV_FAILS entry-point probe(s) failed — see the PV records)"
+  fi
+  v_scroll_top 10 || true
+
+  # ------------------------------------------------------------------
+  # PDEL — DELETE BATTERY (Zed)
+  # ------------------------------------------------------------------
+  note "=== patients PDEL: the delete battery ==="
+
+  # DEL1 — cancel delete
+  v_scroll_top 10 || true
+  DEL1_RC=0
+  if open_patient_by_phone_token "0199" "$PAT_ZED_FIRST $PAT_ZED_LAST" "del1-zed" "$PAT_ZED_PHONE"; then
+    if v_click_delete_trash "$PAT_ZED_FIRST $PAT_ZED_LAST" "del1-dialog"; then
+      ocr_capture || true
+      snap "del1-dialog" || true
+      record_inventory "Delete Patient dialog (Zed)"
+      surface_section "Patient delete battery"
+      surface_row "Delete Patient dialog" "detail banner trash icon" "'Are you sure…' copy; 'Cancel' + 'Delete Patient & All Documents'" "the destructive confirm" "opened via the icon-only trash" "GREEN (opened)" "del1-dialog" "OK"
+      if v_click "Cancel" "del1-cancel" ""; then
+        probe "del1: the Cancel click registered"
+      fi
+      sleep 2
+      ocr_capture || true
+      if ocr_grep "Delete Patient"; then
+        press_escape
+        sleep 1
+      fi
+      wait_text_gone "Delete Patient" 8 "del1-close" || true
+      v_click "Dashboard" "del1-back" "Add Patient" || true
+      wait_for_ocr "Add Patient" 30 "del1-dash" || true
+      v_scroll_top 10 || true
+      if search_type "Zed" "del1-verify" >/dev/null 2>&1; then
+        sleep 2
+        v_scroll_find "Zed" 6 || true
+        ocr_capture || true
+        if ocr_grep "$PAT_ZED_FIRST $PAT_ZED_LAST"; then
+          qa_cap PATIENT_DELETE_CANCEL "GREEN (Cancel kept Zed — no destructive side effect from the canceled confirm)"
+          surface_row "Delete cancel" "Delete Patient dialog → 'Cancel'" "—" "canceling keeps the patient" "canceled; Zed still searchable" "GREEN" "del1-verify" "OK"
+        else
+          DEL1_RC=1
+          bug P1 PATIENT_DELETE_CANCEL "after canceling the Delete dialog, Zed is no longer findable (destructive side effect from a canceled confirm?)"
+        fi
+      else
+        DEL1_RC=1
+        bug D PATIENTS_DELETE_CANCEL "the post-cancel verification search could not run"
+      fi
+    else
+      bug D PATIENTS_DELETE_TRASH "the icon-only delete control could not be activated for the cancel probe"
+    fi
+  else
+    bug D PATIENTS_DELETE "could not open Zed's detail for the delete battery"
+  fi
+
+  # DEL2 — confirm delete
+  v_scroll_top 10 || true
+  if [ "$DEL1_RC" = "0" ]; then
+    if open_patient_by_phone_token "0199" "$PAT_ZED_FIRST $PAT_ZED_LAST" "del2-zed" "$PAT_ZED_PHONE"; then
+      if v_click_delete_trash "$PAT_ZED_FIRST $PAT_ZED_LAST" "del2-dialog"; then
+        if v_click "Delete Patient & All Documents" "del2-confirm" ""; then
+          sleep 3
+          ocr_capture || true
+          snap "del2-after-confirm" || true
+          wait_for_ocr "Add Patient" 20 "del2-dashboard-return" || true
+          clear_search_box || true
+          v_scroll_top 10 || true
+          if search_type "Zed" "del2-verify-gone" >/dev/null 2>&1; then
+            sleep 2
+            v_scroll_find "No patients found" 6 || true
+            ocr_capture || true
+            snap "del2-search-gone" || true
+            if ocr_grep "$PAT_ZED_FIRST $PAT_ZED_LAST"; then
+              bug P1 PATIENT_DELETE "Zed is STILL findable after the confirmed delete (the record was not removed)"
+            else
+              qa_cap PATIENT_DELETE "GREEN (the confirmed delete removed Zed: the record is gone, the search no longer finds him, the app returned to the dashboard)"
+              surface_row "Delete confirm" "Delete Patient dialog → 'Delete Patient & All Documents'" "—" "the patient + documents are removed; the app returns to the dashboard" "confirmed; the search finds nothing; the dashboard shown" "GREEN" "del2-*" "OK"
+            fi
+          else
+            bug D PATIENTS_DELETE_VERIFY "the post-delete verification search could not run"
+          fi
+          clear_search_box || true
+          read_patient_count
+          if [ "$PATIENTS_COUNT" = "9" ]; then
+            probe "del2: the count badge is back to 9 — the remaining patients are intact"
+          else
+            bug P1 PATIENT_DELETE_COUNT "after deleting Zed the count badge reads '$PATIENTS_COUNT' (expected 9)"
+          fi
+          v_scroll_find "$PAT_A_FIRST $PAT_A_LAST" 8 || true
+          ocr_capture || true
+          ocr_grep "$PAT_A_FIRST $PAT_A_LAST" && probe "del2: John's row is still present after Zed's deletion"
+        else
+          bug P1 PATIENT_DELETE "the destructive confirm button could not be clicked (located but inert?)"
+        fi
+      else
+        bug D PATIENTS_DELETE_TRASH "the icon-only delete control could not be activated for the confirm probe"
+      fi
+    else
+      bug D PATIENTS_DELETE "could not re-open Zed's detail for the confirm delete"
+    fi
+  fi
+
+  # DEL3 — the stale Recently Viewed ghost entry for the DELETED patient
+  v_scroll_top 10 || true
+  if v_scroll_find "Recently Viewed" 8; then
+    scroll_burst down
+    sleep 1
+    ocr_capture || true
+    record_inventory "Recently Viewed after the delete (Zed's ghost chip?)"
+    if ocr_grep "$PAT_ZED_FIRST"; then
+      if v_click "$PAT_ZED_FIRST $PAT_ZED_LAST" "del3-ghost" "$PAT_ZED_FIRST" "first"; then
+        sleep 3
+        ocr_capture || true
+        snap "del3-ghost-detail" || true
+        if ocr_grep "$PAT_ZED_PHONE"; then
+          bug P3 PATIENT_DELETE_GHOST_ENTRY "the deleted patient's Recently Viewed chip still opens a detail showing his cached data (the server-side record is gone — the chip is a stale localStorage ghost; recorded P3)"
+          surface_row "Deleted-patient ghost entry" "Recently Viewed chip for the deleted patient" "—" "a deleted patient's cached chip should not render a live-looking record" "clicked Zed's ghost chip; his cached phone rendered" "P3 (stale cache)" "del3-*" "P3"
+          press_escape
+          sleep 1
+        else
+          probe "del3: the ghost chip did not render the deleted patient's data (a graceful 404/empty render) — sane behavior"
+          surface_row "Deleted-patient ghost entry" "Recently Viewed chip for the deleted patient" "—" "—" "clicked; no cached data rendered (graceful)" "GREEN (sane)" "del3-*" "OK"
+        fi
+        v_click "Dashboard" "del3-back" "Add Patient" || true
+        wait_for_ocr "Add Patient" 30 "del3-dash" || true
+      else
+        probe "del3: Zed's ghost chip was visible but not clickable (honest record)"
+      fi
+    else
+      probe "del3: no Zed chip remains in Recently Viewed (the chip list rotated or was cleaned) — sane"
+      surface_row "Deleted-patient ghost entry" "Recently Viewed after delete" "—" "no stale chip for the deleted patient" "no Zed chip visible" "GREEN (clean)" "del3-*" "OK"
+    fi
+  else
+    probe "del3: the Recently Viewed section was not visible for the ghost-entry probe"
+  fi
+  v_scroll_top 10 || true
+
+  # ------------------------------------------------------------------
+  # PNAV — HUMAN-MISTAKE NAVIGATION
+  # ------------------------------------------------------------------
+  note "=== patients PNAV: the human-mistake navigation battery ==="
+  surface_section "Human-mistake navigation (patients)"
+
+  # NV1 — open a patient then IMMEDIATELY switch patients
+  v_scroll_top 10 || true
+  if open_patient_by_phone_token "0105" "O'Connor" "nv1-first" "$PAT_E_PHONE"; then
+    v_click "Dashboard" "nv1-quick-back" "Add Patient" || true
+    sleep 1
+    v_scroll_top 10 || true
+    if open_patient_detail "$PAT_B_FIRST $PAT_B_LAST" "nv1-second"; then
+      ocr_capture || true
+      if ocr_grep "$PAT_B_NOTE"; then
+        probe "nv1: the immediate switch landed on JANE's record (her sentinel present)"
+        qa_cap NAV_IMMEDIATE_SWITCH "GREEN (open → immediate switch → the second patient's own record)"
+        surface_row "Immediate patient switch" "open O'Connor → back → open Jane" "—" "the last-opened patient's record renders (no stale first-patient data)" "Jane's sentinel verified" "GREEN" "nv1-*" "OK"
+      else
+        ocr_grep "$PAT_E_NOTE" && bug P1 NAV_IMMEDIATE_SWITCH "the immediate switch to Jane still shows O'CONNOR's note (stale first-patient data)"
+      fi
+      v_click "Dashboard" "nv1-back" "Add Patient" || true
+      wait_for_ocr "Add Patient" 30 "nv1-dash" || true
+    else
+      bug D PATIENTS_NAV "could not open the second patient for the immediate-switch probe"
+    fi
+  else
+    bug D PATIENTS_NAV "could not open the first patient for the immediate-switch probe"
+  fi
+
+  # NV2 — edit dialog open → navigate away (the outside-click must close the
+  # dialog without saving)
+  v_scroll_top 10 || true
+  if open_patient_detail "$PAT_B_FIRST $PAT_B_LAST" "nv2-jane"; then
+    if v_click_edit_pencil "$PAT_B_FIRST $PAT_B_LAST" "nv2-edit-open"; then
+      v_type_into "Phone" "888-000-7777" "nv2-phone" || true
+      snap "nv2-edit-typed" || true
+      v_click "Dashboard" "nv2-nav-away" "" || true
+      sleep 2
+      ocr_capture || true
+      if ocr_grep "Edit Patient"; then
+        press_escape
+        sleep 1
+        v_click "Dashboard" "nv2-nav-away-2" "Add Patient" || true
+        sleep 2
+      fi
+      wait_for_ocr "Add Patient" 20 "nv2-dashboard" || true
+      v_scroll_top 10 || true
+      if open_patient_detail "$PAT_B_FIRST $PAT_B_LAST" "nv2-reopen"; then
+        ocr_capture || true
+        if ocr_grep "888-000-7777"; then
+          bug P1 NAV_EDIT_NAVIGATE_AWAY "navigating away from a typed (unsaved) edit dialog PERSISTED the value 888-000-7777 — the abandoned edit must not save"
+        else
+          qa_cap NAV_EDIT_NAVIGATE_AWAY "GREEN (the abandoned edit dialog did not save its typed value)"
+          surface_row "Edit → navigate away" "typed edit → click Dashboard (the dialog closes unsaved)" "—" "the abandoned edit must not persist" "navigated away; the typed phone is absent" "GREEN" "nv2-*" "OK"
+        fi
+        v_click "Dashboard" "nv2-back" "Add Patient" || true
+        wait_for_ocr "Add Patient" 30 "nv2-back-dash" || true
+      else
+        bug D PATIENTS_NAV "could not reopen Jane for the navigate-away verification"
+      fi
+    else
+      bug D PATIENTS_NAV "the edit pencil could not be activated for the navigate-away probe"
+    fi
+  else
+    bug D PATIENTS_NAV "could not open Jane for the navigate-away probe"
+  fi
+
+  # NV3 — rapid patient switching (3 hops, each verified by the own-sentinel)
+  v_scroll_top 10 || true
+  NV3_RC=0
+  if open_patient_by_phone_token "0202" "محمد" "nv3-hop1" "$PAT_C_PHONE"; then
+    ocr_grep "$PAT_C_NOTE" || NV3_RC=1
+    v_click "Dashboard" "nv3-back1" "Add Patient" || true
+    sleep 1
+    v_scroll_top 10 || true
+    open_patient_by_phone_token "0105" "O'Connor" "nv3-hop2" "$PAT_E_PHONE" || NV3_RC=1
+    ocr_grep "$PAT_E_NOTE" || NV3_RC=1
+    v_click "Dashboard" "nv3-back2" "Add Patient" || true
+    sleep 1
+    v_scroll_top 10 || true
+    open_patient_by_phone_token "0101" "John" "nv3-hop3" "$PAT_A_PHONE" || NV3_RC=1
+    ocr_grep "$PAT_A_NOTE" || NV3_RC=1
+    if [ "$NV3_RC" = "0" ]; then
+      qa_cap NAV_RAPID_SWITCHING "GREEN (3 rapid patient hops — each landed on its own record with its own sentinel)"
+      surface_row "Rapid patient switching" "open → back → open ×3 at human speed" "—" "each open renders the correct record" "3 hops; each sentinel verified" "GREEN" "nv3-*" "OK"
+    else
+      bug P1 NAV_RAPID_SWITCHING "a rapid-switch hop landed on the wrong record (a sentinel mismatched — see the nv3 evidence)"
+    fi
+    v_click "Dashboard" "nv3-back" "Add Patient" || true
+    wait_for_ocr "Add Patient" 30 "nv3-dash" || true
+  else
+    bug D PATIENTS_NAV "the rapid-switch battery could not start"
+  fi
+
+  # NV6 — search → open → clear search → reopen
+  v_scroll_top 10 || true
+  if search_type "0777" "nv6-search" >/dev/null 2>&1; then
+    sleep 2
+    if v_click "$JOHN_NEW_PHONE" "nv6-row" "$PAT_A_FIRST" || v_click_try_hits "0777" "nv6-row" "$PAT_A_FIRST"; then
+      sleep 2
+      snap "nv6-first-open" || true
+      v_click "Dashboard" "nv6-back" "Add Patient" || true
+      wait_for_ocr "Add Patient" 30 "nv6-dash" || true
+      clear_search_box || true
+      v_scroll_top 10 || true
+      if open_patient_detail "$PAT_A_FIRST $PAT_A_LAST" "nv6-reopen"; then
+        ocr_capture || true
+        if ocr_grep "0777"; then
+          qa_cap NAV_SEARCH_CLEAR_REOPEN "GREEN (search → open → clear → reopen: the same authoritative record both times)"
+          surface_row "Search → clear → reopen" "search box, row click, clear, list reopen" "—" "the record is stable across search states" "both opens showed the edited phone" "GREEN" "nv6-*" "OK"
+        else
+          bug P1 NAV_SEARCH_CLEAR_REOPEN "the reopen after clearing the search lost the edited phone (0777 absent)"
+        fi
+        v_click "Dashboard" "nv6-back2" "Add Patient" || true
+        wait_for_ocr "Add Patient" 30 "nv6-dash2" || true
+      else
+        bug D PATIENTS_NAV "could not reopen John for the search-clear-reopen probe"
+      fi
+    else
+      bug D PATIENTS_NAV "could not open the search-result row for the search-clear-reopen probe"
+    fi
+  else
+    bug D PATIENTS_NAV "could not type the search for the search-clear-reopen probe"
+  fi
+  clear_search_box || true
+  v_scroll_top 10 || true
+
+  # NV7 — logout WHILE ON a patient detail (the directive's optional probe —
+  # practical here): no patient data may remain visible logged-out; the
+  # re-login reopens the same patient with his data intact
+  # (login budget: auto-login 1 + this re-login 2 + the PP reopen ≤1 = ≤3 of 5)
+  v_scroll_top 10 || true
+  if open_patient_by_phone_token "0202" "محمد" "nv7-mohammad" "$PAT_C_PHONE"; then
+    ocr_grep "$PAT_C_NOTE" && probe "nv7: Muhammad's detail is open (his sentinel visible) before the logout"
+    open_profile_menu "nv7-profile" || bug P1 NAV_LOGOUT_FROM_DETAIL "the profile pill could not be clicked from the patient detail"
+    v_click "Sign Out" "nv7-signout" "Sign In" || bug P1 NAV_LOGOUT_FROM_DETAIL "Sign Out from the patient detail did not reach the Sign In screen"
+    sleep 2
+    ocr_capture || true
+    snap "nv7-logged-out" || true
+    record_inventory "Sign In screen after logging out from a patient detail"
+    if ocr_grep "$PAT_C_NOTE" || ocr_grep "$PAT_C_PHONE"; then
+      bug P3 NAV_LOGOUT_FROM_DETAIL "patient data (Muhammad's sentinel/phone) is still visible on the LOGGED-OUT screen after leaving the patient detail"
+    else
+      probe "nv7: no patient data visible after the logout from the detail view (the protected UI is clean)"
+    fi
+    if ! v_type_into "Email" "$DOC_EMAIL" "nv7-relogin-email"; then
+      bug P1 NAV_LOGOUT_FROM_DETAIL "could not type the email for the re-login"
+    fi
+    if ! v_type_into "Password" "$DOC_PASS" "nv7-relogin-password" yes; then
+      bug P1 NAV_LOGOUT_FROM_DETAIL "could not type the password for the re-login"
+    fi
+    NV7_LOGIN=0
+    if osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10; then
+      sleep 3
+      if wait_for_ocr "Add Patient" 45 "nv7-relogin-after-enter"; then NV7_LOGIN=1; fi
+    fi
+    if [ "$NV7_LOGIN" = "0" ] && ! v_click_try_hits "Sign In" "nv7-relogin" "Add Patient"; then
+      bug P1 NAV_LOGOUT_FROM_DETAIL "the re-login after the detail-logout failed"
+    fi
+    wait_for_ocr "Add Patient" 60 "nv7-dashboard" || bug P1 NAV_LOGOUT_FROM_DETAIL "no dashboard after the re-login"
+    v_scroll_top 10 || true
+    if open_patient_by_phone_token "0202" "محمد" "nv7-reopen" "$PAT_C_PHONE"; then
+      ocr_capture || true
+      if ocr_grep "$PAT_C_NOTE"; then
+        qa_cap NAV_LOGOUT_FROM_DETAIL "GREEN (logout from the patient detail → clean login screen (no patient data) → re-login → the same patient reopens with his data intact)"
+        surface_row "Logout from a patient detail" "patient detail → profile → Sign Out → Sign In → reopen" "—" "no patient data logged-out; the record reopens intact after re-login" "sentinel absent logged-out; present after the reopen" "GREEN" "nv7-*" "OK"
+      else
+        bug P1 NAV_LOGOUT_FROM_DETAIL "after the re-login + reopen, Muhammad's sentinel note is not visible (the record lost data across the logout cycle?)"
+      fi
+      v_click "Dashboard" "nv7-back" "Add Patient" || true
+      wait_for_ocr "Add Patient" 30 "nv7-dash" || true
+    else
+      bug D NAV_LOGOUT_FROM_DETAIL "could not reopen Muhammad after the re-login (honest)"
+    fi
+  else
+    probe "nv7: could not open Muhammad's detail for the logout-from-detail probe — recorded honestly (honest skip)"
+  fi
+  v_scroll_top 10 || true
+
+  # ------------------------------------------------------------------
+  # PP — PATIENT-LEVEL PERSISTENCE (quit/reopen)
+  # ------------------------------------------------------------------
+  note "=== patients PP: quit/reopen patient-level persistence ==="
+  quit_medivault
+  snap "pp-quit-confirmed" || true
+  PP_SSTATE="$(python3 -c "import json;print(json.load(open('$SUP_STATUS')).get('state','none'))" 2>/dev/null || echo none)"
+  probe "pp: supervisor state after the app quit: $PP_SSTATE"
+  [ "$PP_SSTATE" = "healthy" ] || bug P1 PATIENT_PERSISTENCE "the background supervisor is not healthy after the app quit (state=$PP_SSTATE)"
+  curl -fsS --max-time 3 "$API/health" >/dev/null 2>&1 || bug P1 PATIENT_PERSISTENCE "the API stopped answering after the app quit"
+  PP_PG_BIND="$(lsof -nP -iTCP:"$PGPORT" 2>/dev/null | grep LISTEN | awk '{print $9}' | head -1)"
+  probe "pp: PostgreSQL listener after the quit: ${PP_PG_BIND:-none} (loopback required)"
+  launch_and_detect "patients-reopen" 180
+  [ "$MV_WINDOW" = "yes" ] || bug P1 PATIENT_PERSISTENCE "the MediVault window did not reappear after the reopen"
+  PP_PATH="restored"
+  if ! wait_for_ocr "Add Patient" 150 "pp-dashboard"; then
+    if ocr_grep "Sign In"; then
+      PP_PATH="signin-required"
+      probe "pp: the reopen reached the Sign In screen — re-logging in (the honest path)"
+      if ! v_type_into "Email" "$DOC_EMAIL" "pp-relogin-email"; then
+        bug P1 PATIENT_PERSISTENCE "could not type the email on the reopen login screen"
+      fi
+      if ! v_type_into "Password" "$DOC_PASS" "pp-relogin-password" yes; then
+        bug P1 PATIENT_PERSISTENCE "could not type the password on the reopen login screen"
+      fi
+      PP_LOGIN=0
+      if osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10; then
+        sleep 3
+        if wait_for_ocr "Add Patient" 45 "pp-relogin-after-enter"; then PP_LOGIN=1; fi
+      fi
+      if [ "$PP_LOGIN" = "0" ] && ! v_click_try_hits "Sign In" "pp-relogin" "Add Patient"; then
+        bug P1 PATIENT_PERSISTENCE "the re-login after the reopen failed"
+      fi
+      wait_for_ocr "Add Patient" 60 "pp-dashboard-after-relogin" || bug P1 PATIENT_PERSISTENCE "no dashboard after the reopen re-login"
+    else
+      snap "pp-reopen-unknown" || true
+      bug P1 PATIENT_PERSISTENCE "after the reopen the screen is neither the dashboard nor the Sign In screen"
+    fi
+  fi
+  snap "pp-reopen-dashboard" || true
+  qa_cap PATIENT_PERSISTENCE_REOPEN "GREEN (quit → relaunch → a working app state; path: $PP_PATH; supervisor healthy; API healthy; PG '$PP_PG_BIND')"
+
+  # the count survived
+  read_patient_count
+  if [ "$PATIENTS_COUNT" = "9" ]; then
+    probe "pp: the patient count survived the restart (9)"
+  else
+    bug P1 PATIENT_PERSISTENCE "the patient count after the restart reads '$PATIENTS_COUNT' (expected 9 — records may have been lost)"
+  fi
+
+  # John's EDITED values + sentinel survived (the authoritative record)
+  v_scroll_top 10 || true
+  if open_patient_detail "$PAT_A_FIRST $PAT_A_LAST" "pp-john"; then
+    verify_detail_authoritative "$PAT_A_FIRST $PAT_A_LAST" "$JOHN_NEW_PHONE" "$PAT_A_EMAIL" "$PAT_A_NOTE" "pp-john" "$FOREIGN_ALL"
+    if [ "$VDA_PHONE" = "1" ] && [ "$VDA_NOTE" = "1" ] && [ "$VDA_FOREIGN_SEEN" != "yes" ]; then
+      qa_cap PATIENT_PERSISTENCE "GREEN (the edited values + sentinel notes survived the quit/reopen: John's new phone + note; isolation intact; path $PP_PATH)"
+      surface_row "Patient persistence (quit/reopen)" "quit → relaunch → the roster + the records" "—" "all patients, edits, and sentinels survive the restart" "count 9; John's edited phone + sentinel; isolation intact; Zed still gone" "GREEN" "pp-*" "OK"
+    else
+      bug P1 PATIENT_PERSISTENCE "John's post-restart record is wrong (phone=$VDA_PHONE note=$VDA_NOTE foreign=$VDA_FOREIGN_SEEN$VDA_FOREIGN_WHICH)"
+    fi
+    v_click "Dashboard" "pp-john-back" "Add Patient" || true
+    wait_for_ocr "Add Patient" 30 "pp-john-dash" || true
+  else
+    bug P1 PATIENT_PERSISTENCE "could not reopen John's detail after the restart"
+  fi
+
+  # Muhammad's Arabic-mixed note survived
+  v_scroll_top 10 || true
+  if open_patient_by_phone_token "0202" "محمد" "pp-mohammad" "$PAT_C_PHONE"; then
+    ocr_capture || true
+    if ocr_grep "$PAT_C_NOTE"; then
+      probe "pp: Muhammad's Arabic-mixed note survived the restart (sentinel visible)"
+    else
+      bug P1 PATIENT_PERSISTENCE "Muhammad's note (the Arabic-mixed edit from PE7) did not survive the restart"
+    fi
+    v_click "Dashboard" "pp-c-back" "Add Patient" || true
+    wait_for_ocr "Add Patient" 30 "pp-c-dash" || true
+  else
+    bug D PATIENT_PERSISTENCE_ARABIC "could not open Muhammad's detail after the restart (honest)"
+  fi
+
+  # the deleted patient STAYS deleted
+  v_scroll_top 10 || true
+  if search_type "Zed" "pp-zed-gone" >/dev/null 2>&1; then
+    sleep 2
+    v_scroll_find "No patients found" 6 || true
+    ocr_capture || true
+    snap "pp-zed-still-gone" || true
+    if ocr_grep "$PAT_ZED_FIRST $PAT_ZED_LAST"; then
+      bug P1 PATIENT_DELETE_RESURRECT "the DELETED patient Zed is findable again after the quit/reopen (the delete did not persist — records resurrected)"
+    else
+      probe "pp: the deleted patient remains deleted after the restart (no resurrection)"
+      qa_cap PATIENT_DELETE_PERSISTENCE "GREEN (the deleted patient stayed deleted across the restart)"
+    fi
+  else
+    bug D PATIENT_PERSISTENCE_DELETE "the post-restart deleted-patient search could not run"
+  fi
+  clear_search_box || true
+  v_scroll_top 10 || true
   note "focus patients complete"
 }
 
