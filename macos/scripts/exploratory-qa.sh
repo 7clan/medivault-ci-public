@@ -222,8 +222,15 @@ surface_section() { # <title> — a new markdown section + table header in the s
 
 surface_row() { # <feature> <how-reached> <controls> <expected> <test> <result> <evidence> <classification>
   SURFACE_ROWS=$((SURFACE_ROWS + 1))
-  printf '| %s | %s | %s | %s | %s | %s | %s | %s |\n' "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" >> "$SURFACE_FILE"
-  probe "surface[$SURFACE_ROWS]: $1 — $6 (evidence: $7) [$8]"
+  # (run 34860208614 first-red, class D) an arg-count mistake here used to
+  # ABORT the whole run under set -u ($8 unbound, exit 1). Now a wrong arg
+  # count records honestly instead of crashing; the static pre-push check
+  # (98 call sites = exactly 8 args) remains the primary control.
+  if [ "$#" -ne 8 ]; then
+    probe "surface-row[$SURFACE_ROWS]: ARG-COUNT BUG (class D) — got $# args, need 8 — recording with placeholders; fix the call site"
+  fi
+  printf '| %s | %s | %s | %s | %s | %s | %s | %s |\n' "${1:-?}" "${2:-?}" "${3:-?}" "${4:-?}" "${5:-?}" "${6:-?}" "${7:-?}" "${8:-?}" >> "$SURFACE_FILE"
+  probe "surface[$SURFACE_ROWS]: ${1:-?} — ${6:-?} (evidence: ${7:-?}) [${8:-?}]"
 }
 
 record_inventory() { # <label> — dump the current OCR inventory into the surface map (raw evidence)
@@ -2323,16 +2330,33 @@ focus_surface() {
   snap "s20-search-empty" || true
   record_inventory "patient search — empty-account state (query 'John')"
   surface_section "Patient search (fresh account — empty data state)"
-  if ocr_grep "No patients found"; then
-    surface_row "Search empty state" "search box, query 'John' (no patients exist)" "'No patients found' + 'Try adjusting your search terms or check the spelling'" "an honest empty state" "typed via the real search box (Cmd+K focus)" "GREEN (empty state shown)" "s20-search-empty" "OK"
+  # (run 34860208614 first-red, class D) the product renders TWO honest
+  # empty states for an empty search: the in-list badge 'No results found'
+  # (visible above the fold — what the run actually saw) and the larger
+  # 'No patients found' + 'Try adjusting…' block (below the fold on the
+  # 1024x768 window). EITHER proves the honest empty state; the row records
+  # which one was observed.
+  local seen_empty=""
+  if ocr_grep "No results found"; then
+    seen_empty="in-list badge 'No results found'"
+  elif ocr_grep "No patients found"; then
+    seen_empty="empty-state block 'No patients found'"
+  fi
+  if [ -n "$seen_empty" ]; then
+    surface_row "Search empty state" "search box, query 'John' (no patients exist)" "'No results found' badge (dashboard.tsx:654) OR 'No patients found' + 'Try adjusting your search terms or check the spelling' (dashboard.tsx:819)" "an honest empty state" "typed via the real search box (Cmd+K focus)" "GREEN (observed: $seen_empty)" "s20-search-empty" "OK"
   else
-    surface_row "Search empty state" "search box, query 'John' (no patients exist)" "'No patients found'" "an honest empty state" "typed via the real search box" "NOT OBSERVED (recorded honestly)" "s20-search-empty" "OK"
+    surface_row "Search empty state" "search box, query 'John' (no patients exist)" "'No results found' badge OR 'No patients found' block" "an honest empty state" "typed via the real search box" "NOT OBSERVED (recorded honestly)" "s20-search-empty" "OK"
   fi
   clear_search_box || true
   sleep 2
   ocr_capture || true
   snap "s20-search-cleared" || true
-  surface_row "Search clear (Cmd+K, Cmd+A, Backspace)" "the app's own focus-search shortcut" "the query clears; the unfiltered list returns" "cleared via the real keyboard path" "GREEN" "s20-search-cleared" "OK"
+  # (run 34860208614 first-red, class D — THE red that stopped the run) this
+  # call originally passed SEVEN args (the <controls> column was missing) —
+  # surface_row's unconditional $8 then tripped set -u's 'unbound variable'
+  # abort (exit 1) right here. Every surface_row call is now arg-count-
+  # validated statically (98 call sites, all exactly 8).
+  surface_row "Search clear (Cmd+K, Cmd+A, Backspace)" "the app's own focus-search shortcut" "—" "the query clears; the unfiltered list returns" "cleared via the real keyboard path" "GREEN" "s20-search-cleared" "OK"
   surface_row "Header icon-only controls (bell / theme / backup)" "header (right side)" "icon-only buttons: notifications (title 'Notifications'), theme (Switch to Light/Dark Mode), backup (Download Backup)" "icon controls with tooltips" "NOT clicked this focus (no OCR text anchor — the anchored-click risk is recorded); the theme surface IS tested via Settings → Appearance (S11)" "RECORDED (not clicked)" "s10-dashboard-top" "OK"
 
   # --- S11: Settings walk ---
