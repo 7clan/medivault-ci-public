@@ -2272,7 +2272,7 @@ snap "34-persistence-detail-a" || true
 # PHASE 10 — security regression checks (loopback-only)
 # =============================================================================
 note "=== PHASE 10: security checks (loopback-only binds) ==="
-BAD_BINDS="$(lsof -nP -iTCP:3001 -iTCP:"$PGPORT" 2>/dev/null | awk '{print $9}' | grep -v "^127\.0\.0\.1" | grep -v "ADDRESS" | sort -u | tr '\n' ' ')"
+BAD_BINDS="$(lsof -nP -iTCP:3001 -iTCP:"$PGPORT" 2>/dev/null | awk 'NR>1 {print $9}' | grep -v "^127\.0\.0\.1" | grep -v "ADDRESS" | sort -u | tr '\n' ' ')"
 probe "non-loopback listeners on 3001/$PGPORT: '${BAD_BINDS:-none}'"
 if [ -n "$BAD_BINDS" ]; then
   CAP_SECURITY="RED (non-loopback listeners: $BAD_BINDS)"
