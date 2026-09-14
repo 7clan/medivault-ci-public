@@ -1845,21 +1845,42 @@ setup_form_alive() { # is the one-time setup form still on screen?
   ocr_grep "Create Your Account"
 }
 
-clear_field() { # <label-needle> <stem> — click the REAL label, Cmd+A, delete
-  local label="$1" stem="$2"
-  ocr_capture || return 1
-  if ! ocr_lookup "$label" "first" "label"; then
-    probe "clear[$stem]: label '$label' not found — no clear attempted"
+# (run 34877260555 first-red, class D) the setup-form GEOMETRY: a rejected
+# submit renders the React error block between the card header and the
+# fields — the block is ~48px tall and pushes the Password/Confirm labels
+# BELOW the 768px fold (the run's OCR context proves it: after SU4's
+# server rejection the Password/Confirm labels vanish from every capture,
+# so both the clears and the typing failed and GATEWAY 6 hit a false P1).
+# A real user scrolls; the harness scrolls the same way. clear_field was
+# removed (dead after this redesign): every v_type_into below carries
+# clear=yes — Cmd+A + Backspace before typing — so residual probe values
+# can never be appended to (run 2's "MediVault Test DoctorMediVault Test
+# Doctor" concatenation was the symptom).
+setup_fill_form() { # <name> <email> <password> <confirm> <stem-prefix>
+  # A real user's flow: scroll to the form top, fill name/email, scroll the
+  # lower fields into view, fill password/confirm. On a compact (error-free)
+  # form both scroll-finds are zero-burst no-ops — byte-compatible with the
+  # proven surface-run typing flow.
+  local name="$1" email="$2" pass="$3" conf="$4" stem="$5"
+  v_scroll_find "Full Name" 6 no up || true
+  if ! v_type_into "Full Name" "$name" "${stem}-name" no no yes; then
     return 1
   fi
-  "$MV_MOUSE" "$OCR_HIT_X" "$(( OCR_HIT_Y + 6 ))" 2>>"$LOG" || return 1
-  sleep 1
-  osa 'tell application "System Events" to tell (first process whose name contains "edivault") to keystroke "a" using command down' 10 || true
-  sleep 1
-  osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 51' 10 || true
-  sleep 1
-  probe "clear[$stem]: '$label' field cleared (Cmd+A + Backspace — a real user's correction flow)"
-  return 0
+  if ! v_type_into "Email" "$email" "${stem}-email" no no yes; then
+    return 1
+  fi
+  v_scroll_find "Confirm" 4 no down || true
+  if ! v_type_into "Password" "$pass" "${stem}-password" yes no yes; then
+    return 1
+  fi
+  v_type_into "Confirm" "$conf" "${stem}-confirm" yes no yes
+}
+
+setup_after_submit_scroll_top() { # bring the form-top (and any error block
+  # or native bubble anchored there) back into OCR view before the checks —
+  # a blocked submit AUTO-SCROLLS to the first invalid field, and a React
+  # rejection renders at the form top: from the page top both are visible.
+  v_scroll_find "Full Name" 5 no up || true
 }
 
 submit_focused_return() { # Return in whatever field currently holds focus
@@ -1904,17 +1925,22 @@ setup_validation_suite() {
   fi
 
   # ---- SU2: weak password ------------------------------------------------
-  # 'Ab1!efgh' is NOT used here (that is the SU4 boundary value); a plainly
-  # short password passes the native required check (no minlength
-  # attribute) and trips the React 6-char gate.
-  if v_type_into "Password" "Ab1!" "su2-weak-password" yes && \
-     v_type_into "Confirm" "Ab1!" "su2-weak-confirm" yes; then
+  # ALL fields are filled (name/email included — run 34877260555 lesson:
+  # with name/email empty the browser's NATIVE required validation blocks
+  # the submit and the app's own 6-char gate never fires). 'Ab1!' passes
+  # native (no minlength) and trips the React gate.
+  if setup_fill_form "$DOC_NAME" "$DOC_EMAIL" "Ab1!" "Ab1!" "su2"; then
     submit_focused_return
+    setup_after_submit_scroll_top
     ocr_capture || true
-    if ocr_grep "at least 6 characters" || ocr_grep "are required" || ocr_grep "fill out this field"; then
+    if ocr_grep "at least 6 characters" || ocr_grep "are required"; then
       snap "su2-weak-rejected" || true
-      qa_cap WEAK_PASSWORD "GREEN (the short-password submit was visibly rejected)"
-      surface_row "Weak password rejection" "Password + Confirm = 'Ab1!' then submit" "password strength checklist + submit" "a too-short password cannot create the account" "typed the short password into both masked fields + Return; the visible rejection was OCR-verified" "GREEN (rejected)" "su2-weak-rejected" "OK"
+      record_inventory "setup form after the weak-password submission"
+      qa_cap WEAK_PASSWORD "GREEN (the short-password submit was visibly rejected — the app's own gate text)"
+      surface_row "Weak password rejection" "all fields filled; Password + Confirm = 'Ab1!' then submit" "password strength checklist + submit" "a too-short password cannot create the account" "filled the whole form (so native validation passes) + Return; the visible rejection was OCR-verified" "GREEN (rejected)" "su2-weak-rejected" "OK"
+    elif ocr_grep "fill out this field"; then
+      bug D SU2_NATIVE "the weak-password submit was STILL blocked by the native required validation (a field did not take the typing — probe inconclusive; the gate text unproven)"
+      qa_cap WEAK_PASSWORD "INCONCLUSIVE (the native required validation blocked the submit — a typing glitch; see the D record)"
     elif ocr_grep "Add Patient"; then
       bug P1 WEAK_PASSWORD "the short-password ('Ab1!') submission left the setup screen (no visible rejection)"
       SETUP_CONSUMED="yes"
@@ -1922,28 +1948,30 @@ setup_validation_suite() {
       bug D SU2_VERIFY "could not OCR-verify the weak-password rejection text (recorded honestly)"
       qa_cap WEAK_PASSWORD "INCONCLUSIVE (no rejection text OCR-verified — see the D record)"
     fi
-    clear_field "Password" "su2-clear-password" || true
-    clear_field "Confirm" "su2-clear-confirm" || true
   else
-    bug D SU2_TYPE "could not type the weak-password probe into the masked fields (probe inconclusive)"
+    bug D SU2_TYPE "could not fill the weak-password probe form (typing failure — probe inconclusive)"
   fi
 
   # ---- SU3: confirmation mismatch ----------------------------------------
-  # Name/email stay EMPTY: the mismatch gate is the first pre-API check.
-  if v_type_into "Password" "$DOC_PASS" "su3-mismatch-password" yes && \
-     v_type_into "Confirm" "Mismatch-Pass-99" "su3-mismatch-confirm" yes; then
+  # All fields filled (the form holds SU2's name/email — re-typed with
+  # clear=yes by the helper); the mismatch gate is the FIRST React check.
+  if setup_fill_form "$DOC_NAME" "$DOC_EMAIL" "$DOC_PASS" "Mismatch-Pass-99" "su3"; then
     submit_focused_return
+    setup_after_submit_scroll_top
     ocr_capture || true
     if ocr_grep "do not match"; then
       snap "su3-mismatch-rejected" || true
-      qa_cap PASSWORD_MISMATCH "GREEN (the mismatched confirm was visibly rejected)"
-      surface_row "Confirmation mismatch rejection" "Password = valid secret, Confirm = different value, then submit" "the two masked fields + submit" "mismatched passwords cannot create the account" "typed a valid password + a different confirm + Return; 'do not match' rejection OCR-verified" "GREEN (rejected)" "su3-mismatch-rejected" "OK"
+      record_inventory "setup form after the mismatch submission"
+      qa_cap PASSWORD_MISMATCH "GREEN (the mismatched confirm was visibly rejected — 'do not match')"
+      surface_row "Confirmation mismatch rejection" "all fields filled; Password = valid secret, Confirm = different value, then submit" "the two masked fields + submit" "mismatched passwords cannot create the account" "filled the whole form + Return; the 'do not match' rejection was OCR-verified" "GREEN (rejected)" "su3-mismatch-rejected" "OK"
     elif ocr_grep "are required"; then
       # Equal-value typing glitch or gate miss: the submit was STILL
-      # rejected server-side (empty name/email) — the mismatch gate itself
-      # is not proven. Honest inconclusive, no false red.
+      # rejected server-side — the mismatch gate itself is not proven.
       bug D SU3_INCONCLUSIVE "the mismatch rejection text was not observed; the submit was still rejected ('are required') — the mismatch gate is unproven this run"
       qa_cap PASSWORD_MISMATCH "INCONCLUSIVE (submit still rejected server-side; the specific gate text not OCR-observed)"
+    elif ocr_grep "fill out this field"; then
+      bug D SU3_NATIVE "the mismatch submit was blocked by the native required validation (a field did not take the typing — probe inconclusive)"
+      qa_cap PASSWORD_MISMATCH "INCONCLUSIVE (the native required validation blocked the submit — see the D record)"
     elif ocr_grep "Add Patient"; then
       bug P1 PASSWORD_MISMATCH "the mismatched-password submission left the setup screen (no visible rejection)"
       SETUP_CONSUMED="yes"
@@ -1951,10 +1979,8 @@ setup_validation_suite() {
       bug D SU3_VERIFY "could not OCR-verify the mismatch rejection text (recorded honestly)"
       qa_cap PASSWORD_MISMATCH "INCONCLUSIVE (no rejection text OCR-verified — see the D record)"
     fi
-    clear_field "Password" "su3-clear-password" || true
-    clear_field "Confirm" "su3-clear-confirm" || true
   else
-    bug D SU3_TYPE "could not type the mismatch probe into the masked fields (probe inconclusive)"
+    bug D SU3_TYPE "could not fill the mismatch probe form (typing failure — probe inconclusive)"
   fi
 
   # ---- SU4: password requirement boundary --------------------------------
@@ -1964,11 +1990,9 @@ setup_validation_suite() {
   # this probe submits exactly that and records what the real product
   # does. This is an API attempt (budget slot 1 of 3).
   if setup_form_alive; then
-    if v_type_into "Full Name" "$DOC_NAME" "su4-name" && \
-       v_type_into "Email" "$DOC_EMAIL" "su4-email" && \
-       v_type_into "Password" "Qa1!efgh" "su4-boundary-password" yes && \
-       v_type_into "Confirm" "Qa1!efgh" "su4-boundary-confirm" yes; then
+    if setup_fill_form "$DOC_NAME" "$DOC_EMAIL" "Qa1!efgh" "Qa1!efgh" "su4"; then
       submit_focused_return
+      setup_after_submit_scroll_top
       SETUP_API_ATTEMPTS=$(( SETUP_API_ATTEMPTS + 1 ))
       local su4_done=0
       if wait_for_ocr "at least 10 characters" 30 "su4-server-policy-rejection"; then
@@ -1978,10 +2002,6 @@ setup_validation_suite() {
         qa_cap PASSWORD_BOUNDARY "GREEN (8-char all-class password REJECTED by the server's 10-char policy — the on-screen checklist understates it)"
         surface_row "Password requirement boundary" "checklist-compliant 8-char all-class password submitted" "checklist says '8+ characters'; submit gate is 6" "the real enforced minimum is discoverable only by rejection" "submitted the checklist-compliant password; the visible server rejection was OCR-verified" "GREEN (rejected — server minimum is 10, checklist says 8)" "su4-boundary-rejected" "P3-NOTE"
         bug P3 PASSWORD_POLICY_MISMATCH "the setup form's on-screen checklist advertises '8+ characters' and its client gate is 6, but the server enforces 10 — a checklist-compliant password is visibly rejected. Clinic impact: a doctor following the on-screen requirements gets an unexplained rejection (no checklist row says 10)."
-        clear_field "Full Name" "su4-clear-name" || true
-        clear_field "Email" "su4-clear-email" || true
-        clear_field "Password" "su4-clear-password" || true
-        clear_field "Confirm" "su4-clear-confirm" || true
       elif wait_for_ocr "Add Patient" 20 "su4-boundary-accepted"; then
         su4_done=1
         snap "su4-boundary-accepted" || true
@@ -1996,10 +2016,6 @@ setup_validation_suite() {
       if [ "$su4_done" = "0" ]; then
         if setup_form_alive; then
           bug D SU4_VERIFY "the boundary submission produced no OCR-readable outcome; the form is still alive — continuing (probe inconclusive)"
-          clear_field "Full Name" "su4-clear-name" || true
-          clear_field "Email" "su4-clear-email" || true
-          clear_field "Password" "su4-clear-password" || true
-          clear_field "Confirm" "su4-clear-confirm" || true
           qa_cap PASSWORD_BOUNDARY "INCONCLUSIVE (no OCR-readable outcome; the form survived)"
         else
           bug P1 SU4_STATE "after the boundary submission the screen is neither the setup form nor the dashboard"
@@ -2024,13 +2040,13 @@ setup_validation_suite() {
   # server error text also records a rejection honestly. API budget slot
   # 2 of 3 — spent ONLY if the native layer lets the submit through.
   if [ "$SETUP_CONSUMED" != "yes" ] && setup_form_alive; then
-    if v_type_into "Full Name" "$DOC_NAME" "su5-name" && \
-       v_type_into "Email" "malformed.no-at.medivault-qa" "su5-email" && \
-       v_type_into "Password" "$DOC_PASS" "su5-password" yes && \
-       v_type_into "Confirm" "$DOC_PASS" "su5-confirm" yes; then
+    if setup_fill_form "$DOC_NAME" "malformed.no-at.medivault-qa" "$DOC_PASS" "$DOC_PASS" "su5"; then
       submit_focused_return
-      # The native bubble (if any) appears IMMEDIATELY — check the rejection
-      # needles FIRST, before spending the 90s dashboard wait
+      # The native bubble (if any) appears IMMEDIATELY (the blocked submit
+      # auto-scrolls the invalid Email field into view); bring the form-top
+      # into OCR view and check the rejection needles FIRST, before spending
+      # the 90s dashboard wait
+      setup_after_submit_scroll_top
       local su5_rej=0
       local su5_native=0
       ocr_capture || true
@@ -2054,10 +2070,6 @@ setup_validation_suite() {
         record_inventory "setup form after the malformed-email submission (native validation)"
         qa_cap INVALID_EMAIL "GREEN (the structurally invalid email (no @) was visibly REJECTED — the browser's native type=email validation fired; no account was created with it)"
         surface_row "Malformed email handling" "structurally invalid email (no @) + otherwise valid form" "the Email input (type=email + required) + submit" "an invalid address must be rejected before an account exists" "typed the malformed address + submitted; the native validation rejection was OCR-verified (bubble text visible)" "GREEN (rejected at the input layer)" "su5-malformed-rejected" "OK"
-        clear_field "Full Name" "su5-clear-name" || true
-        clear_field "Email" "su5-clear-email" || true
-        clear_field "Password" "su5-clear-password" || true
-        clear_field "Confirm" "su5-clear-confirm" || true
       elif wait_for_ocr "Add Patient" 90 "su5-malformed-accepted"; then
         su5_done=1
         snap "su5-malformed-accepted" || true
@@ -2074,19 +2086,11 @@ setup_validation_suite() {
         snap "su5-malformed-rejected" || true
         qa_cap INVALID_EMAIL "GREEN (the malformed email was visibly rejected — validation present)"
         surface_row "Malformed email handling" "structurally invalid email (no @) + otherwise valid form" "the Email field + submit" "an invalid address is rejected" "typed + submitted; a visible rejection appeared" "GREEN (rejected)" "su5-malformed-rejected" "OK"
-        clear_field "Full Name" "su5-clear-name" || true
-        clear_field "Email" "su5-clear-email" || true
-        clear_field "Password" "su5-clear-password" || true
-        clear_field "Confirm" "su5-clear-confirm" || true
       fi
       if [ "$su5_done" = "0" ]; then
         if setup_form_alive; then
-          bug D SU5_VERIFY "the malformed-email submission produced no OCR-readable outcome; the form is still alive — GATEWAY 6 will submit the valid form (probe inconclusive)"
+          bug D SU5_VERIFY "the malformed-email submission produced no OCR-readable outcome; the form is still alive — GATEWAY 6 will submit the valid form (probe inconclusive; its clear=yes typing clears any residual values)"
           qa_cap INVALID_EMAIL "INCONCLUSIVE (no OCR-readable outcome)"
-          clear_field "Full Name" "su5-clear-name" || true
-          clear_field "Email" "su5-clear-email" || true
-          clear_field "Password" "su5-clear-password" || true
-          clear_field "Confirm" "su5-clear-confirm" || true
         elif ocr_grep "Add Patient"; then
           su5_done=1
           DOC_EMAIL="malformed.no-at.medivault-qa"
@@ -2123,17 +2127,14 @@ if [ "$SETUP_CONSUMED" = "yes" ]; then
   fi
   snap "10-dashboard" || true
 else
-if ! v_type_into "Full Name" "$DOC_NAME" "09-account-name"; then
-  bug P1 ACCOUNT_CREATION "could not type the account Full Name into the real setup form"
-fi
-if ! v_type_into "Email" "$DOC_EMAIL" "09-account-email"; then
-  bug P1 ACCOUNT_CREATION "could not type the account Email into the real setup form"
-fi
-if ! v_type_into "Password" "$DOC_PASS" "09-account-password" yes; then
-  bug P1 ACCOUNT_CREATION "could not type the account Password into the real setup form"
-fi
-if ! v_type_into "Confirm" "$DOC_PASS" "09-account-confirm" yes; then
-  bug P1 ACCOUNT_CREATION "could not type the Confirm password into the real setup form"
+# (run 34877260555 first-red, class D) the suite may leave the form with the
+# error block rendered (the Password/Confirm labels below the fold) and
+# residual probe values in the fields — the same scroll-aware + clear=yes
+# fill pattern as the suite (a real user scrolls and corrects); on a clean
+# compact form both scroll-finds are zero-burst no-ops.
+if ! setup_fill_form "$DOC_NAME" "$DOC_EMAIL" "$DOC_PASS" "$DOC_PASS" "09-account"; then
+  snap "09-account-fill-failed" || true
+  bug P1 ACCOUNT_CREATION "could not fill the real setup form (a name/email/password/confirm typing step failed — see the probe log for which field; the scroll-aware pattern already ran)"
 fi
 snap "09-account-form-filled" || true
 
@@ -3191,11 +3192,9 @@ focus_account() {
     surface_row "'Set Up Your Account' entry with an existing account" "Sign In screen → 'Set Up Your Account'" "the one-time setup form renders again (no client-side guard on the entry)" "the server must reject any second-account attempt (one-account model)" "clicked the real button; the setup form appeared" "RECORDED (form reachable; server rejection probed below)" "a9-setup-form-reachable" "OK"
     if [ "$SETUP_API_ATTEMPTS" -lt 3 ]; then
       probe "A9: setup POST budget has a slot (attempts so far: $SETUP_API_ATTEMPTS) — submitting the duplicate form"
-      if v_type_into "Full Name" "MediVault Duplicate QA" "a9-dup-name" && \
-         v_type_into "Email" "duplicate.attempt@example.invalid" "a9-dup-email" && \
-         v_type_into "Password" "$DOC_PASS" "a9-dup-password" yes && \
-         v_type_into "Confirm" "$DOC_PASS" "a9-dup-confirm" yes; then
+      if setup_fill_form "MediVault Duplicate QA" "duplicate.attempt@example.invalid" "$DOC_PASS" "$DOC_PASS" "a9-dup"; then
         submit_focused_return
+        setup_after_submit_scroll_top
         SETUP_API_ATTEMPTS=$(( SETUP_API_ATTEMPTS + 1 ))
         if wait_for_ocr "already been completed" 25 "duplicate-setup-rejected"; then
           snap "a9-duplicate-rejected" || true
