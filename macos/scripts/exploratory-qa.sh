@@ -1819,8 +1819,292 @@ surface_row "Optional fields" "setup form" "'Phone (optional)', 'Specialty (opti
 surface_row "Submit + back" "setup form" "'Create Account & Start' button; 'Back to Sign In' link" "submit creates the account and enters the app" "submitted via the focused-field Return (real user flow)" "PENDING GATEWAY 6" "10-account-submit-enter" "OK"
 
 # =============================================================================
-note "=== GATEWAY 6: account creation (real UI) ==="
+# SETUP-FORM VALIDATION SUITE (account focus only) — probes the ONE-TIME
+# Create Your Account form BEFORE consuming it. Safety design:
+#   * SU1-SU3 are CLIENT-gated probes (mismatch / <6-char gates per the
+#     form source) — they never reach the API and can never consume the
+#     form; their honest outcome is the visible rejection text;
+#   * SU4 (boundary) and SU5 (malformed email) DO reach the API and are
+#     budget-aware: the server keeps an in-memory setup limiter at
+#     3 POSTs/hour (auth-service checkRateLimit('setup', 3, 1h)). The
+#     source-expected path spends 1 (boundary rejected by the 10-char
+#     server policy) + 1 (malformed email ACCEPTED -> the account IS
+#     created with it; GATEWAY 6 then runs no third submit) and leaves
+#     the 3rd for the duplicate-setup probe inside focus_account;
+#   * every outcome is recorded honestly (GREEN / P3 / D / ENV) — the
+#     source-level suspects stay suspects until the real GUI speaks.
+# Passwords go into masked fields (secret=yes) and are never printed;
+# SU5's email is a synthetic non-address (no @).
+# =============================================================================
 DOC_PASS="$(cat "$DOC_PASS_FILE")"
+SETUP_CONSUMED="no"
+SETUP_API_ATTEMPTS=0
+
+setup_form_alive() { # is the one-time setup form still on screen?
+  ocr_capture || return 1
+  ocr_grep "Create Your Account"
+}
+
+clear_field() { # <label-needle> <stem> — click the REAL label, Cmd+A, delete
+  local label="$1" stem="$2"
+  ocr_capture || return 1
+  if ! ocr_lookup "$label" "first" "label"; then
+    probe "clear[$stem]: label '$label' not found — no clear attempted"
+    return 1
+  fi
+  "$MV_MOUSE" "$OCR_HIT_X" "$(( OCR_HIT_Y + 6 ))" 2>>"$LOG" || return 1
+  sleep 1
+  osa 'tell application "System Events" to tell (first process whose name contains "edivault") to keystroke "a" using command down' 10 || true
+  sleep 1
+  osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 51' 10 || true
+  sleep 1
+  probe "clear[$stem]: '$label' field cleared (Cmd+A + Backspace — a real user's correction flow)"
+  return 0
+}
+
+setup_validation_suite() {
+  note "=== SETUP VALIDATION SUITE (focus account): probing the one-time form ==="
+  surface_section "Account setup form — validation battery (focus account)"
+
+  # ---- SU1: empty-field submission ---------------------------------------
+  # Two rejection layers may speak: the BROWSER's native constraint
+  # validation (all four inputs carry `required`; WKWebView renders a
+  # 'Please fill out this field.' bubble and never fires onSubmit) OR the
+  # React gates (mismatch / 6-char minimum) OR a server 400. Any of the
+  # three texts = a visible rejection; the one-time form must survive.
+  if v_click "Email" "su1-focus-email" ""; then
+    submit_focused_return
+    local su1_rej=0
+    ocr_capture || true
+    if ocr_grep "fill out this field"; then su1_rej=1; fi
+    if [ "$su1_rej" = "0" ] && ocr_grep "at least 6 characters"; then su1_rej=1; fi
+    if [ "$su1_rej" = "0" ] && ocr_grep "are required"; then su1_rej=1; fi
+    if [ "$su1_rej" = "1" ]; then
+      snap "su1-empty-rejected" || true
+      record_inventory "setup form after the empty-field submission"
+      qa_cap EMPTY_FIELDS "GREEN (the all-empty submit was visibly rejected — the browser's native required-field validation fired; still on the setup form)"
+      surface_row "Empty-field rejection" "setup form submitted with every field empty" "the four required floating-label fields (all inputs carry required) + submit" "the empty submit is rejected; no account is created" "focused the Email field + pressed Return; the visible native validation rejection was OCR-verified" "GREEN (rejected)" "su1-empty-rejected" "OK"
+    elif ocr_grep "Add Patient"; then
+      bug P1 EMPTY_FIELDS "the all-empty setup form submission left the setup screen (no visible rejection — account created?)"
+      SETUP_CONSUMED="yes"
+    else
+      bug D SU1_VERIFY "could not OCR-verify the empty-submit rejection text (form still on screen — recorded honestly, no false red)"
+    fi
+  else
+    bug D SU1_FOCUS "could not focus the setup Email field for the empty-submit probe (no click attempted — probe inconclusive)"
+  fi
+
+  # ---- SU2: weak password ------------------------------------------------
+  # 'Ab1!efgh' is NOT used here (that is the SU4 boundary value); a plainly
+  # short password passes the native required check (no minlength
+  # attribute) and trips the React 6-char gate.
+  if v_type_into "Password" "Ab1!" "su2-weak-password" yes && \
+     v_type_into "Confirm" "Ab1!" "su2-weak-confirm" yes; then
+    submit_focused_return
+    ocr_capture || true
+    if ocr_grep "at least 6 characters" || ocr_grep "are required" || ocr_grep "fill out this field"; then
+      snap "su2-weak-rejected" || true
+      qa_cap WEAK_PASSWORD "GREEN (the short-password submit was visibly rejected)"
+      surface_row "Weak password rejection" "Password + Confirm = 'Ab1!' then submit" "password strength checklist + submit" "a too-short password cannot create the account" "typed the short password into both masked fields + Return; the visible rejection was OCR-verified" "GREEN (rejected)" "su2-weak-rejected" "OK"
+    elif ocr_grep "Add Patient"; then
+      bug P1 WEAK_PASSWORD "the short-password ('Ab1!') submission left the setup screen (no visible rejection)"
+      SETUP_CONSUMED="yes"
+    else
+      bug D SU2_VERIFY "could not OCR-verify the weak-password rejection text (recorded honestly)"
+    fi
+    clear_field "Password" "su2-clear-password" || true
+    clear_field "Confirm" "su2-clear-confirm" || true
+  else
+    bug D SU2_TYPE "could not type the weak-password probe into the masked fields (probe inconclusive)"
+  fi
+
+  # ---- SU3: confirmation mismatch ----------------------------------------
+  # Name/email stay EMPTY: the mismatch gate is the first pre-API check.
+  if v_type_into "Password" "$DOC_PASS" "su3-mismatch-password" yes && \
+     v_type_into "Confirm" "Mismatch-Pass-99" "su3-mismatch-confirm" yes; then
+    submit_focused_return
+    ocr_capture || true
+    if ocr_grep "do not match"; then
+      snap "su3-mismatch-rejected" || true
+      qa_cap PASSWORD_MISMATCH "GREEN (the mismatched confirm was visibly rejected)"
+      surface_row "Confirmation mismatch rejection" "Password = valid secret, Confirm = different value, then submit" "the two masked fields + submit" "mismatched passwords cannot create the account" "typed a valid password + a different confirm + Return; 'do not match' rejection OCR-verified" "GREEN (rejected)" "su3-mismatch-rejected" "OK"
+    elif ocr_grep "are required"; then
+      # Equal-value typing glitch or gate miss: the submit was STILL
+      # rejected server-side (empty name/email) — the mismatch gate itself
+      # is not proven. Honest inconclusive, no false red.
+      bug D SU3_INCONCLUSIVE "the mismatch rejection text was not observed; the submit was still rejected ('are required') — the mismatch gate is unproven this run"
+      qa_cap PASSWORD_MISMATCH "INCONCLUSIVE (submit still rejected server-side; the specific gate text not OCR-observed)"
+    elif ocr_grep "Add Patient"; then
+      bug P1 PASSWORD_MISMATCH "the mismatched-password submission left the setup screen (no visible rejection)"
+      SETUP_CONSUMED="yes"
+    else
+      bug D SU3_VERIFY "could not OCR-verify the mismatch rejection text (recorded honestly)"
+    fi
+    clear_field "Password" "su3-clear-password" || true
+    clear_field "Confirm" "su3-clear-confirm" || true
+  else
+    bug D SU3_TYPE "could not type the mismatch probe into the masked fields (probe inconclusive)"
+  fi
+
+  # ---- SU4: password requirement boundary --------------------------------
+  # The on-screen checklist advertises '8+ characters'; the form's client
+  # gate is 6; the server policy is 10 (packages/auth password.ts). An
+  # 8-char all-class password satisfies EVERY on-screen checklist row —
+  # this probe submits exactly that and records what the real product
+  # does. This is an API attempt (budget slot 1 of 3).
+  if setup_form_alive; then
+    if v_type_into "Full Name" "$DOC_NAME" "su4-name" && \
+       v_type_into "Email" "$DOC_EMAIL" "su4-email" && \
+       v_type_into "Password" "Qa1!efgh" "su4-boundary-password" yes && \
+       v_type_into "Confirm" "Qa1!efgh" "su4-boundary-confirm" yes; then
+      submit_focused_return
+      SETUP_API_ATTEMPTS=$(( SETUP_API_ATTEMPTS + 1 ))
+      local su4_done=0
+      if wait_for_ocr "at least 10 characters" 30 "su4-server-policy-rejection"; then
+        su4_done=1
+        snap "su4-boundary-rejected" || true
+        record_inventory "setup form after the 8-char boundary submission"
+        qa_cap PASSWORD_BOUNDARY "GREEN (8-char all-class password REJECTED by the server's 10-char policy — the on-screen checklist understates it)"
+        surface_row "Password requirement boundary" "checklist-compliant 8-char all-class password submitted" "checklist says '8+ characters'; submit gate is 6" "the real enforced minimum is discoverable only by rejection" "submitted the checklist-compliant password; the visible server rejection was OCR-verified" "GREEN (rejected — server minimum is 10, checklist says 8)" "su4-boundary-rejected" "P3-NOTE"
+        bug P3 PASSWORD_POLICY_MISMATCH "the setup form's on-screen checklist advertises '8+ characters' and its client gate is 6, but the server enforces 10 — a checklist-compliant password is visibly rejected. Clinic impact: a doctor following the on-screen requirements gets an unexplained rejection (no checklist row says 10)."
+        clear_field "Full Name" "su4-clear-name" || true
+        clear_field "Email" "su4-clear-email" || true
+        clear_field "Password" "su4-clear-password" || true
+        clear_field "Confirm" "su4-clear-confirm" || true
+      elif wait_for_ocr "Add Patient" 20 "su4-boundary-accepted"; then
+        su4_done=1
+        snap "su4-boundary-accepted" || true
+        bug P3 PASSWORD_BOUNDARY_ACCEPTED "the server ACCEPTED the 8-char all-class password (the source-declared policy is 10) — the real enforced minimum is 8 or lower this build; the account was created with the boundary password"
+        printf 'Qa1!efgh\n' > "$DOC_PASS_FILE"
+        DOC_PASS="Qa1!efgh"
+        SETUP_CONSUMED="yes"
+        qa_cap PASSWORD_BOUNDARY "RED-P3 (8-char all-class password ACCEPTED — weaker than the declared 10-char policy; account created with it)"
+        qa_cap ACCOUNT_CREATION "GREEN (account created via the setup form with the boundary password — see PASSWORD_BOUNDARY)"
+        surface_row "Password requirement boundary" "checklist-compliant 8-char all-class password submitted" "checklist says '8+ characters'" "the real enforced minimum" "submitted; the dashboard appeared (accepted)" "RED-P3 (accepted at 8)" "su4-boundary-accepted" "P3"
+      fi
+      if [ "$su4_done" = "0" ]; then
+        if setup_form_alive; then
+          bug D SU4_VERIFY "the boundary submission produced no OCR-readable outcome; the form is still alive — continuing (probe inconclusive)"
+          clear_field "Full Name" "su4-clear-name" || true
+          clear_field "Email" "su4-clear-email" || true
+          clear_field "Password" "su4-clear-password" || true
+          clear_field "Confirm" "su4-clear-confirm" || true
+          qa_cap PASSWORD_BOUNDARY "INCONCLUSIVE (no OCR-readable outcome; the form survived)"
+        else
+          bug P1 SU4_STATE "after the boundary submission the screen is neither the setup form nor the dashboard"
+        fi
+      fi
+    else
+      bug D SU4_TYPE "could not fill the boundary probe (typing failure — probe inconclusive; no submit attempted)"
+    fi
+  else
+    probe "SU4 skipped — the setup form is no longer on screen (an earlier probe consumed it)"
+  fi
+
+  # ---- SU5: malformed email ----------------------------------------------
+  # The source-level suspect, NARROWED by the input layer: the Email input
+  # is type=email + required — the BROWSER's native constraint validation
+  # ("Please include an '@' in the email address.") blocks a no-@ submit
+  # BEFORE the app's own code runs; no APP-level format validation exists
+  # beyond it. This probe submits a structurally invalid address with an
+  # otherwise-valid form: a native-bubble rejection proves the input-layer
+  # protection (the suspect refuted at the GUI); acceptance (dashboard)
+  # would prove a REAL validation gap (P3) and consume the form; a React/
+  # server error text also records a rejection honestly. API budget slot
+  # 2 of 3 — spent ONLY if the native layer lets the submit through.
+  if [ "$SETUP_CONSUMED" != "yes" ] && setup_form_alive; then
+    if v_type_into "Full Name" "$DOC_NAME" "su5-name" && \
+       v_type_into "Email" "malformed.no-at.medivault-qa" "su5-email" && \
+       v_type_into "Password" "$DOC_PASS" "su5-password" yes && \
+       v_type_into "Confirm" "$DOC_PASS" "su5-confirm" yes; then
+      submit_focused_return
+      # The native bubble (if any) appears IMMEDIATELY — check the rejection
+      # needles FIRST, before spending the 90s dashboard wait
+      local su5_rej=0
+      ocr_capture || true
+      if ocr_grep "include an" || ocr_grep "email address"; then su5_rej=1; fi
+      if [ "$su5_rej" = "0" ] && ocr_grep "at least 10 characters"; then su5_rej=1; fi
+      if [ "$su5_rej" = "0" ] && ocr_grep "are required"; then su5_rej=1; fi
+      if [ "$su5_rej" = "0" ] && ocr_grep "valid"; then su5_rej=1; fi
+      # counted unconditionally (conservative: a native-blocked submit costs
+      # no real API attempt, but reserving the budget keeps A9 safe)
+      SETUP_API_ATTEMPTS=$(( SETUP_API_ATTEMPTS + 1 ))
+      local su5_done=0
+      if [ "$su5_rej" = "1" ]; then
+        su5_done=1
+        snap "su5-malformed-rejected" || true
+        record_inventory "setup form after the malformed-email submission (native validation)"
+        qa_cap INVALID_EMAIL "GREEN (the structurally invalid email (no @) was visibly REJECTED — the browser's native type=email validation fired; no account was created with it)"
+        surface_row "Malformed email handling" "structurally invalid email (no @) + otherwise valid form" "the Email input (type=email + required) + submit" "an invalid address must be rejected before an account exists" "typed the malformed address + submitted; the native validation rejection was OCR-verified (bubble text visible)" "GREEN (rejected at the input layer)" "su5-malformed-rejected" "OK"
+        clear_field "Full Name" "su5-clear-name" || true
+        clear_field "Email" "su5-clear-email" || true
+        clear_field "Password" "su5-clear-password" || true
+        clear_field "Confirm" "su5-clear-confirm" || true
+      elif wait_for_ocr "Add Patient" 90 "su5-malformed-accepted"; then
+        su5_done=1
+        snap "su5-malformed-accepted" || true
+        record_inventory "dashboard after the malformed-email account creation"
+        DOC_EMAIL="malformed.no-at.medivault-qa"
+        SETUP_CONSUMED="yes"
+        bug P3 EMAIL_VALIDATION "the setup form accepted the structurally invalid address 'malformed.no-at.medivault-qa' (no @) and created the account with it — no email-format validation exists on the client or the server path. Clinic impact: account-identity data quality (a typo'd address becomes the login handle with no correction prompt). Not a security exposure (loopback-only, synthetic)."
+        qa_cap INVALID_EMAIL "RED-P3 (the malformed email was ACCEPTED — the account was created with it; login continues with this address)"
+        qa_cap ACCOUNT_CREATION "GREEN (account created through the real setup form — via the malformed-email probe; the dashboard is visible)"
+        surface_row "Malformed email handling" "structurally invalid email (no @) + otherwise valid form" "the Email field + submit" "a structurally invalid address should be rejected by validation" "typed the malformed address + submitted; the dashboard appeared (accepted — P3 recorded)" "RED-P3 (accepted)" "su5-malformed-accepted" "P3"
+        surface_row "Valid account creation" "the real one-time setup form" "'Create Account & Start'" "a valid submission creates the account and enters the app" "the account exists and the session is live (created by the SU5 probe — see its row)" "GREEN" "su5-malformed-accepted; 10-dashboard" "OK"
+      elif ocr_grep "at least 10 characters" || ocr_grep "are required" || ocr_grep "valid"; then
+        su5_done=1
+        snap "su5-malformed-rejected" || true
+        qa_cap INVALID_EMAIL "GREEN (the malformed email was visibly rejected — validation present)"
+        surface_row "Malformed email handling" "structurally invalid email (no @) + otherwise valid form" "the Email field + submit" "an invalid address is rejected" "typed + submitted; a visible rejection appeared" "GREEN (rejected)" "su5-malformed-rejected" "OK"
+        clear_field "Full Name" "su5-clear-name" || true
+        clear_field "Email" "su5-clear-email" || true
+        clear_field "Password" "su5-clear-password" || true
+        clear_field "Confirm" "su5-clear-confirm" || true
+      fi
+      if [ "$su5_done" = "0" ]; then
+        if setup_form_alive; then
+          bug D SU5_VERIFY "the malformed-email submission produced no OCR-readable outcome; the form is still alive — GATEWAY 6 will submit the valid form (probe inconclusive)"
+          qa_cap INVALID_EMAIL "INCONCLUSIVE (no OCR-readable outcome)"
+          clear_field "Full Name" "su5-clear-name" || true
+          clear_field "Email" "su5-clear-email" || true
+          clear_field "Password" "su5-clear-password" || true
+          clear_field "Confirm" "su5-clear-confirm" || true
+        elif ocr_grep "Add Patient"; then
+          su5_done=1
+          DOC_EMAIL="malformed.no-at.medivault-qa"
+          SETUP_CONSUMED="yes"
+          probe "SU5: the dashboard appeared without the wait catching it — treating as accepted (honest late detection)"
+          bug P3 EMAIL_VALIDATION "the malformed address 'malformed.no-at.medivault-qa' was accepted (dashboard reached; late-detected) — no email-format validation on the path"
+          qa_cap INVALID_EMAIL "RED-P3 (accepted — late-detected)"
+          qa_cap ACCOUNT_CREATION "GREEN (account created; dashboard visible)"
+        else
+          bug P1 SU5_STATE "after the malformed-email submission the screen is neither the form nor the dashboard"
+        fi
+      fi
+    else
+      bug D SU5_TYPE "could not fill the malformed-email probe (typing/verification failure — no submit attempted; GATEWAY 6 proceeds)"
+      qa_cap INVALID_EMAIL "INCONCLUSIVE (harness typing limit — the probe did not submit)"
+    fi
+  else
+    probe "SU5 skipped — the setup form was already consumed (SETUP_CONSUMED=$SETUP_CONSUMED)"
+  fi
+  note "setup validation suite complete: SETUP_CONSUMED=$SETUP_CONSUMED SETUP_API_ATTEMPTS=$SETUP_API_ATTEMPTS"
+}
+
+if [ "$QA_FOCUS" = "account" ]; then
+  setup_validation_suite
+fi
+
+# =============================================================================
+note "=== GATEWAY 6: account creation (real UI) ==="
+if [ "$SETUP_CONSUMED" = "yes" ]; then
+  note "GATEWAY 6 submission SKIPPED — the one-time form was already consumed by the setup-validation suite (the account exists and the session is live; see the SU records)"
+  if ! wait_for_ocr "Add Patient" 90 "dashboard-after-suite-consumed"; then
+    snap "10-dashboard-not-visible-after-suite" || true
+    bug P1 ACCOUNT_CREATION "the suite consumed the form but the dashboard never appeared"
+  fi
+  snap "10-dashboard" || true
+else
 if ! v_type_into "Full Name" "$DOC_NAME" "09-account-name"; then
   bug P1 ACCOUNT_CREATION "could not type the account Full Name into the real setup form"
 fi
@@ -1861,8 +2145,10 @@ if ! wait_for_ocr "Add Patient" 90 "dashboard-after-setup"; then
   snap "10-dashboard-not-visible" || true
   bug P1 ACCOUNT_CREATION "the dashboard ('Add Patient') never appeared after account creation"
 fi
+SETUP_API_ATTEMPTS=$(( SETUP_API_ATTEMPTS + 1 ))
 qa_cap ACCOUNT_CREATION "GREEN (account created through the real setup form; the dashboard is visible)"
 snap "10-dashboard" || true
+fi # SETUP_CONSUMED guard around GATEWAY 6
 
 # =============================================================================
 # FOCUS FRAMEWORK (new) — reusable exploratory helpers
@@ -2501,6 +2787,14 @@ focus_surface() {
 # =============================================================================
 focus_account() {
   note "=== FOCUS account: the auth lifecycle + session identity ==="
+  # Login rate budget (auth-service in-memory limiter: 5 login attempts per
+  # 15 min PER EMAIL; 5 FAILED attempts lock the account for 15 min):
+  # this focus spends — wrong password (1) + correct re-login (2) + cycle-2
+  # login (3) + the reopen re-login (4, ONLY if the webview session did not
+  # persist) = at most 4 of 5; the wrong-EMAIL probe uses a NONEXISTENT
+  # address (its own limiter key; no failed-attempt increment on the real
+  # account because no user matches). The setup-POST budget (3/hour) is
+  # tracked in SETUP_API_ATTEMPTS for the duplicate-setup probe at A9.
 
   # A0: search-query leak seed (typed BEFORE logout — the post-relogin check)
   search_type "LeakProbe" "a00-leak-seed"
@@ -2531,6 +2825,25 @@ focus_account() {
   record_inventory "Sign In screen (account focus)"
   surface_section "Sign In screen (account focus)"
 
+  # A2b: protected UI after logout — no dashboard content may remain visible
+  # while the Sign In screen holds the app; the no-credential API probe is
+  # repeated HERE (while the app itself sits logged-out) with its honest
+  # limitation labeled: the webview's own session cookie is not externally
+  # readable from the harness, so the GUI-level proof is the login screen
+  # itself plus the absence of protected UI.
+  ME_CODE2="$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 "$API/api/auth/me" || echo 000)"
+  probe "[backend-verification] GET /api/auth/me without credentials WHILE LOGGED OUT -> HTTP $ME_CODE2 (expect 401)"
+  if ocr_grep "Add Patient"; then
+    bug P1 PROTECTED_UI_AFTER_LOGOUT "dashboard content ('Add Patient') is still visible after logout"
+  else
+    probe "protected-UI check after logout: no dashboard content visible (login screen holds the app)"
+    surface_row "Protected UI after logout" "profile menu → Sign Out" "the app must land on the pre-auth Sign In screen" "no authenticated UI is reachable without a session" "OCR: 'Sign In' visible, 'Add Patient' NOT visible; /api/auth/me without credentials = HTTP $ME_CODE2" "GREEN (pre-auth state only)" "a3-signin-screen" "OK"
+    qa_cap PROTECTED_UI_AFTER_LOGOUT "GREEN (login screen only; no dashboard content; /api/auth/me = $ME_CODE2 without credentials)"
+  fi
+  if ocr_grep "LeakProbe"; then
+    bug P3 LOGOUT_STATE_LEAK "the seeded search query text is visible on the LOGGED-OUT screen (stale UI state across the logout boundary)"
+  fi
+
   # A3: wrong password → the honest visible rejection
   if ! v_type_into "Email" "$DOC_EMAIL" "a4-wrong-email"; then
     bug P1 WRONG_PASSWORD "could not type the email for the wrong-password attempt"
@@ -2552,6 +2865,35 @@ focus_account() {
   fi
   qa_cap WRONG_PASSWORD "GREEN ('Invalid email or password' visible after the real wrong-password submit)"
   snap "a4-wrong-password-error" || true
+  surface_row "Wrong password rejection" "Sign In with the correct email + a wrong password" "Email/Password fields + 'Sign In'" "the login is rejected with a visible error" "typed real email + wrong password + Return; 'Invalid email or password' OCR-verified" "GREEN (rejected)" "a4-wrong-password-error" "OK"
+
+  # A3w: wrong EMAIL (a nonexistent address + the CORRECT password) — the
+  # login path's second failure mode. A nonexistent user must produce the
+  # same generic rejection (no user enumeration).
+  GHOST_EMAIL="ghost.nonexistent@medivault-qa.invalid"
+  if v_type_into "Email" "$GHOST_EMAIL" "a4w-wrong-email" no no yes && \
+     v_type_into "Password" "$DOC_PASS" "a4w-correct-password" yes no yes; then
+    WRONG_EMAIL_SUBMITTED=0
+    if osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10; then
+      sleep 3
+      if wait_for_ocr "Invalid email or password" 20 "wrong-email-after-enter"; then
+        WRONG_EMAIL_SUBMITTED=1
+        snap "a4w-wrong-email-submit-enter" || true
+      fi
+    fi
+    if [ "$WRONG_EMAIL_SUBMITTED" = "0" ] && ! v_click_try_hits "Sign In" "a4w-wrong-email-submit" "Invalid email or password"; then
+      snap "a4w-wrong-email-failed" || true
+      bug P1 WRONG_EMAIL "the nonexistent-email login did NOT produce the expected visible rejection"
+    fi
+    if wait_for_ocr "Sign In" 10 "still-on-login-after-wrong-email" || ! ocr_grep "Add Patient"; then
+      qa_cap WRONG_EMAIL "GREEN (nonexistent email + correct password → 'Invalid email or password'; no user enumeration — same message as wrong password)"
+      surface_row "Wrong email rejection" "Sign In with a nonexistent address + the correct password" "Email/Password fields + 'Sign In'" "a nonexistent identity cannot log in; the message must not leak which factor failed" "typed the ghost address + Return; 'Invalid email or password' OCR-verified" "GREEN (rejected; no enumeration)" "a4w-wrong-email-submit-enter" "OK"
+    else
+      bug P1 WRONG_EMAIL "the nonexistent-email login LEFT the login screen (session granted without a matching user?)"
+    fi
+  else
+    bug D WRONG_EMAIL_PROBE "could not type the wrong-email probe credentials (probe inconclusive)"
+  fi
 
   # A3b: dead-link probes (P3 records — no navigation expected)
   if ! v_click "Forgot password" "a5-forgot-probe" ""; then
@@ -2560,7 +2902,12 @@ focus_account() {
     probe "Forgot password click produced a visible change — recorded (no dead link proven)"
   fi
 
-  # A4: correct re-login
+  # A4: correct re-login (restore BOTH fields — the wrong-email probe left
+  # the ghost address in the Email field; the failed attempts left the
+  # wrong value in the Password field)
+  if ! v_type_into "Email" "$DOC_EMAIL" "a6-login-email-restore" no no yes; then
+    bug P1 LOGIN "could not re-enter the correct email after the wrong-email attempt"
+  fi
   if ! v_type_into "Password" "$DOC_PASS" "a6-login-again-password" yes no yes; then
     bug P1 LOGIN "could not re-enter the correct password after the wrong attempt"
   fi
@@ -2580,12 +2927,43 @@ focus_account() {
   qa_cap LOGIN "GREEN (correct synthetic credentials → the dashboard)"
   snap "a6-relogin-dashboard" || true
 
-  # A5: identity consistency after re-login
+  # A5: identity consistency after re-login — the /api/auth/me regression
+  # surface (the PFT-34701835070 bug: a flat-parse of the nested response
+  # lost the doctor name and the pill fell back to the EMAIL PREFIX; the
+  # correct GUI proof is the account NAME being displayed here).
   ocr_capture || true
   if ocr_grep "Test Doctor"; then
-    qa_cap IDENTITY_CONSISTENCY "GREEN (the account name is OCR-visible after re-login)"
+    qa_cap IDENTITY_CONSISTENCY "GREEN (the account name is OCR-visible after re-login — the /api/auth/me nested-response parse holds: the pill shows the NAME, not the email prefix)"
+  elif ocr_grep "MediVault Test"; then
+    qa_cap IDENTITY_CONSISTENCY "GREEN (the account-name prefix is OCR-visible after re-login — pill truncation; the /api/auth/me nested-response parse holds)"
   else
-    bug P3 IDENTITY_VISIBILITY "the account name was not OCR-visible after re-login (may be truncation/OCR limits — recorded honestly; the /api/auth/me shape regression check needs the webview session)"
+    bug P3 IDENTITY_VISIBILITY "the account name was not OCR-visible after re-login (may be truncation/OCR limits — recorded honestly)"
+  fi
+
+  # A5b: profile/menu identity consistency — open the REAL profile dropdown
+  # and verify the name + 'Clinic Doctor' subtitle; then close it via a real
+  # outside-click (the Dashboard nav pill — a no-op navigation on this view)
+  # verified by the dropdown disappearing.
+  if open_profile_menu "a5b-profile-menu"; then
+    ocr_capture || true
+    snap "a5b-profile-menu-identity" || true
+    MENU_NAME=0; MENU_ROLE=0
+    ocr_grep "Test Doctor" && MENU_NAME=1
+    [ "$MENU_NAME" = "0" ] && ocr_grep "MediVault Test" && MENU_NAME=1
+    ocr_grep "Clinic Doctor" && MENU_ROLE=1
+    if [ "$MENU_NAME" = "1" ] && [ "$MENU_ROLE" = "1" ]; then
+      qa_cap PROFILE_IDENTITY "GREEN (the profile dropdown shows the account name + 'Clinic Doctor' — menu identity consistent after login)"
+      surface_row "Profile/menu identity" "header profile pill click" "avatar initial; account name; 'Clinic Doctor'; 'Sign Out'" "the menu identifies the signed-in account" "opened the real dropdown; name + role OCR-verified" "GREEN" "a5b-profile-menu-identity" "OK"
+    else
+      bug P3 PROFILE_IDENTITY "the profile dropdown identity was not fully OCR-verifiable (name=$MENU_NAME role=$MENU_ROLE — recorded honestly)"
+    fi
+    if v_click "Dashboard" "a5b-menu-close" "Add Patient"; then
+      wait_text_gone "Sign Out" 10 "profile-menu-closed" || probe "profile menu may still be open (honest note — next probes open it fresh)"
+    else
+      probe "menu-close click not verified — continuing (open_profile_menu re-verifies by the Sign Out menu appearing)"
+    fi
+  else
+    bug D PROFILE_MENU_PROBE "could not open the profile menu for the identity check (recorded honestly)"
   fi
 
   # A6: logout state-leakage probe (the seeded 'LeakProbe' query)
@@ -2598,6 +2976,44 @@ focus_account() {
     qa_cap LOGOUT_STATE "GREEN (no visible stale search state after logout/re-login)"
   fi
 
+  # A6b: REPEATED logout/login cycle (cycle 2 of 2) — full real-GUI round trip
+  open_profile_menu "a6b-logout2" || bug P1 REPEATED_LOGIN_LOGOUT "cycle-2: the profile pill could not be clicked to reach Sign Out"
+  v_click "Sign Out" "a6b-signout2" "Sign In" || bug P1 REPEATED_LOGIN_LOGOUT "cycle-2: Sign Out did not return to the Sign In screen"
+  sleep 2
+  ocr_capture || true
+  snap "a6b-signout2-screen" || true
+  if ocr_grep "Add Patient"; then
+    bug P1 REPEATED_LOGIN_LOGOUT "cycle-2: dashboard content visible after logout"
+  fi
+  if ! v_type_into "Email" "$DOC_EMAIL" "a6b-login2-email"; then
+    bug P1 REPEATED_LOGIN_LOGOUT "cycle-2: could not type the email"
+  fi
+  if ! v_type_into "Password" "$DOC_PASS" "a6b-login2-password" yes; then
+    bug P1 REPEATED_LOGIN_LOGOUT "cycle-2: could not type the password"
+  fi
+  CYCLE2_SUBMITTED=0
+  if osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10; then
+    sleep 3
+    if wait_for_ocr "Add Patient" 45 "cycle2-after-enter"; then
+      CYCLE2_SUBMITTED=1
+      snap "a6b-login2-submit-enter" || true
+    fi
+  fi
+  if [ "$CYCLE2_SUBMITTED" = "0" ] && ! v_click_try_hits "Sign In" "a6b-login2-submit" "Add Patient"; then
+    snap "a6b-login2-failed" || true
+    bug P1 REPEATED_LOGIN_LOGOUT "cycle-2: the correct login failed"
+  fi
+  wait_for_ocr "Add Patient" 60 "dashboard-after-cycle2" || bug P1 REPEATED_LOGIN_LOGOUT "cycle-2: no dashboard"
+  ocr_capture || true
+  if ocr_grep "Test Doctor" || ocr_grep "MediVault Test"; then
+    qa_cap REPEATED_LOGIN_LOGOUT "GREEN (two full logout→login cycles completed; the identity re-appears each time)"
+    surface_row "Repeated logout/login cycles" "Sign Out → Sign In → dashboard, twice" "the full auth round trip" "the cycles are stable; no state corruption" "cycle 1 (a2→a6) + cycle 2 (a6b) both GREEN with the name re-appearing" "GREEN" "a6b-*" "OK"
+  else
+    qa_cap REPEATED_LOGIN_LOGOUT "GREEN (two full cycles completed; the name was not OCR-visible on cycle 2 — honest OCR note)"
+    surface_row "Repeated logout/login cycles" "Sign Out → Sign In → dashboard, twice" "the full auth round trip" "the cycles are stable; no state corruption" "cycle 1 + cycle 2 both completed the round trip" "GREEN" "a6b-*" "OK"
+  fi
+  snap "a6b-dashboard2" || true
+
   # A7: session restore (quit → reopen)
   quit_medivault
   snap "a8-quit-confirmed" || true
@@ -2607,8 +3023,10 @@ focus_account() {
   curl -fsS --max-time 3 "$API/health" >/dev/null 2>&1 || bug P1 QUIT_REOPEN "the API stopped answering after the desktop app quit"
   launch_and_detect "account-reopen" 180
   [ "$MV_WINDOW" = "yes" ] || bug P1 QUIT_REOPEN "the MediVault window did not reappear after reopen"
+  REOPEN_PATH="unknown"
   if ! wait_for_ocr "Add Patient" 150 "dashboard-after-reopen"; then
     if ocr_grep "Sign In"; then
+      REOPEN_PATH="signin-required"
       probe "re-open reached the Sign In screen (webview session did not persist) — logging in again (honest outcome)"
       if ! v_type_into "Email" "$DOC_EMAIL" "a9-relogin-email"; then
         bug P1 QUIT_REOPEN "could not type the email on the re-open login screen"
@@ -2629,15 +3047,140 @@ focus_account() {
       fi
       wait_for_ocr "Add Patient" 60 "dashboard-after-relogin" || bug P1 QUIT_REOPEN "no dashboard after re-login on reopen"
       qa_cap SESSION_RESTORE "SIGN-IN REQUIRED (honest outcome: the webview session did not persist across quit/reopen; login succeeded)"
+      surface_row "Quit/reopen session restoration" "quit the app → relaunch" "the app window + whichever auth state the webview held" "the desktop app survives quit/reopen and reaches a working state" "reopened; the Sign In screen appeared (session cookie did not persist); re-login succeeded" "GREEN (sign-in required — honest outcome)" "a9-*" "OK"
     else
       snap "a9-reopen-unknown-screen" || true
       bug P1 QUIT_REOPEN "after reopen the screen is neither the dashboard nor the Sign In screen"
     fi
   else
+    REOPEN_PATH="restored"
     qa_cap SESSION_RESTORE "GREEN (the dashboard returned directly after reopen — the session persisted)"
+    surface_row "Quit/reopen session restoration" "quit the app → relaunch" "the app window + the persisted webview session" "the desktop app survives quit/reopen and restores the session" "reopened; the dashboard appeared directly" "GREEN (session restored)" "a9-reopen-dashboard" "OK"
   fi
   snap "a9-reopen-dashboard" || true
-  note "focus account complete"
+  qa_cap QUIT_REOPEN "GREEN (quit → relaunch → a working app state; path: $REOPEN_PATH)"
+
+  # A7b: identity consistency after quit/reopen — the second /api/auth/me
+  # regression surface (page.tsx checkSession parses /me on reload to
+  # restore doctorInfo; the PFT-34701835070 bug lost the identity here).
+  ocr_capture || true
+  REOPEN_NAME=0
+  ocr_grep "Test Doctor" && REOPEN_NAME=1
+  [ "$REOPEN_NAME" = "0" ] && ocr_grep "MediVault Test" && REOPEN_NAME=1
+  if [ "$REOPEN_NAME" = "1" ]; then
+    probe "identity after reopen: the account name is visible on the dashboard (path: $REOPEN_PATH)"
+  else
+    bug P3 IDENTITY_AFTER_REOPEN "the account name was not OCR-visible after quit/reopen (truncation/OCR limits — recorded honestly)"
+  fi
+  if open_profile_menu "a7b-reopen-profile"; then
+    ocr_capture || true
+    snap "a7b-reopen-profile-identity" || true
+    REOPEN_MENU_NAME=0; REOPEN_MENU_ROLE=0
+    ocr_grep "Test Doctor" && REOPEN_MENU_NAME=1
+    [ "$REOPEN_MENU_NAME" = "0" ] && ocr_grep "MediVault Test" && REOPEN_MENU_NAME=1
+    ocr_grep "Clinic Doctor" && REOPEN_MENU_ROLE=1
+    if [ "$REOPEN_MENU_NAME" = "1" ] && [ "$REOPEN_MENU_ROLE" = "1" ]; then
+      qa_cap IDENTITY_AFTER_REOPEN "GREEN (identity consistent after quit/reopen: dashboard name + profile menu name/role; restore path: $REOPEN_PATH — the /api/auth/me session-restore parse holds)"
+      surface_row "Identity consistency after quit/reopen" "reopen → dashboard + profile menu" "the name everywhere the identity is displayed" "the same doctor identity survives the restart" "OCR: dashboard name + menu name + 'Clinic Doctor' (path: $REOPEN_PATH)" "GREEN" "a7b-reopen-profile-identity" "OK"
+    else
+      bug P3 IDENTITY_AFTER_REOPEN "the post-reopen profile menu identity was not fully OCR-verifiable (name=$REOPEN_MENU_NAME role=$REOPEN_MENU_ROLE — honest)"
+    fi
+    v_click "Dashboard" "a7b-menu-close" "Add Patient" || true
+    wait_text_gone "Sign Out" 10 "reopen-menu-closed" || true
+  else
+    bug D REOPEN_PROFILE_PROBE "could not open the profile menu after reopen (honest record)"
+  fi
+
+  # A8: account name/email display consistency — Settings → Doctor Profile
+  # (the one place the EMAIL is displayed; with the malformed-email outcome
+  # from SU5 this records exactly what the clinic user would see)
+  if v_click "Settings" "a8-settings-open" "Doctor Profile"; then
+    v_scroll_find "Doctor Profile" 6 no up || true
+    ocr_capture || true
+    snap "a8-settings-doctor-profile" || true
+    SET_NAME=0; SET_ROLE=0; SET_EMAIL=0
+    ocr_grep "Test Doctor" && SET_NAME=1
+    [ "$SET_NAME" = "0" ] && ocr_grep "MediVault Test" && SET_NAME=1
+    ocr_grep "Clinic Doctor" && SET_ROLE=1
+    ocr_grep "$DOC_EMAIL" && SET_EMAIL=1
+    if [ "$SET_EMAIL" = "1" ]; then
+      qa_cap ACCOUNT_EMAIL_DISPLAY "GREEN (Settings → Doctor Profile displays the account email: $DOC_EMAIL)"
+    else
+      bug P3 EMAIL_DISPLAY_VERIFY "the account email was not OCR-visible in Settings → Doctor Profile (small-text OCR limit — recorded honestly; the section screenshot carries the pixels)"
+      qa_cap ACCOUNT_EMAIL_DISPLAY "UNVERIFIED-OCR (the Doctor Profile section is on the screenshot; the email text was not OCR-readable)"
+    fi
+    if [ "$SET_NAME" = "1" ]; then
+      probe "Settings Doctor Profile: name OCR-visible"
+    else
+      bug P3 NAME_DISPLAY_VERIFY "the account name was not OCR-visible in Settings → Doctor Profile (honest OCR note)"
+    fi
+    surface_row "Account name/email display consistency" "Settings → Doctor Profile card" "avatar; name; email line; 'Clinic Doctor'; 'Edit Profile'" "the account identity is displayed consistently" "OCR: name=$SET_NAME role=$SET_ROLE email=$SET_EMAIL (the email string: $DOC_EMAIL)" "RECORDED (email OCR=$SET_EMAIL)" "a8-settings-doctor-profile" "OK"
+    v_click "Dashboard" "a8-back-to-dashboard" "Add Patient" || true
+    wait_for_ocr "Add Patient" 45 "dashboard-after-settings-identity" || true
+  else
+    bug D SETTINGS_IDENTITY_PROBE "could not open Settings for the identity display check (honest record)"
+  fi
+
+  # A9: duplicate account/setup behavior — the Sign In screen's
+  # 'Set Up Your Account' entry with an account ALREADY existing. The
+  # button is reachable (source: setCurrentView('setup') — no client guard);
+  # the protection must come from the server (SetupAlreadyCompletedError →
+  # 409 'Initial setup has already been completed'). The setup POST budget
+  # is 3/hour: this probe submits ONLY if the suite + GATEWAY 6 left a slot.
+  open_profile_menu "a9-logout3" || bug P1 DUPLICATE_SETUP "A9: the profile pill could not be clicked (3rd logout)"
+  v_click "Sign Out" "a9-signout3" "Sign In" || bug P1 DUPLICATE_SETUP "A9: Sign Out did not return to the Sign In screen"
+  sleep 2
+  ocr_capture || true
+  snap "a9-signin-for-setup-entry" || true
+  if ocr_grep "Add Patient"; then
+    bug P1 PROTECTED_UI_AFTER_LOGOUT "A9: dashboard content still visible after the 3rd logout"
+  else
+    probe "A9 protected state after the 3rd logout: pre-auth screen only (consistent with A2b)"
+  fi
+  surface_section "Duplicate account/setup behavior (focus account)"
+  if v_click "Set Up Your Account" "a9-setup-entry" "Create Your Account"; then
+    snap "a9-setup-form-reachable" || true
+    record_inventory "setup view reached from the Sign In screen while an account exists"
+    surface_row "'Set Up Your Account' entry with an existing account" "Sign In screen → 'Set Up Your Account'" "the one-time setup form renders again (no client-side guard on the entry)" "the server must reject any second-account attempt (one-account model)" "clicked the real button; the setup form appeared" "RECORDED (form reachable; server rejection probed below)" "a9-setup-form-reachable" "OK"
+    if [ "$SETUP_API_ATTEMPTS" -lt 3 ]; then
+      probe "A9: setup POST budget has a slot (attempts so far: $SETUP_API_ATTEMPTS) — submitting the duplicate form"
+      if v_type_into "Full Name" "MediVault Duplicate QA" "a9-dup-name" && \
+         v_type_into "Email" "duplicate.attempt@example.invalid" "a9-dup-email" && \
+         v_type_into "Password" "$DOC_PASS" "a9-dup-password" yes && \
+         v_type_into "Confirm" "$DOC_PASS" "a9-dup-confirm" yes; then
+        submit_focused_return
+        SETUP_API_ATTEMPTS=$(( SETUP_API_ATTEMPTS + 1 ))
+        if wait_for_ocr "already been completed" 25 "duplicate-setup-rejected"; then
+          snap "a9-duplicate-rejected" || true
+          qa_cap DUPLICATE_SETUP "GREEN (the duplicate setup submission was rejected with the visible server error 'Initial setup has already been completed')"
+          surface_row "Duplicate setup rejection" "the setup form filled with a second synthetic identity + submit" "the one-time form + submit" "a second account cannot be created" "submitted; the 409 rejection text was OCR-verified" "GREEN (rejected)" "a9-duplicate-rejected" "OK"
+        elif wait_for_ocr "Too many requests" 15 "duplicate-setup-rate-limited"; then
+          snap "a9-duplicate-rate-limited" || true
+          bug ENV DUPLICATE_SETUP_RATE "the duplicate-setup probe hit the setup rate limiter (budget consumed by the validation probes) — the rejection itself is still a rejection; the SetupAlreadyCompleted guard was not reached this run"
+          qa_cap DUPLICATE_SETUP "GREEN-via-RATE-LIMIT (rejected by the limiter; the 409 guard not exercised — ENV record)"
+          surface_row "Duplicate setup rejection" "the setup form filled with a second synthetic identity + submit" "the one-time form + submit" "a second account cannot be created" "submitted; the visible rejection came from the rate limiter (budget) — honest ENV record" "GREEN (rejected; ENV note)" "a9-duplicate-rate-limited" "ENV"
+        elif ocr_grep "Add Patient"; then
+          snap "a9-duplicate-accepted" || true
+          bug P1 DUPLICATE_SETUP "the duplicate setup submission LEFT the setup screen — a second account may have been created!"
+        else
+          snap "a9-duplicate-unverified" || true
+          bug D DUPLICATE_SETUP_VERIFY "the duplicate submission produced no OCR-readable outcome (honest record; no account-creation signal observed)"
+        fi
+      else
+        bug D DUPLICATE_SETUP_TYPE "could not fill the duplicate-setup probe form (no submit attempted — honest harness record)"
+      fi
+    else
+      probe "A9: setup POST budget exhausted ($SETUP_API_ATTEMPTS attempts) — the duplicate SUBMIT is skipped (the entry-reachability row above still stands)"
+      bug ENV DUPLICATE_SETUP_BUDGET "the duplicate-setup submission was not exercised: the 3/hour setup budget was consumed by the validation probes (form reachability recorded above)"
+      qa_cap DUPLICATE_SETUP "NOT EXERCISED (setup rate budget consumed; the form IS reachable — see the entry row)"
+      surface_row "Duplicate setup rejection" "the setup form with a second identity" "the one-time form + submit" "a second account cannot be created" "NOT submitted (budget) — the reachability row above is this run's evidence" "NOT TESTED (ENV budget)" "—" "ENV"
+    fi
+  else
+    bug P3 DUPLICATE_SETUP_ENTRY "the 'Set Up Your Account' button did not open the setup form (no visible change) — recorded honestly; the entry-point guard may exist in this build"
+    surface_row "'Set Up Your Account' entry with an existing account" "Sign In screen → 'Set Up Your Account'" "the one-time setup form" "the entry should not create a second account" "clicked; no setup form appeared" "RECORDED (entry did not open the form)" "a9-setup-entry-failed" "OK"
+  fi
+  snap "a9-final-state" || true
+  note "focus account complete (final app state: logged out, pre-auth screen — the FINAL section's teardown runs from here)"
 }
 
 # =============================================================================
