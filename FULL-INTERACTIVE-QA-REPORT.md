@@ -35,7 +35,7 @@ search.
 | Focus | Run ID | Outcome | Bugs found | Evidence |
 |---|---|---|---|---|
 | surface | 34864029026 | GREEN (EXPLORATORY-QA-GREEN-surface) | P0=0 P1=0 P2=0 P3=0; D=3 (theme-toggle off-screen at click time, display-name visual verify — deferred to the settings focus with better strategies) | run artifact `qa-evidence-arm64-focus-surface` (113 screenshots; SURFACE-MAP.md 59 rows / 18 sections; capability report all GREEN) |
-| account | (pending dispatch) | — | — | — |
+| account | 34873498636 (run 1) + the D-fix rerun | run 1: GREEN (EXPLORATORY-QA-GREEN-account) — the FULL auth lifecycle GREEN (creation, logout, protected-UI, wrong password, wrong email, login, identity consistency incl. both /api/auth/me regression surfaces, leak check, 2 cycles, quit/reopen session restore, settings name/email display); D=5 (the setup-validation battery never submitted — submit_focused_return defined after its caller; fixed) + P3=1 (reclassified D: the A9 entry-click needle was OCR-dropped, no click attempted) → harness fixed + invocation-order-aware checker added → targeted rerun | run-1 artifact `qa-evidence-arm64-focus-account` (122 screenshots; 27 capability rows; BUG-REGISTER with 6 honest records) |
 | patients | — | — | — | — |
 | search | — | — | — | — |
 | settings | — | — | — | — |

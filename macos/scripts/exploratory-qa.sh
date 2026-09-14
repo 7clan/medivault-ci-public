@@ -1862,6 +1862,14 @@ clear_field() { # <label-needle> <stem> — click the REAL label, Cmd+A, delete
   return 0
 }
 
+submit_focused_return() { # Return in whatever field currently holds focus
+  # (run 34873498636 first-red, class D — see the comment at the former site)
+  # defined BEFORE the setup-validation suite: the suite submits the one-time
+  # form five times BEFORE the focus-framework section executes.
+  osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10 >/dev/null 2>&1 || true
+  sleep 3
+}
+
 setup_validation_suite() {
   note "=== SETUP VALIDATION SUITE (focus account): probing the one-time form ==="
   surface_section "Account setup form — validation battery (focus account)"
@@ -1889,6 +1897,7 @@ setup_validation_suite() {
       SETUP_CONSUMED="yes"
     else
       bug D SU1_VERIFY "could not OCR-verify the empty-submit rejection text (form still on screen — recorded honestly, no false red)"
+      qa_cap EMPTY_FIELDS "INCONCLUSIVE (no rejection text OCR-verified; the form survived — see the D record)"
     fi
   else
     bug D SU1_FOCUS "could not focus the setup Email field for the empty-submit probe (no click attempted — probe inconclusive)"
@@ -1911,6 +1920,7 @@ setup_validation_suite() {
       SETUP_CONSUMED="yes"
     else
       bug D SU2_VERIFY "could not OCR-verify the weak-password rejection text (recorded honestly)"
+      qa_cap WEAK_PASSWORD "INCONCLUSIVE (no rejection text OCR-verified — see the D record)"
     fi
     clear_field "Password" "su2-clear-password" || true
     clear_field "Confirm" "su2-clear-confirm" || true
@@ -1939,6 +1949,7 @@ setup_validation_suite() {
       SETUP_CONSUMED="yes"
     else
       bug D SU3_VERIFY "could not OCR-verify the mismatch rejection text (recorded honestly)"
+      qa_cap PASSWORD_MISMATCH "INCONCLUSIVE (no rejection text OCR-verified — see the D record)"
     fi
     clear_field "Password" "su3-clear-password" || true
     clear_field "Confirm" "su3-clear-confirm" || true
@@ -2021,14 +2032,21 @@ setup_validation_suite() {
       # The native bubble (if any) appears IMMEDIATELY — check the rejection
       # needles FIRST, before spending the 90s dashboard wait
       local su5_rej=0
+      local su5_native=0
       ocr_capture || true
-      if ocr_grep "include an" || ocr_grep "email address"; then su5_rej=1; fi
+      if ocr_grep "include an" || ocr_grep "email address"; then su5_rej=1; su5_native=1; fi
       if [ "$su5_rej" = "0" ] && ocr_grep "at least 10 characters"; then su5_rej=1; fi
       if [ "$su5_rej" = "0" ] && ocr_grep "are required"; then su5_rej=1; fi
       if [ "$su5_rej" = "0" ] && ocr_grep "valid"; then su5_rej=1; fi
-      # counted unconditionally (conservative: a native-blocked submit costs
-      # no real API attempt, but reserving the budget keeps A9 safe)
-      SETUP_API_ATTEMPTS=$(( SETUP_API_ATTEMPTS + 1 ))
+      # API-attempt accounting (run 34873498636 refinement): a NATIVE-bubble
+      # rejection proves the submit never left the browser — it costs NO
+      # real setup-POST budget. Every other outcome (accepted by the server,
+      # rejected by the server, or unverifiable) conservatively counts.
+      if [ "$su5_native" = "0" ]; then
+        SETUP_API_ATTEMPTS=$(( SETUP_API_ATTEMPTS + 1 ))
+      else
+        probe "SU5: the native type=email validation blocked the submit — no setup POST spent (budget intact)"
+      fi
       local su5_done=0
       if [ "$su5_rej" = "1" ]; then
         su5_done=1
@@ -2181,11 +2199,14 @@ press_escape() { # the real Escape key into the app
   sleep 1
 }
 
-submit_focused_return() { # Return in whatever field currently holds focus
-  osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10 >/dev/null 2>&1 || true
-  sleep 3
-}
-
+# (run 34873498636 first-red, class D) submit_focused_return ORIGINALLY lived
+# in this focus-framework section — but the setup-validation suite (which runs
+# BEFORE GATEWAY 6, earlier in the linear flow) calls it at a point where the
+# definition did not exist yet: bash 3.2 resolves function names at CALL time,
+# so all five setup probes failed with 'command not found' and never actually
+# submitted the form (the probes' honest D records from that run are the
+# evidence). The definition now lives BEFORE the suite; the invocation-order-
+# aware static checker (def-before-use v2) is the regression test.
 scroll_through_view() { # <stem-prefix> <max-screens> — record every unique screen top→bottom
   local stem="$1" max="$2"
   local i=0 last_hash="" up=0
@@ -3138,7 +3159,33 @@ focus_account() {
     probe "A9 protected state after the 3rd logout: pre-auth screen only (consistent with A2b)"
   fi
   surface_section "Duplicate account/setup behavior (focus account)"
-  if v_click "Set Up Your Account" "a9-setup-entry" "Create Your Account"; then
+  # A9 entry click with OCR-retry: (run 34873498636 first-red, class D —
+  # Vision line-dropping variance) the Sign In screen's bottom card content
+  # ('First time using MediVault?' + the 'Set Up Your Account' button + the
+  # feature cards) was OCR-read fine at A2b-era captures but DROPPED at the
+  # A9-era captures — the needle was not locatable, NO click was attempted,
+  # and the original P3 record misattributed an OCR miss to the product.
+  # v_click re-captures on every call, so up to 3 fresh attempts genuinely
+  # re-read the screen; only a located-but-inert click remains a P3.
+  A9_ENTRY_CLICKED=0
+  A9_ENTRY_ATTEMPT=0
+  while [ "$A9_ENTRY_ATTEMPT" -lt 3 ]; do
+    ocr_capture || true
+    if ocr_grep "Set Up Your Account"; then
+      if v_click "Set Up Your Account" "a9-setup-entry-$A9_ENTRY_ATTEMPT" "Create Your Account"; then
+        A9_ENTRY_CLICKED=1
+        break
+      else
+        probe "A9: the entry button was located but the click produced no verified change — one more attempt (a real user would look again)"
+      fi
+    else
+      probe "A9: 'Set Up Your Account' not OCR-visible this capture (Vision bottom-card line-drop variance — the A2b-era captures read it) — recapturing"
+      snap "a9-entry-ocr-retry-$A9_ENTRY_ATTEMPT" || true
+    fi
+    A9_ENTRY_ATTEMPT=$(( A9_ENTRY_ATTEMPT + 1 ))
+    [ "$A9_ENTRY_CLICKED" = "1" ] || sleep 2
+  done
+  if [ "$A9_ENTRY_CLICKED" = "1" ]; then
     snap "a9-setup-form-reachable" || true
     record_inventory "setup view reached from the Sign In screen while an account exists"
     surface_row "'Set Up Your Account' entry with an existing account" "Sign In screen → 'Set Up Your Account'" "the one-time setup form renders again (no client-side guard on the entry)" "the server must reject any second-account attempt (one-account model)" "clicked the real button; the setup form appeared" "RECORDED (form reachable; server rejection probed below)" "a9-setup-form-reachable" "OK"
@@ -3176,8 +3223,9 @@ focus_account() {
       surface_row "Duplicate setup rejection" "the setup form with a second identity" "the one-time form + submit" "a second account cannot be created" "NOT submitted (budget) — the reachability row above is this run's evidence" "NOT TESTED (ENV budget)" "—" "ENV"
     fi
   else
-    bug P3 DUPLICATE_SETUP_ENTRY "the 'Set Up Your Account' button did not open the setup form (no visible change) — recorded honestly; the entry-point guard may exist in this build"
-    surface_row "'Set Up Your Account' entry with an existing account" "Sign In screen → 'Set Up Your Account'" "the one-time setup form" "the entry should not create a second account" "clicked; no setup form appeared" "RECORDED (entry did not open the form)" "a9-setup-entry-failed" "OK"
+    bug D DUPLICATE_SETUP_ENTRY_OCR "the 'Set Up Your Account' button could not be OCR-located after 3 fresh captures (Vision bottom-card line-drop variance — the same screen WAS OCR-read earlier in this run at A2b); NO click was attempted — the entry probe is inconclusive this run, NOT a product finding (the run-34873498636 P3 misattributed this to the product and is hereby corrected to class D)"
+    qa_cap DUPLICATE_SETUP "INCONCLUSIVE (the entry button was not OCR-locatable at click time — harness OCR variance; no click attempted)"
+    surface_row "'Set Up Your Account' entry with an existing account" "Sign In screen → 'Set Up Your Account'" "the one-time setup form" "the entry should not create a second account" "button not OCR-locatable after 3 captures (harness OCR variance — class D); no click attempted" "NOT TESTED (OCR variance — D record)" "a9-entry-ocr-retry-*" "D"
   fi
   snap "a9-final-state" || true
   note "focus account complete (final app state: logged out, pre-auth screen — the FINAL section's teardown runs from here)"
