@@ -3261,7 +3261,7 @@ read_patient_count() { # → PATIENTS_COUNT (number | 0 | unreadable)
     sleep 2
     ocr_capture || return 0
     local n
-    n="$(printf '%s\n' "$OCR_TEXT" | awk -F'|' '{print $2}' | grep -E '[0-9] *patients?' | head -1 | sed -E 's/[^0-9]//g')"
+    n="$(printf '%s\n' "$OCR_TEXT" | awk -F'|' '{print $2}' | sed 's/^O /0 /' | grep -E '[0-9] *patients?' | head -1 | sed -E 's/[^0-9]//g')"
     if [ -n "$n" ]; then PATIENTS_COUNT="$n"; fi
   else
     if v_scroll_find "No patients yet" 5; then PATIENTS_COUNT="0"; fi
@@ -3283,6 +3283,48 @@ v_clear_field() { # <label-needle> <stem> — Cmd+A + Delete in the field under 
   osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 51' 10 || true
   sleep 1
   probe "vclear[$stem]: cleared the field under '$label' (Cmd+A + Delete — a real user's clear)"
+  return 0
+}
+
+# ---- D-fix helpers (run 34901913438 first-red: the dialog-closed verdict) --
+# The dialog TITLES garble in OCR once the dialog's inner content scrolls
+# (observed: 'Add New Patient' read as 'Dochhnard'/'Nachhnord' while the
+# native 'Fill out this field' bubble was showing after a rejected submit —
+# a CORRECT native rejection was misread as 'dialog closed' and reported as
+# a P1 creation). Dialog presence is now ANY of several stable dialog-only
+# needles; closes are VERIFIED with bounded Escape retries; the create
+# verdicts corroborate against the patient count badge.
+add_patient_dialog_visible() { # → 0 when ANY stable Add-Patient-dialog needle is on screen
+  ocr_grep "Add New Patient" && return 0
+  ocr_grep "Enter the patient's information" && return 0
+  ocr_grep "Optional Details" && return 0
+  ocr_grep "First Name" && return 0
+  ocr_grep "Fill out this field" && return 0
+  return 1
+}
+
+edit_patient_dialog_visible() { # → 0 when ANY stable Edit-Patient-dialog needle is on screen
+  ocr_grep "Edit Patient" && return 0
+  ocr_grep "Save Changes" && return 0
+  ocr_grep "Completion" && return 0
+  ocr_grep "First Name" && return 0
+  return 1
+}
+
+ensure_dialog_closed() { # <stem> <visible-fn> — bounded VERIFIED Escape retries
+  local stem="$1" visfn="$2" esc=0
+  ocr_capture || true
+  while "$visfn" && [ "$esc" -lt 3 ]; do
+    probe "ensure-closed[$stem]: the dialog is still visible — Escape retry $esc"
+    press_escape
+    sleep 1
+    esc=$((esc + 1))
+    ocr_capture || true
+  done
+  if "$visfn"; then
+    snap "${stem}-still-open-after-escapes" || true
+    return 1
+  fi
   return 0
 }
 
@@ -3337,7 +3379,7 @@ create_patient_deep() { # <first> <last> <phone> <email> <address> <notes> <stem
     if osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10; then
       sleep 3
       ocr_capture || true
-      if [ -n "$OCR_TEXT" ] && ! ocr_grep "Add New Patient"; then
+      if [ -n "$OCR_TEXT" ] && ! add_patient_dialog_visible; then
         submitted=1
         snap "${stem}-submit-enter" || true
       fi
@@ -3358,7 +3400,7 @@ create_patient_deep() { # <first> <last> <phone> <email> <address> <notes> <stem
   fi
   sleep 2
   ocr_capture || true
-  if ocr_grep "Add New Patient"; then
+  if add_patient_dialog_visible; then
     snap "${stem}-dialog-still-open" || true
     probe "create[$stem]: the Add New Patient dialog is STILL OPEN after the submit (a rejection — the caller checks the rejection text)"
     return 2
@@ -3546,6 +3588,10 @@ focus_patients() {
   # PC0 — cancel create: a half-filled dialog must create NOTHING
   read_patient_count
   PC0_BEFORE="$PATIENTS_COUNT"
+  # D-fix (run 34901913438 BUG-1): read_patient_count leaves the view scrolled
+  # down at the patients list — scroll the header 'Add Patient' button back
+  # into view before the single-attempt dialog-open click.
+  v_scroll_top 10 || true
   if v_click "Add Patient" "pc0-open" "First Name"; then
     v_type_into "First Name" "Scratch Pad" "pc0-first" || true
     snap "pc0-form-half-filled" || true
@@ -3553,14 +3599,14 @@ focus_patients() {
       probe "pc0: the Cancel click registered"
     fi
     sleep 2
-    ocr_capture || true
-    if ocr_grep "Add New Patient"; then
-      press_escape
-      sleep 1
-    fi
-    wait_text_gone "Add New Patient" 8 "pc0-dialog-close" || true
+    # D-fix (BUG-2 class): VERIFIED close via the multi-needle dialog check —
+    # the count re-read below is only honest once the dialog is really gone.
+    ensure_dialog_closed "pc0" add_patient_dialog_visible \
+      || bug D PATIENTS_CANCEL_CREATE "the Add Patient dialog would not close after Cancel + 3 Escapes (harness limit — the count check below may be unreadable)"
     read_patient_count
-    if [ "$PATIENTS_COUNT" = "$PC0_BEFORE" ]; then
+    if [ "$PATIENTS_COUNT" = "unreadable" ]; then
+      bug D PATIENTS_CANCEL_CREATE "the post-cancel patient count could not be OCR-read (the honest limit — no verdict; the close evidence is in the pc0-* captures)"
+    elif [ "$PATIENTS_COUNT" = "$PC0_BEFORE" ]; then
       qa_cap CANCEL_CREATE "GREEN (the half-filled Add Patient dialog was canceled; the count is unchanged at $PATIENTS_COUNT)"
       surface_row "Cancel create" "Add Patient dialog → 'Cancel' (half-filled form)" "'Cancel' + 'Add Patient' buttons" "canceling discards the form; no patient is created" "filled First Name only → Cancel → dialog closed; count unchanged ($PC0_BEFORE)" "GREEN" "pc0-*" "OK"
     else
@@ -3583,10 +3629,18 @@ focus_patients() {
     else
       bug D PATIENTS_REQUIRED_FIELDS "the empty submit was rejected (the dialog stayed open) but the rejection TEXT could not be OCR-verified (the behavior is correct; the needle is the honest limit)"
     fi
-    press_escape
-    sleep 1
+    ensure_dialog_closed "pc1-empty" add_patient_dialog_visible || true
   elif [ "$PC1_RC" = "0" ]; then
-    bug P1 PATIENTS_REQUIRED_FIELDS "the empty-names submit CREATED a patient (the required validation did not fire)"
+    # D-hardening (run 34901913438 BUG-2): corroborate a 'created' verdict
+    # against the count badge before firing the P1 — an OCR-garbled 'closed'
+    # with the dialog actually open must not masquerade as a product defect.
+    ensure_dialog_closed "pc1-empty" add_patient_dialog_visible || true
+    read_patient_count
+    if [ "$PATIENTS_COUNT" = "$PC0_BEFORE" ] || [ "$PATIENTS_COUNT" = "0" ] || [ "$PATIENTS_COUNT" = "unreadable" ]; then
+      bug D PATIENTS_REQUIRED_FIELDS "the 'created' verdict could not be corroborated (count '$PATIENTS_COUNT' vs '$PC0_BEFORE' before) — a dialog-closed misread, no creation proven (harness D; the native validation may have fired correctly)"
+    else
+      bug P1 PATIENTS_REQUIRED_FIELDS "the empty-names submit CREATED a patient (count '$PC0_BEFORE' → '$PATIENTS_COUNT'; the required validation did not fire)"
+    fi
   else
     bug D PATIENTS_REQUIRED_FIELDS "the empty-submit probe could not run (a harness step failed — recorded honestly)"
   fi
@@ -3597,8 +3651,7 @@ focus_patients() {
   create_patient_deep "" "Probe" "" "" "" "" "pc1b-lastonly" >/dev/null 2>&1 || PC1B_RC=$?
   if [ "$PC1B_RC" = "2" ]; then
     probe "pc1b: the last-name-only submit was rejected (the dialog stayed open)"
-    press_escape
-    sleep 1
+    ensure_dialog_closed "pc1b-lastonly" add_patient_dialog_visible || true
   elif [ "$PC1B_RC" = "0" ]; then
     bug P1 PATIENTS_REQUIRED_FIELDS "the first-name-empty submit CREATED a patient (the required validation did not fire on the first field)"
   fi
@@ -3878,7 +3931,7 @@ focus_patients() {
       sleep 3
     fi
     ocr_capture || true
-    if ! ocr_grep "Add New Patient"; then
+    if ! add_patient_dialog_visible; then
       ZED_CREATED=1
       snap "pc10-submitted-double" || true
     fi
@@ -4036,12 +4089,10 @@ focus_patients() {
       snap "pe1-form-typed" || true
       v_click "Cancel" "pe1-cancel" "" || true
       sleep 2
-      ocr_capture || true
-      if ocr_grep "Edit Patient"; then
-        press_escape
-        sleep 1
-      fi
-      wait_text_gone "Edit Patient" 8 "pe1-close" || true
+      # D-fix (BUG-2 class): VERIFIED close via the multi-needle edit-dialog
+      # check — the 999-999-9999 absence check below is only honest once the
+      # dialog (which displays the typed value) is really gone.
+      ensure_dialog_closed "pe1-close" edit_patient_dialog_visible || true
       ocr_grep "999-999-9999" && bug P1 CANCEL_EDIT "the canceled edit's phone (999-999-9999) is VISIBLE after the cancel — a canceled edit must not persist"
       if ! ocr_grep "999-999-9999"; then
         qa_cap CANCEL_EDIT "GREEN (the typed-but-canceled phone did not persist; John's real phone is unchanged)"
@@ -4069,7 +4120,7 @@ focus_patients() {
       if v_click_near_anchor_y "Save Changes" "Cancel" "pe2-save" 40; then
         sleep 3
         ocr_capture || true
-        if ocr_grep "Edit Patient"; then
+        if edit_patient_dialog_visible; then
           local b3=0
           while [ "$b3" -lt 4 ]; do
             scroll_burst down 500 400
@@ -4134,7 +4185,7 @@ focus_patients() {
       fi
       sleep 2
       ocr_capture || true
-      if ocr_grep "Edit Patient"; then PE3_RC=1; press_escape; sleep 1; fi
+      if edit_patient_dialog_visible; then PE3_RC=1; press_escape; sleep 1; fi
       if [ "$PE3_RC" = "0" ] && v_scroll_find "0304" 6; then
         qa_cap PATIENT_EDIT_SINGLE_FIELD "GREEN (Élodie's single-field phone edit saved — the new +33 number visible)"
         surface_row "Single-field edit" "Edit Patient dialog → one field → Save" "—" "only the edited field changes" "edited Élodie's phone only; verified" "GREEN" "pe3-*" "OK"
@@ -4173,7 +4224,7 @@ focus_patients() {
         fi
         sleep 2
         ocr_capture || true
-        if ocr_grep "Edit Patient"; then PE4_RC=1; press_escape; sleep 1; fi
+        if edit_patient_dialog_visible; then PE4_RC=1; press_escape; sleep 1; fi
         v_click "Dashboard" "pe4-back-r$round" "Add Patient" || true
         wait_for_ocr "Add Patient" 30 "pe4-dash-r$round" || true
         v_scroll_top 10 || true
@@ -4222,7 +4273,7 @@ focus_patients() {
       fi
       sleep 2
       ocr_capture || true
-      if ocr_grep "Edit Patient"; then PE6_RC=1; press_escape; sleep 1; fi
+      if edit_patient_dialog_visible; then PE6_RC=1; press_escape; sleep 1; fi
       if [ "$PE6_RC" = "0" ] && v_scroll_find "République" 8; then
         qa_cap PATIENT_EDIT_UNICODE "GREEN (the accented address edit (22 Avenue de la République) saved and is visible)"
         surface_row "Unicode edit" "Edit Patient dialog → accented address → Save" "—" "accented values edit and persist" "edited the address; 'République' visible" "GREEN" "pe6-*" "OK"
@@ -4263,7 +4314,7 @@ focus_patients() {
       fi
       sleep 2
       ocr_capture || true
-      if ocr_grep "Edit Patient"; then PE5_RC=1; press_escape; sleep 1; fi
+      if edit_patient_dialog_visible; then PE5_RC=1; press_escape; sleep 1; fi
       if [ "$PE5_RC" = "0" ]; then
         # her phone must be GONE and the skeleton empty-state must NOT
         # appear (she still has email + address + note)
@@ -4329,7 +4380,7 @@ focus_patients() {
       fi
       sleep 2
       ocr_capture || true
-      if ocr_grep "Edit Patient"; then PE7_RC=1; press_escape; sleep 1; fi
+      if edit_patient_dialog_visible; then PE7_RC=1; press_escape; sleep 1; fi
       if [ "$PE7_RC" = "0" ]; then
         if v_scroll_find "ONLY-MOHAMMAD-CHARLIE" 8; then
           qa_cap PATIENT_EDIT_ARABIC "GREEN (the Arabic-mixed note edit saved — the sentinel persists on the detail)"
@@ -4815,7 +4866,7 @@ focus_patients() {
       v_click "Dashboard" "nv2-nav-away" "" || true
       sleep 2
       ocr_capture || true
-      if ocr_grep "Edit Patient"; then
+      if edit_patient_dialog_visible; then
         press_escape
         sleep 1
         v_click "Dashboard" "nv2-nav-away-2" "Add Patient" || true

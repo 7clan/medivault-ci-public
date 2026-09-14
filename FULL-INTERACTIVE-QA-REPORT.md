@@ -188,3 +188,47 @@ crash-report watch, and the teardown.
 
 (to be updated after each focus: capability fields, screenshot totals,
 bug-register deltas, surface-map completeness, next-focus safety verdict)
+
+---
+
+## Patients focus — RUN 1 (34901913438 @ 8111001, 2026-09-14 22:00–22:21)
+
+**Outcome: P1-RED — honest first-red stop at PC1 (after 31 screenshots).**
+
+The build job GREEN (the DMG hash-verified from this run's commit); the GUI
+job GREEN through preflight → install → launch → registration → handoff →
+account creation → dashboard, then the patients battery started:
+
+- **PC0** — the cancel-create probe could not open the dialog: a **D**
+  (the count-read helper had scrolled the dashboard header's Add Patient
+  button out of the OCR view — BUG-PD1, evidence bug-01 + the OCR context).
+- **PC1** — the empty-names submit: the harness reported **P1**
+  PATIENTS_REQUIRED_FIELDS "the empty-names submit CREATED a patient". The
+  run's own evidence PROVES this a harness misclassification (**D**): the
+  three post-submit captures show the dialog STILL OPEN, the native
+  "Fill out this field" bubble visible, the typed note intact, and the
+  count badge still 0 — the native required validation FIRED and blocked
+  the submit exactly as designed; the dialog-closed verdict had anchored on
+  the OCR-garbled dialog title ('Dochhnord'/'Nachhnord' after the submit
+  fallback's scroll bursts) — BUG-P1→D with the full proof chain.
+- The run stopped at the P1 per the discipline (exit code 3); the artifact
+  (10371696057, 35 files: 31 screenshots + probes.log + BUG-REGISTER +
+  capability report + surface map) preserved and mirrored locally.
+
+**Disposition per first-red discipline:** the initial P1 was DISPROVEN by
+the evidence (no patient was created — the count never moved; the rejection
+bubble is in the screenshots) → reclassified D; the two D root causes are
+fixed in the harness (multi-needle dialog-presence checks
+`add_patient_dialog_visible`/`edit_patient_dialog_visible`, verified closes
+`ensure_dialog_closed`, the PC0 scroll fix, the count-badge O→0
+normalization, and the PC1 rc=0 count corroboration); full static
+validation re-run GREEN (bash -n, bash-3.2, def-before-use v2 at 64
+functions / 1946 call sites, 164 surface_row sites all 8 args, frozen
+lanes byte-identical, secret/PHI scans clean); targeted ARM64 rerun
+dispatched on the synced mirror.
+
+**Honest capability state from run 1** (before the stop): FRESH_STATE yes,
+DMG_HASH GREEN, INSTALL GREEN, window/first-run/registration/SMAppService/
+API/PostgreSQL/handoff/account-creation ALL GREEN — the identical
+foundation the surface and account focuses proved; the patients-specific
+probes begin at PC0.
