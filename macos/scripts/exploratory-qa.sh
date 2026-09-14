@@ -1840,9 +1840,47 @@ DOC_PASS="$(cat "$DOC_PASS_FILE")"
 SETUP_CONSUMED="no"
 SETUP_API_ATTEMPTS=0
 
+setup_after_submit_scroll_top() { # bring the form-top (and any error block
+  # or native bubble anchored there) back into OCR view before the checks —
+  # a blocked submit AUTO-SCROLLS to the first invalid field, and a React
+  # rejection renders at the form top: from the page top both are visible.
+  v_scroll_find "Full Name" 5 no up || true
+}
+
+setup_reject_grep() { # <needles...> — OCR a rejection text across up to 4
+  # scroll-varied re-read positions; echoes the MATCHED needle (empty = none)
+  # (run 34880579779, class D) the setup form's error block OCRs CLEANLY at
+  # mid-viewport positions (SU2's 'Password must be at least 6 characters.'
+  # was read perfectly at y~430) but GARBLES near the viewport top edge
+  # (SU3's 'Passwords do not match.' became 'Passworas ao not maicn.' — the
+  # gate FIRED and the pixels prove it, only the needle could not match).
+  # Each re-read scrolls one 2-line burst up (the content moves ~40px down
+  # the viewport, away from the chrome) and re-captures.
+  local pos=0 matched="" n
+  while [ "$pos" -le 3 ] && [ -z "$matched" ]; do
+    ocr_capture || true
+    for n in "$@"; do
+      if [ -n "$n" ] && ocr_grep "$n"; then matched="$n"; break; fi
+    done
+    if [ -z "$matched" ] && [ "$pos" -lt 3 ]; then
+      scroll_burst up 700 400 2
+      sleep 1
+    fi
+    pos=$(( pos + 1 ))
+  done
+  printf '%s' "$matched"
+}
+
 setup_form_alive() { # is the one-time setup form still on screen?
+  # (run 34880579779, class D) the title needle alone is SCROLL-POSITION
+  # dependent: after the fill pattern's down-scroll the title sits above
+  # the viewport while the form itself is alive — SU4/SU5 were wrongly
+  # skipped. The first field label is visible at BOTH positions and exists
+  # only on the setup form (the Add Patient dialog uses First/Last Name;
+  # the login screen has no Full Name field).
   ocr_capture || return 1
-  ocr_grep "Create Your Account"
+  if ocr_grep "Create Your Account"; then return 0; fi
+  ocr_grep "Full Name"
 }
 
 # (run 34877260555 first-red, class D) the setup-form GEOMETRY: a rejected
@@ -1874,13 +1912,6 @@ setup_fill_form() { # <name> <email> <password> <confirm> <stem-prefix>
     return 1
   fi
   v_type_into "Confirm" "$conf" "${stem}-confirm" yes no yes
-}
-
-setup_after_submit_scroll_top() { # bring the form-top (and any error block
-  # or native bubble anchored there) back into OCR view before the checks —
-  # a blocked submit AUTO-SCROLLS to the first invalid field, and a React
-  # rejection renders at the form top: from the page top both are visible.
-  v_scroll_find "Full Name" 5 no up || true
 }
 
 submit_focused_return() { # Return in whatever field currently holds focus
@@ -1932,13 +1963,13 @@ setup_validation_suite() {
   if setup_fill_form "$DOC_NAME" "$DOC_EMAIL" "Ab1!" "Ab1!" "su2"; then
     submit_focused_return
     setup_after_submit_scroll_top
-    ocr_capture || true
-    if ocr_grep "at least 6 characters" || ocr_grep "are required"; then
+    SU2_HIT="$(setup_reject_grep "at least 6 characters" "are required")"
+    if [ -n "$SU2_HIT" ]; then
       snap "su2-weak-rejected" || true
       record_inventory "setup form after the weak-password submission"
-      qa_cap WEAK_PASSWORD "GREEN (the short-password submit was visibly rejected — the app's own gate text)"
-      surface_row "Weak password rejection" "all fields filled; Password + Confirm = 'Ab1!' then submit" "password strength checklist + submit" "a too-short password cannot create the account" "filled the whole form (so native validation passes) + Return; the visible rejection was OCR-verified" "GREEN (rejected)" "su2-weak-rejected" "OK"
-    elif ocr_grep "fill out this field"; then
+      qa_cap WEAK_PASSWORD "GREEN (the short-password submit was visibly rejected — the app's own gate text; matched needle: '$SU2_HIT')"
+      surface_row "Weak password rejection" "all fields filled; Password + Confirm = 'Ab1!' then submit" "password strength checklist + submit" "a too-short password cannot create the account" "filled the whole form (so native validation passes) + Return; the visible rejection was OCR-verified (needle: $SU2_HIT)" "GREEN (rejected)" "su2-weak-rejected" "OK"
+    elif [ -n "$(setup_reject_grep "fill out this field")" ]; then
       bug D SU2_NATIVE "the weak-password submit was STILL blocked by the native required validation (a field did not take the typing — probe inconclusive; the gate text unproven)"
       qa_cap WEAK_PASSWORD "INCONCLUSIVE (the native required validation blocked the submit — a typing glitch; see the D record)"
     elif ocr_grep "Add Patient"; then
@@ -1958,18 +1989,18 @@ setup_validation_suite() {
   if setup_fill_form "$DOC_NAME" "$DOC_EMAIL" "$DOC_PASS" "Mismatch-Pass-99" "su3"; then
     submit_focused_return
     setup_after_submit_scroll_top
-    ocr_capture || true
-    if ocr_grep "do not match"; then
+    SU3_HIT="$(setup_reject_grep "do not match")"
+    if [ -n "$SU3_HIT" ]; then
       snap "su3-mismatch-rejected" || true
       record_inventory "setup form after the mismatch submission"
       qa_cap PASSWORD_MISMATCH "GREEN (the mismatched confirm was visibly rejected — 'do not match')"
-      surface_row "Confirmation mismatch rejection" "all fields filled; Password = valid secret, Confirm = different value, then submit" "the two masked fields + submit" "mismatched passwords cannot create the account" "filled the whole form + Return; the 'do not match' rejection was OCR-verified" "GREEN (rejected)" "su3-mismatch-rejected" "OK"
-    elif ocr_grep "are required"; then
+      surface_row "Confirmation mismatch rejection" "all fields filled; Password = valid secret, Confirm = different value, then submit" "the two masked fields + submit" "mismatched passwords cannot create the account" "filled the whole form + Return; the 'do not match' rejection was OCR-verified (scroll-varied re-read)" "GREEN (rejected)" "su3-mismatch-rejected" "OK"
+    elif [ -n "$(setup_reject_grep "are required")" ]; then
       # Equal-value typing glitch or gate miss: the submit was STILL
       # rejected server-side — the mismatch gate itself is not proven.
       bug D SU3_INCONCLUSIVE "the mismatch rejection text was not observed; the submit was still rejected ('are required') — the mismatch gate is unproven this run"
       qa_cap PASSWORD_MISMATCH "INCONCLUSIVE (submit still rejected server-side; the specific gate text not OCR-observed)"
-    elif ocr_grep "fill out this field"; then
+    elif [ -n "$(setup_reject_grep "fill out this field")" ]; then
       bug D SU3_NATIVE "the mismatch submit was blocked by the native required validation (a field did not take the typing — probe inconclusive)"
       qa_cap PASSWORD_MISMATCH "INCONCLUSIVE (the native required validation blocked the submit — see the D record)"
     elif ocr_grep "Add Patient"; then
@@ -1995,7 +2026,8 @@ setup_validation_suite() {
       setup_after_submit_scroll_top
       SETUP_API_ATTEMPTS=$(( SETUP_API_ATTEMPTS + 1 ))
       local su4_done=0
-      if wait_for_ocr "at least 10 characters" 30 "su4-server-policy-rejection"; then
+      SU4_HIT="$(setup_reject_grep "at least 10 characters")"
+      if [ -n "$SU4_HIT" ]; then
         su4_done=1
         snap "su4-boundary-rejected" || true
         record_inventory "setup form after the 8-char boundary submission"
@@ -2026,6 +2058,7 @@ setup_validation_suite() {
     fi
   else
     probe "SU4 skipped — the setup form is no longer on screen (an earlier probe consumed it)"
+    qa_cap PASSWORD_BOUNDARY "NOT EXERCISED this run (the form-alive check failed after SU3 — honest skip; see the probe log)"
   fi
 
   # ---- SU5: malformed email ----------------------------------------------
@@ -2049,11 +2082,12 @@ setup_validation_suite() {
       setup_after_submit_scroll_top
       local su5_rej=0
       local su5_native=0
-      ocr_capture || true
-      if ocr_grep "include an" || ocr_grep "email address"; then su5_rej=1; su5_native=1; fi
-      if [ "$su5_rej" = "0" ] && ocr_grep "at least 10 characters"; then su5_rej=1; fi
-      if [ "$su5_rej" = "0" ] && ocr_grep "are required"; then su5_rej=1; fi
-      if [ "$su5_rej" = "0" ] && ocr_grep "valid"; then su5_rej=1; fi
+      # scroll-varied re-reads: the native bubble anchors at the Email field
+      # (auto-scrolled into view by the blocked submit) and the React error
+      # renders at the form top — both OCR better away from the viewport top
+      SU5_NATIVE_HIT="$(setup_reject_grep "include an" "email address")"
+      if [ -n "$SU5_NATIVE_HIT" ]; then su5_rej=1; su5_native=1; fi
+      if [ "$su5_rej" = "0" ] && [ -n "$(setup_reject_grep "at least 10 characters" "are required" "valid")" ]; then su5_rej=1; fi
       # API-attempt accounting (run 34873498636 refinement): a NATIVE-bubble
       # rejection proves the submit never left the browser — it costs NO
       # real setup-POST budget. Every other outcome (accepted by the server,
@@ -2108,7 +2142,10 @@ setup_validation_suite() {
       qa_cap INVALID_EMAIL "INCONCLUSIVE (harness typing limit — the probe did not submit)"
     fi
   else
-    probe "SU5 skipped — the setup form was already consumed (SETUP_CONSUMED=$SETUP_CONSUMED)"
+    probe "SU5 skipped — the setup form was already consumed (SETUP_CONSUMED=$SETUP_CONSUMED) or not detected alive"
+    if [ "$SETUP_CONSUMED" != "yes" ]; then
+      qa_cap INVALID_EMAIL "NOT EXERCISED this run (the form-alive check failed — honest skip; see the probe log)"
+    fi
   fi
   note "setup validation suite complete: SETUP_CONSUMED=$SETUP_CONSUMED SETUP_API_ATTEMPTS=$SETUP_API_ATTEMPTS"
 }
@@ -3160,17 +3197,21 @@ focus_account() {
     probe "A9 protected state after the 3rd logout: pre-auth screen only (consistent with A2b)"
   fi
   surface_section "Duplicate account/setup behavior (focus account)"
-  # A9 entry click with OCR-retry: (run 34873498636 first-red, class D —
-  # Vision line-dropping variance) the Sign In screen's bottom card content
-  # ('First time using MediVault?' + the 'Set Up Your Account' button + the
-  # feature cards) was OCR-read fine at A2b-era captures but DROPPED at the
-  # A9-era captures — the needle was not locatable, NO click was attempted,
-  # and the original P3 record misattributed an OCR miss to the product.
-  # v_click re-captures on every call, so up to 3 fresh attempts genuinely
-  # re-read the screen; only a located-but-inert click remains a P3.
+  # A9 entry click with OCR-retry: (runs 34873498636 + 34880579779
+  # first-reds, class D — Vision bottom-card line-dropping variance) the
+  # Sign In screen's bottom card content ('First time using MediVault?' +
+  # the 'Set Up Your Account' button + the feature cards) was OCR-read at
+  # the A2b-era captures but persistently DROPPED at the A9-era captures —
+  # the needle was not locatable, NO click was attempted, and the original
+  # P3 record misattributed an OCR miss to the product. The login column
+  # (~800px) is scrollable on the 768px viewport: each retry scrolls a
+  # small 2-line burst DOWN (the bottom card rises into view) and
+  # re-captures — v_click re-captures on every call, so the retries
+  # genuinely re-read the screen. Only a located-but-inert click remains
+  # a product P3.
   A9_ENTRY_CLICKED=0
   A9_ENTRY_ATTEMPT=0
-  while [ "$A9_ENTRY_ATTEMPT" -lt 3 ]; do
+  while [ "$A9_ENTRY_ATTEMPT" -lt 4 ]; do
     ocr_capture || true
     if ocr_grep "Set Up Your Account"; then
       if v_click "Set Up Your Account" "a9-setup-entry-$A9_ENTRY_ATTEMPT" "Create Your Account"; then
@@ -3180,8 +3221,9 @@ focus_account() {
         probe "A9: the entry button was located but the click produced no verified change — one more attempt (a real user would look again)"
       fi
     else
-      probe "A9: 'Set Up Your Account' not OCR-visible this capture (Vision bottom-card line-drop variance — the A2b-era captures read it) — recapturing"
+      probe "A9: 'Set Up Your Account' not OCR-visible this capture (Vision bottom-card line-drop variance — the A2b-era captures read it) — scrolling a touch and recapturing"
       snap "a9-entry-ocr-retry-$A9_ENTRY_ATTEMPT" || true
+      scroll_burst down 700 400 2
     fi
     A9_ENTRY_ATTEMPT=$(( A9_ENTRY_ATTEMPT + 1 ))
     [ "$A9_ENTRY_CLICKED" = "1" ] || sleep 2
@@ -3196,10 +3238,10 @@ focus_account() {
         submit_focused_return
         setup_after_submit_scroll_top
         SETUP_API_ATTEMPTS=$(( SETUP_API_ATTEMPTS + 1 ))
-        if wait_for_ocr "already been completed" 25 "duplicate-setup-rejected"; then
+        if [ -n "$(setup_reject_grep "already been completed")" ]; then
           snap "a9-duplicate-rejected" || true
           qa_cap DUPLICATE_SETUP "GREEN (the duplicate setup submission was rejected with the visible server error 'Initial setup has already been completed')"
-          surface_row "Duplicate setup rejection" "the setup form filled with a second synthetic identity + submit" "the one-time form + submit" "a second account cannot be created" "submitted; the 409 rejection text was OCR-verified" "GREEN (rejected)" "a9-duplicate-rejected" "OK"
+          surface_row "Duplicate setup rejection" "the setup form filled with a second synthetic identity + submit" "the one-time form + submit" "a second account cannot be created" "submitted; the 409 rejection text was OCR-verified (scroll-varied re-read)" "GREEN (rejected)" "a9-duplicate-rejected" "OK"
         elif wait_for_ocr "Too many requests" 15 "duplicate-setup-rate-limited"; then
           snap "a9-duplicate-rate-limited" || true
           bug ENV DUPLICATE_SETUP_RATE "the duplicate-setup probe hit the setup rate limiter (budget consumed by the validation probes) — the rejection itself is still a rejection; the SetupAlreadyCompleted guard was not reached this run"
