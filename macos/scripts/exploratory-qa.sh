@@ -3392,6 +3392,14 @@ create_patient_deep() { # <first> <last> <phone> <email> <address> <notes> <stem
     else
       probe "create[$stem]: the DOB digits could not be typed/verified (type=date automation limit — honest record; the field is optional)"
     fi
+    # D-fix (run 34917898200 PC7): a type=date field left mid-segment-edit
+    # makes the form's native validation reject the WHOLE submit with
+    # 'Invalid value' (the value is not committed while a segment is
+    # selected — observed blocking the long-name create with no API POST
+    # ever sent). A real user tabs out of the field; the harness must too.
+    # Tab commits the segments and moves focus to the next field.
+    osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 48' 10 || true
+    sleep 1
   fi
   snap "${stem}-form-filled" || true
   [ "$nfail" -gt 0 ] && probe "create[$stem]: $nfail typing step(s) not visually verified (kept — the dialog-close + row + count verify is the functional proof)"
