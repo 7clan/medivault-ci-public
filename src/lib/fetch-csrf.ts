@@ -139,9 +139,11 @@ function install(): void {
       refreshInFlight = (async () => {
         try {
           const token = await bootstrapCsrfToken()
-          const headers: Record<string, string> = {
-            'Content-Type': 'application/json',
-          }
+          // No Content-Type: this POST has NO body, and Fastify rejects an
+          // empty body when the content-type claims JSON (400, observed in
+          // run 34915072549's backend-api.log — the refresh never reached
+          // its handler). A bodyless POST needs no content-type at all.
+          const headers: Record<string, string> = {}
           if (token) headers['x-csrf-token'] = token
           const res = await originalFetch('/api/auth/refresh', {
             method: 'POST',
