@@ -1018,6 +1018,20 @@ v_click_edit_pencil() { # <patient-full-name> <stem> [yband-adj]
   # re-center the band on the measured icon row (name_top-13). Default 0 =
   # byte-identical behavior for every pre-existing name-anchored call site.
   local name="$1" stem="$2" yadj="${3:-0}"
+  # (run 34985384528, class D — pe3/pe4): a detail opened from a SEARCH-row
+  # click can land with the banner SCROLLED OFF-SCREEN (the post-open OCR
+  # shows the mid-page sections — 'No prescriptions yet'/'Clinical Notes' —
+  # and NO banner), so the anchor (name/phone subline) is 'not found on
+  # screen' and the edit battery D/P1s even though the right detail IS
+  # open. Scroll the detail to the TOP (the banner) before the anchor
+  # lookup — the same top-restore scan_detail_multi already does (8 up
+  # bursts are a no-op when already at the top).
+  local up=0
+  while [ "$up" -lt 8 ]; do
+    scroll_burst up
+    sleep 1
+    up=$((up + 1))
+  done
   ocr_capture || return 1
   if ! ocr_lookup "$name" "first"; then
     probe "vclick-pencil[$stem]: anchor text '$name' not found on screen — no anchor, no click"
@@ -4108,7 +4122,16 @@ focus_patients() {
   # (run 34930796719 D-fix): the row-needle is John's unique phone line —
   # the bare 'John Test' name needle prefix-matched the PC8 similar-name
   # cohort rows and opened John Test-Hyphen's detail (the FALSE P0).
-  if open_patient_detail "$PAT_A_FIRST $PAT_A_LAST" "pi-john" "$PAT_A_PHONE"; then
+  # (run 34985384528 D-fix #2): the Recent Patients panel is CAPPED at 8
+  # rows sorted by updatedAt desc (the API's /api/stats take:8) — John,
+  # the OLDEST never-updated record, sits below the cap once the PC8+Zed
+  # cohort fills it, so his row is not rendered on the dashboard at all.
+  # Open him via the proven phone-token SEARCH path instead (the exact
+  # path that opened 1101/1102/1103/0202/0304/0105/0106 with detail-proof
+  # confirmations in run 12). After PE2's edit bumps his updatedAt, the
+  # PV1/nv6/PP row-needle opens (0777) become reachable again (his row
+  # returns to the TOP of the panel).
+  if open_patient_by_phone_token "0101" "$PAT_A_FIRST $PAT_A_LAST" "pi-john" "$PAT_A_PHONE"; then
     scan_detail_multi "$PAT_A_NOTE" "$FOREIGN_ALL"
     if [ "$SCAN_FOREIGN_SEEN" = "yes" ]; then
       bug P0 PATIENT_DATA_ISOLATION "John Test's detail shows another patient's sentinel note ($SCAN_FOREIGN_WHICH) — CROSS-PATIENT DATA LEAK"
@@ -4223,8 +4246,9 @@ focus_patients() {
   # ------------------------------------------------------------------
   note "=== patients PE: the edit battery ==="
 
-  # PE1 — cancel edit: the typed value must NOT persist
-  if open_patient_detail "$PAT_A_FIRST $PAT_A_LAST" "pe1-john" "$PAT_A_PHONE"; then
+  # PE1 — cancel edit: the typed value must NOT persist (John opened via
+  # the phone-token search — his row sits below the 8-row panel cap)
+  if open_patient_by_phone_token "0101" "$PAT_A_FIRST $PAT_A_LAST" "pe1-john" "$PAT_A_PHONE"; then
     if v_click_edit_pencil "$PAT_A_FIRST $PAT_A_LAST" "pe1-edit-open"; then
       v_type_into "Phone" "999-999-9999" "pe1-phone" || true
       snap "pe1-form-typed" || true
@@ -4249,10 +4273,11 @@ focus_patients() {
   fi
 
   # PE2 — multi-field save (phone + note) on John — THE edit that arms the
-  # stale-snapshot regression for the entry-point battery
+  # stale-snapshot regression for the entry-point battery (opened via the
+  # phone-token search — the panel-cap D of run 34985384528)
   v_scroll_top 10 || true
   PE2_RC=0
-  if open_patient_detail "$PAT_A_FIRST $PAT_A_LAST" "pe2-john" "$PAT_A_PHONE"; then
+  if open_patient_by_phone_token "0101" "$PAT_A_FIRST $PAT_A_LAST" "pe2-john" "$PAT_A_PHONE"; then
     if v_click_edit_pencil "$PAT_A_FIRST $PAT_A_LAST" "pe2-edit-open"; then
       v_type_into "Phone" "$JOHN_NEW_PHONE" "pe2-phone" no no yes || true
       v_clear_field "Notes" "pe2-notes-clear" || true

@@ -340,3 +340,55 @@ above)
 - **Evidence**: bug-03-PATIENTDATAISOLATION.png, pc8-1101-detail.png,
   pc8-1101-row-before.png + the 07:10:57 OCR line (the self-consistent
   triple), artifact 10384822943 (201 files).
+
+### BUG-PD4 [D] RECENT_PANEL_CAP_HIDES_John — run 34985384528 (patients focus, run 12)
+
+- **Class**: D — harness targeting defect (three honest bug-D "could not
+  open John's detail" stops: PI, PE1, PE2)
+- **Detail**: the run-10 row-needle fix (the unique row-phone line) is
+  correct — but John's row is NOT RENDERED on the dashboard at all: the
+  Recent Patients panel is `db.patient.findMany({ orderBy: { updatedAt:
+  'desc' }, take: 8 })` (the /api/stats route) — capped at 8 rows sorted
+  by update recency. John, the OLDEST never-updated record, falls below
+  the cap once the PC8 trio + Zed fill it; the scroll searches (6 down +
+  5 up) can never find "+1 555 0101" because it is not on the screen.
+- **Fix (applied, harness-only)**: the pre-edit John opens (PI, PE1,
+  PE2) now use the phone-token SEARCH path (`open_patient_by_phone_token
+  "0101" …`) — the exact path proven 7× in this very run (1101, 1102,
+  1103, 0202, 0304, 0105, 0106 — every one detail-proof confirmed). The
+  post-edit opens (PV1, PNAV-nv6, PP) keep the row-needle: PE2's edit
+  bumps John's updatedAt, returning his row to the TOP of the panel,
+  where "+1 555 0777" is directly clickable.
+- **Evidence**: probes 16:04:00–16:04:32 (the failed row searches), the
+  panel OCR (only the newest 7-8 rows ever render), bug-03/04/05, the
+  /api/stats route source (take:8, updatedAt desc), artifact 10406119085.
+
+### BUG-PD5 [D] DETAIL_OPEN_SCROLLED_PAST_BANNER — run 34985384528 (patients focus, run 12)
+
+- **Class**: D — harness anchoring defect (pe3/pe4 pencil failures; the
+  pe4 failure escalated to the run's stop as a P1)
+- **Detail**: a detail opened from a SEARCH-row click can land with the
+  banner SCROLLED OFF-SCREEN — the post-open OCR shows the mid-page
+  sections ('No prescriptions yet'/'Clinical Notes'/…, which is exactly
+  why detail_open_proof passes) and NO banner. The edit pencil anchors on
+  the banner's name/phone subline → "anchor text not found on screen" →
+  pe3 recorded bug-D, and pe4's round-1 failure escalated to
+  `[bug-P1] PATIENT_EDIT_CONSECUTIVE` — the run's honest stop.
+- **Fix (applied, harness-only)**: `v_click_edit_pencil` now scrolls the
+  detail to the TOP (the banner) before the anchor lookup — the same
+  bounded 8-up-burst top-restore `scan_detail_multi` already performs
+  (a no-op when already at the top). Every pencil call site (pe1-pe7,
+  nv2) is a detail-page context, so the scroll is always safe.
+- **Evidence**: pe3-elodie/pe4-oconnor post-open OCRs (sections visible,
+  no banner), bug-06/07, artifact 10406119085.
+
+### [P1 → D] PATIENT_EDIT_CONSECUTIVE (run 34985384528) — disposition
+
+The run's stopping P1 ("a consecutive-edit round failed") is the pe4
+escalation of BUG-PD5: round 1's pencil could not anchor because the
+detail was opened scrolled past the banner. No product edit was ever
+attempted on O'Connor's record — no evidence of a product defect. With
+the pencil top-restore, PE4's rounds should exercise the real
+consecutive-edit semantics (edit → save → edit again). Reclassified D
+(root cause BUG-PD5); the PE4 probe itself remains the regression test
+for the rerun.

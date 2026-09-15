@@ -395,3 +395,36 @@ Run-11 evidence preserved: artifact 10384822943 (201 files) +
 the GUI job log. Targeted ARM64 rerun dispatched — continuing from the
 exact stopping point (the pc8 sub-checks → PI → PE → PV×8 → PDEL → PNAV
 → PP).
+
+## Patients focus — RUN 12 (34985384528 @ c08fb31, 2026-09-15 14:59–16:24)
+
+The deepest walk of the campaign (~85 min): PC0–PC7 GREEN, PC8 3/3
+creates GREEN (badge 9), **all three pc8 isolation sub-checks GREEN for
+the first time** (own=yes foreign=no for John Tester, john test, and
+John Test-Hyphen — the run-11 fixes proven: row-phone targeting +
+detail_open_proof + the RELATIVIZED foreign list), then PI: **Jane,
+Muhammad, Élodie, O'Connor, and the long-name patient ALL GREEN (own=yes
+foreign=no)** — five real isolation scans. John's PI open recorded an
+honest D (BUG-PD4: his row sits below the 8-row Recent Patients panel
+cap — the API sorts by updatedAt and takes 8; John is the oldest
+never-updated record). PE1/PE2 hit the same cap (D). PE3 (Élodie) and
+PE4 (O'Connor) opened correctly via the phone-token search — but the
+edit pencil could not anchor (BUG-PD5: the search-row click opens the
+detail SCROLLED PAST the banner; the anchor subline is off-screen) —
+pe4's round failure escalated to the run's stop P1 (reclassified D — the
+BUG-PD5 escalation; no product edit was ever attempted).
+
+Net: the product's data isolation is now proven across SIX real detail
+scans (5 PI + 3 pc8 sub-checks) — zero foreign sentinels anywhere. The
+PS shadcn-select D and the DOB ENV limit re-recorded unchanged.
+
+Fixes shipped for the rerun (harness-only, +30/−5): the pre-edit John
+opens (PI/PE1/PE2) via the proven phone-token search path; the pencil
+top-restore before the anchor lookup. Static validation all GREEN
+(bash -n, no bash-4 constructs, def-before-use 68 fns/196 top-level
+calls, surface_row 165×8, frozen lanes, secret/PHI clean).
+
+Run-12 evidence preserved: artifact 10406119085 (302 files) + the GUI
+job log. Targeted ARM64 rerun dispatched — continuing from the exact
+stopping point (PE4's consecutive edits → PE5-PE7 → PV×8 → PDEL →
+PNAV → PP).
