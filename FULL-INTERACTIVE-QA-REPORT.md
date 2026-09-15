@@ -460,3 +460,33 @@ surface_row 165×8, frozen lanes, secret/PHI clean).
 Run-13 evidence preserved: artifact 10419362290 (311 files). Targeted
 ARM64 rerun dispatched — continuing from the exact stopping point
 (PE2's edit → PE3–PE7 → PV×8 → PDEL → PNAV → PP → the final report).
+
+## Patients focus — RUN 14 (35026560477 @ 6f1b6b6, 2026-09-15 21:36–23:00)
+
+The arming edit is DONE: PC0–PC10 GREEN, all NINE isolation scans GREEN
+again (stable), **PE1 Cancel-edit GREEN — earned this time** (the xmin
+filter targeted the dialog's Phone field (312,461); the typed 999
+verified visible; the Escape-cancel closed the dialog; the value did
+not persist), and **PE2 Multi-field edit GREEN** — the edit that arms
+the stale-snapshot regression: John's phone → +1 555 0777, note → v2,
+the old phone gone.
+
+The run then stopped at the NEXT harness layer: pe3 (Élodie) and pe4
+(O'Connor) pencil activations failed — their calls anchor on the CONTACT
+SUBLINE (their names OCR unreliably: É, ', Arabic), and the icon band
+was derived from the anchor's own y (≈370) with a stale −38 adjustment:
+the real icon row sits at the NAME's band (y≈164..199), ~171pt above the
+phone line — the scan found the CALL/EMAIL action icons at the wrong
+band and every fallback missed. pe4's round failure escalated to the
+stopping P1 (reclassified D — BUG-PD7; no product edit was attempted).
+
+Fix shipped (harness-only, +27/−3): the pencil band (and fallback y)
+now derives from the TOPMOST banner content row (the name/avatar line)
+— independent of the anchor's position; the anchor still gates the
+right patient. Static validation all GREEN (bash -n, no bash-4
+constructs, def-before-use 68 fns, surface_row 165×8, frozen lanes,
+secret/PHI clean).
+
+Run-14 evidence preserved: artifact (330 files). Targeted ARM64 rerun
+dispatched — continuing from the exact stopping point (pe3-pe7 edits →
+PV×8 → PDEL → PNAV → PP → the final report).

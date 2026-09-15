@@ -1043,8 +1043,25 @@ v_click_edit_pencil() { # <patient-full-name> <stem> [yband-adj]
   # the fixed fallbacks hit pure gradient. Scan an ASYMMETRIC band around
   # (name_top - 13) ± 22 (covers name_top-35 .. name_top+9), then prefer the
   # RIGHT-side clusters (x>700): the icons are [report | EDIT | trash].
-  local band_cy x0
-  band_cy=$(( OCR_HIT_Y - 13 + yadj ))
+  # (run 35026560477, class D — the phone-anchored band): the icons sit at
+  # the NAME's band (the banner's top row), NOT at the anchor's own y —
+  # the phone/email subline sits ~171pt BELOW the name in the current
+  # layout, so the old -38 yadj put the band at y≈319 where the scan found
+  # the CALL/EMAIL action icons instead and every fallback missed the edit
+  # row (pe3 D + the pe4 P1). Derive the band from the TOPMOST CONTENT
+  # LINE (x≥200 — right of the sidebar, y 140..400 — below the app header/
+  # tabs, within the banner): the patient name/avatar row. The yadj is
+  # kept ONLY as the legacy fallback when no content line is found; the
+  # anchor itself still verifies the right patient's detail is open.
+  local band_cy x0 band_src
+  band_src="$(printf '%s\n' "$OCR_TEXT" | awk -F'|' '$1=="LINE" {y=$4+0; x=$3+0; if (y>=140 && y<=400 && x>=200 && (best=="" || y<best)) best=y} END {print (best=="" ? "" : best)}')"
+  if [ -n "$band_src" ]; then
+    band_cy=$(( band_src - 13 ))
+    probe "vclick-pencil[$stem]: icon band from the topmost banner row y=$band_src → band center y=$band_cy"
+  else
+    band_cy=$(( OCR_HIT_Y - 13 + yadj ))
+    probe "vclick-pencil[$stem]: no banner row found — band from the anchor y=$OCR_HIT_Y (adj $yadj) → band center y=$band_cy"
+  fi
   x0=$(( OCR_HIT_X + OCR_HIT_W + 30 ))
   probe "vclick-pencil[$stem]: anchor name '$name' at ($OCR_HIT_X,$OCR_HIT_Y) — icon band center y=$band_cy, scan from x=$x0"
   if [ -n "$MV_ICONSCAN" ]; then
@@ -1084,8 +1101,15 @@ v_click_edit_pencil() { # <patient-full-name> <stem> [yband-adj]
   # OCR-anchored fallback at the MEASURED icon band (icons y ≈ name_top-15;
   # pencil ≈ x 902 with the fitted window). Each candidate is VERIFIED;
   # Escape dismisses anything opened by a miss (report/trash).
+  # (run 35026560477): the fallback y also follows the topmost banner row
+  # when found — the phone-anchored calls otherwise fall 171pt below the
+  # icon row and every candidate misses.
   local cand tx ty2
-  ty2=$(( OCR_HIT_Y - 15 + yadj ))
+  if [ -n "$band_src" ]; then
+    ty2=$(( band_src - 15 ))
+  else
+    ty2=$(( OCR_HIT_Y - 15 + yadj ))
+  fi
   for cand in 902 920 884 860 944; do
     tx="$cand"
     probe "vclick-pencil[$stem]: anchored fallback click at ($tx,$ty2) (the measured icon band)"

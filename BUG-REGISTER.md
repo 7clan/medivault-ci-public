@@ -434,3 +434,36 @@ for the rerun.
   evidence).
 - **Evidence**: pe1/pe2 label hits at (141,351), the post-click OCRs
   (dashboard, no dialog), bug-03, artifact 10419362290 (311 files).
+
+### BUG-PD7 [D] PENCIL_BAND_FROM_ANCHOR_Y — run 35026560477 (patients focus, run 14)
+
+- **Class**: D — harness targeting defect (pe3 D + the pe4 consecutive
+  P1 — the run's stop)
+- **Detail**: the edit-pencil's icon band was derived from the ANCHOR's
+  own y (anchor_y − 13 + yadj). For the NAME-anchored calls (pe1/pe2/nv2)
+  that is correct — the icons sit at the name's band (y≈164..199,
+  empirically proven by the successful (902,184) fallback). But the
+  phone-anchored calls (pe3-pe7: Élodie/O'Connor/Muhammad — their names
+  OCR unreliably due to accents/apostrophe/Arabic) anchor on the contact
+  subline at y≈370, ~171pt BELOW the name in the current layout; the
+  stale -38 yadj put the band at y≈319, where the icon scan found the
+  CALL/EMAIL action icons (and clicking them did nothing) and every
+  fallback candidate (902/920/884/860/944, y=317) missed the edit row.
+- **Fix (applied, harness-only, +27/−3)**: the band (and the fallback y)
+  is now derived from the TOPMOST CONTENT LINE of the detail banner —
+  the patient name/avatar row (x≥200 — right of the sidebar, y 140..400
+  — below the app header/tabs): band_cy = row_y − 13, fallback
+  ty2 = row_y − 15, INDEPENDENT of the anchor's own position (the anchor
+  still verifies the right patient's detail is open). The yadj survives
+  only as the legacy fallback when no banner row is found. Functional
+  test: the avatar row y=186 → band 173 / fallback 171 — both inside the
+  proven icon row (164..199); the old phone-anchored band 319 → outside.
+- **Also proven in run 14 (the run-13 fix held)**: pe1's Cancel-edit
+  GREEN is now EARNED (the xmin filter targeted the dialog's Phone
+  field at (312,461) — typing verified visible — vs. the banner label
+  at (141,351) that dismissed the modal in run 13), and PE2's
+  multi-field edit GREEN (the arming edit saved: John's phone
+  +1 555 0777 + note v2).
+- **Evidence**: pe3/pe4 pencil probes (the (701,297) cluster = the
+  action icons; the y=317 fallbacks), pe1/pe2 GREENs, bug-03/04,
+  artifact (run 14, 330 files).
