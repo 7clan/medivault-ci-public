@@ -3916,6 +3916,11 @@ focus_patients() {
   # (the API has no uniqueness constraint — the UI must keep them SEPARATE)
   note "=== patients PC8: the duplicate/similar-name cohort ==="
   local sim_rc=0 sim_n=0
+  # D-fix (run 34927416875 PC8a): PC7's row verification leaves the view
+  # scrolled down at the patients list — scroll the header button back
+  # into view before the first dialog-open click (the same class as the
+  # PC0 fix; PC8b/PC8c already had it).
+  v_scroll_top 10 || true
   create_patient_deep "John" "Tester" "+1 555 1101" "john.tester@example.invalid" "" "ONLY-TESTER-GOLF" "pc8a-tester" >/dev/null 2>&1 || sim_rc=$?
   [ "$sim_rc" = "0" ] && sim_n=$((sim_n + 1))
   v_scroll_top 10 || true
@@ -3967,6 +3972,9 @@ focus_patients() {
   # NOT create a second patient — the human-mistake create probe)
   note "=== patients PC10: the double-submit create (Zed) ==="
   ZED_CREATED=0
+  # D-fix (the PC8a class, applied preemptively): the PC8 verification
+  # loop can leave the view scrolled — restore the header button first.
+  v_scroll_top 10 || true
   if v_click "Add Patient" "pc10-open" "First Name"; then
     v_type_into "First Name" "$PAT_ZED_FIRST" "pc10-first" || true
     v_type_into "Last Name" "$PAT_ZED_LAST" "pc10-last" || true
