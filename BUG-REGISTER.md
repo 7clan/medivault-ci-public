@@ -218,3 +218,80 @@ above)
 - **Evidence**: bug-02-ACCENTEDLATINCREATE.png (the 401 error box in the
   correctly-filled dialog), pc5-elodie-dialog-still-open.png,
   probes.log lines 827-875, artifact 10373009495 (119 files).
+
+### BUG-P0 → reclassified D [D] PATIENT_DATA_ISOLATION (FALSE) — run 34930796719 (patients focus, run 10)
+
+- **Class**: recorded P0 by the harness, **reclassified D after the prove
+  step — a FALSE positive: no cross-patient data leak occurred**. The
+  product's data isolation held perfectly.
+- **The reported red**: `[bug-P0] PATIENT_DATA_ISOLATION: John Test's
+  detail shows another patient's sentinel note (ONLY-HYPHEN-INDIA) —
+  CROSS-PATIENT DATA LEAK` at PI (06:02:45Z, exit 2, the deepest patients
+  stop yet — past PC8 and PC10 into PI).
+- **What actually happened (the full proof chain)**:
+  1. The PI John probe clicked the row intended as "John Test" — but the
+     needle "John Test" PREFIX-matches the PC8 similar-name cohort rows
+     ("John Test-Hyphen", "John Tester", "john test"). Only the Zed and
+     "John Test-Hyphen" rows were in view; the hyphen row won
+     (vclick at (176,584) → the hyphen row line).
+  2. The detail that opened was **John Test-Hyphen's own record**: the
+     API log shows exactly ONE detail GET in the window —
+     `GET /api/patients/1e9fc36b…` at 06:02:00 (+visits/notes/documents/
+     prescriptions/timeline, all 200) — and the rendered page consistently
+     shows HIS name, HIS phone (+1 555 1103), and HIS note
+     (ONLY-HYPHEN-INDIA).
+  3. That note is NOT foreign: the pc8c create at 05:49:15 typed exactly
+     `John / Test-Hyphen / +1 555 1103 / Notes: ONLY-HYPHEN-INDIA`
+     (VLM-verified on pc8c-hyphen-notes-after.png; the create POST shows
+     the proven 401→refresh→201 transparent-retry pattern — the session
+     refresh fix still holding past the 15-min mark).
+  4. The PI scan's own/foreign lists are computed for the INTENDED patient
+     (John Test, own=ONLY-JOHN-ALPHA) — so the actually-opened patient's
+     own note read as "foreign". Name+phone+note all belonged to the
+     opened record: a consistent triple, i.e. the authoritative record of
+     the wrong-needle patient, not a mixed-record leak.
+- **Root cause (harness, class D)**: `open_patient_detail`'s name needle
+  is a LINE substring — ambiguous once similar names exist (exactly the
+  condition PC8 creates). The first in-view match won.
+- **Fix (applied — harness-only, +81/−19 in exploratory-qa.sh, zero
+  product code)**: (a) `open_patient_detail` takes an optional 3rd
+  row-needle (the patient's unique row-phone line); every John Test open
+  (PI, PE1, PE2, PV1, PNAV-nv6, PP) now passes it — pre-edit
+  `+1 555 0101`, post-edit `+1 555 0777`; (b) every phone-token open's
+  success is gated on a NEW `detail_open_proof` (see BUG-PD3); (c) default
+  row-needle = the name — byte-identical for every pre-existing call site.
+- **Regression surface**: PI John's own scan (own=ONLY-JOHN-ALPHA present,
+  all 9 foreign sentinels absent) now actually exercises John Test's
+  record; the similar-name sub-checks exercise each cohort patient's own
+  record.
+- **Evidence**: bug-07-PATIENTDATAISOLATION.png, pi-john-row-before.png
+  (the two in-view rows), pi-john-detail.png, pc8c-hyphen-notes-after.png
+  (VLM: the create assignment), backend-api.log (the single detail GET +
+  the 05:49:15 401→201 pair), artifact 10382368515 (249 files).
+
+### BUG-PD3 [D] OPEN_BY_PHONE_TOKEN_FALSE_OPEN — run 34930796719 (patients focus, run 10)
+
+- **Class**: D — harness defect (the pc8 similar-name sub-checks silently
+  verified the wrong screen)
+- **Detail**: all three pc8 isolation sub-checks ("each similar patient
+  opens its OWN record") reported success without ever opening a detail:
+  the API log contains **zero** detail GETs at 05:51/05:54/05:57. The
+  single filtered row sits below the fold; scrolling to the bare token
+  stopped at the search box's own QUERY line (always visible); the
+  row-phone click found nothing; and the bare-token fallback clicked the
+  QUERY line itself — its focus ring changed the screen hash, and
+  v_click's hash-diff verify passed a FALSE "detail opened". The scan then
+  swept the filtered LIST (no notes there) → the honest bug-D "own note
+  could not be OCR-verified" — the right verdict class, wrong mechanism.
+- **Fix (applied, harness-only)**: `open_patient_by_phone_token` now
+  scrolls to the ROW-ONLY text (the full row phone — the query box holds
+  only the token) before clicking, and every success path is gated on the
+  NEW `detail_open_proof` helper: the LIST always renders its search bar
+  ("Search patients by name, phone, or email…") while the DETAIL never
+  does — AND the detail must show one of its section markers ("Visit
+  History"/"Prescriptions"/"Clinical Notes", none of which exist on the
+  list or dashboard). A query-box click can never again read as success.
+- **Evidence**: probes 05:51:16-05:57:44 (the query-line clicks at
+  (82,387)/(83,388)/(82,389)), backend-api.log (no detail GETs in that
+  window), pc8-1101/1102/1103-search-after.png + -filtered.png (the row
+  below the fold), artifact 10382368515.

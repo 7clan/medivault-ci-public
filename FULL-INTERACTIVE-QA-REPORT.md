@@ -318,3 +318,51 @@ session). Targeted ARM64 rerun dispatched.
 Run-3 evidence preserved: artifact 10373009495 (119 files — 115
 screenshots through PC5, probes.log, registers) + the GUI job log + the
 VLM proof reads in BUG-REGISTER.md.
+
+## Patients focus — RUN 10 (34930796719 @ 6d87fd4, 2026-09-15 04:57–06:03)
+
+The deepest patients walk yet: the GUI job ran 05:14:35–06:03 (49 min) and
+progressed past every prior stop — PC0–PC7 GREEN, **PC8 3/3 similar-name
+creates GREEN (the run-9 scroll-restore fix held — pc8a opened on the
+first attempt; badge 6→7→8→9)**, **PC10 double-submit GREEN (9→10 —
+exactly ONE Zed Delete created from the double click; the run-9
+preemptive scroll-restore held)**, then the first-ever entry into PI —
+where the run stopped at a P0 that the prove step reclassified as a
+FALSE positive (harness D-class, no product defect). Full chain in
+BUG-REGISTER.md (BUG-P0→D + BUG-PD3).
+
+Run-10 headlines:
+- **PC8 (similar names)**: John Tester / john test (lowercase) /
+  John Test-Hyphen all created as SEPARATE records (count 9, no merge);
+  the per-phone isolation sub-checks recorded honest bug-D "own note not
+  OCR-verified" — forensics then proved those sub-checks never opened a
+  detail at all (BUG-PD3: the row click hit the search query line; zero
+  detail GETs in the API log). Fixed for the rerun.
+- **PC10 (double-submit)**: the form (Zed Delete, +1 555 0199) submitted
+  twice rapidly → one record; count badge 10; surface[22] GREEN.
+- **PI (sentinel isolation)**: the John probe's "John Test" needle
+  prefix-matched the "John Test-Hyphen" row → the WRONG (but entirely
+  self-consistent) detail opened → the hyphen patient's OWN note
+  (ONLY-HYPHEN-INDIA) read as "foreign" → the false P0. The API log +
+  the pc8c create-dialog VLM read prove name/phone/note all belonged to
+  the opened record. **The product's isolation is intact; the harness
+  row-targeting was not.**
+- **Session refresh still holding**: the 05:49:15 create shows
+  401 → refresh → 201 (the transparent retry, ~32 min into the session —
+  the run-3/5/6 fix chain proven again).
+- **ENV unchanged**: DOB date-field automation remains the recorded ENV
+  limit (bug-ENV entry at 05:43:01); PC7's long-values create stays GREEN
+  without it.
+
+Fixes shipped for the rerun (harness-only, zero product code):
+`open_patient_detail` gains the row-needle (all 6 John opens
+disambiguated by their unique phone line), `open_patient_by_phone_token`
+scrolls to the row phone before clicking and gates success on the new
+`detail_open_proof` (search-bar-absent + detail-section-marker). Static
+validation all GREEN (bash -n, no bash-4 constructs, def-before-use
+68 fns/2379 sites, surface_row 165×8, frozen lanes untouched, secret/PHI
+clean). Targeted ARM64 rerun dispatched — continuing from PI (the exact
+stopping point), then PE → PV×8 → PDEL → PNAV → PP.
+
+Run-10 evidence preserved: artifact 10382368515 (249 files, 84MB) at
+/tmp/qa-patients-run10/ + the GUI job log (1190 lines).

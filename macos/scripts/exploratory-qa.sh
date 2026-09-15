@@ -1426,8 +1426,8 @@ search_type() { # <text> <stem> [arabic yes|no] — Cmd+K focus, clear, type the
   return 0
 }
 
-open_patient_detail() { # <full-name> <stem>
-  local full="$1" stem="$2"
+open_patient_detail() { # <full-name> <stem> [row-needle] — the optional 3rd arg overrides the ROW click needle
+  local full="$1" stem="$2" rowneedle="${3:-$1}"
   # A search filter may be active from a previous step — clear it first so
   # the FULL list is visible (the filtered list hides the other rows).
   clear_search_box || true
@@ -1438,10 +1438,20 @@ open_patient_detail() { # <full-name> <stem>
   # P2 the product fix addresses). Scrolling to the section header puts the
   # list rows in view; the rows are then the FIRST '$full' hits in reading
   # order (the timeline entries come after them).
-  v_scroll_find "Recent Patients" 6 || v_scroll_find "Search Results" 6 || v_scroll_find "$full" 5 || true
-  if ! v_click "$full" "${stem}-row" "$full" "first"; then
-    if v_scroll_find "$full" 6 || v_scroll_find "$full" 5 no up; then
-      if ! v_click "$full" "${stem}-row-retry" "$full" "first"; then
+  # (run 34930796719, class D — the FALSE P0 at PI): a '$full' NAME needle
+  # PREFIX-matches similar-name rows once the PC8 cohort exists ('John
+  # Test' matches 'John Test-Hyphen'/'John Tester'/'john test') — the only
+  # in-view match won, the WRONG patient's detail opened, and that
+  # patient's OWN sentinel note then read as 'foreign' (the API log +
+  # the pc8c create dialog screenshots prove the mapping: name, phone,
+  # and note all belonged to the opened record). The optional row-needle
+  # (the patient's unique row PHONE line) targets the right row; every
+  # John Test call site now passes it. Default = the name (byte-identical
+  # behavior for every pre-existing call site).
+  v_scroll_find "Recent Patients" 6 || v_scroll_find "Search Results" 6 || v_scroll_find "$rowneedle" 5 || true
+  if ! v_click "$rowneedle" "${stem}-row" "$full" "first"; then
+    if v_scroll_find "$rowneedle" 6 || v_scroll_find "$rowneedle" 5 no up; then
+      if ! v_click "$rowneedle" "${stem}-row-retry" "$full" "first"; then
         snap "${stem}-row-failed" || true
         return 1
       fi
@@ -3560,6 +3570,28 @@ verify_detail_authoritative() { # <full-name> <phone> <email> <note> <stem> [for
   probe "verify-detail[$stem]: name=$VDA_NAME phone=$VDA_PHONE email=$VDA_EMAIL note=$VDA_NOTE skeleton-empty-state=$VDA_SKELETON foreign=$VDA_FOREIGN_SEEN$VDA_FOREIGN_WHICH"
 }
 
+detail_open_proof() { # <stem> — the real detail-open gate: the LIST always shows its search bar
+  # ('Search patients by name, phone, or email...'), the DETAIL page never
+  # does; and the detail always carries one of its section markers within
+  # view ('Visit History'/'Prescriptions'/'Clinical Notes' — none of which
+  # exist on the list or dashboard). Bounded 5×2s retries absorb slow loads.
+  # (run 34930796719, class D): the query-box focus ring changed the screen
+  # hash and v_click's hash-diff verify passed a FALSE 'detail opened' —
+  # this gate now ends every open-by-token success path.
+  local stem="$1" i
+  for i in 1 2 3 4 5; do
+    ocr_capture || true
+    if ! ocr_grep "Search patients"; then
+      if ocr_grep "Visit History" || ocr_grep "Prescriptions" || ocr_grep "Clinical Notes"; then
+        probe "detail-proof[$stem]: confirmed — the list search bar is absent and a detail section marker is visible"
+        return 0
+      fi
+    fi
+    sleep 2
+  done
+  return 1
+}
+
 open_patient_by_phone_token() { # <token> <full-name> <stem> [row-phone] — search by the unique phone digits, open via the row
   local token="$1" full="$2" stem="$3" rowphone="${4:-}"
   clear_search_box || true
@@ -3569,24 +3601,50 @@ open_patient_by_phone_token() { # <token> <full-name> <stem> [row-phone] — sea
     return 1
   fi
   sleep 2
-  v_scroll_find "$token" 6 || true
+  # (run 34930796719, class D — the pc8 sub-check forensics): the single
+  # filtered row sits BELOW the fold ('1 result found' + dashboard cards
+  # above it). Scrolling to the bare TOKEN stopped at the search box's own
+  # QUERY line (always visible at top-left); the rowphone click then found
+  # nothing, and the bare-token fallback clicked the QUERY line itself —
+  # the API log proves NO detail GET ever fired for any of the three
+  # sub-checks, yet all three 'opened' (the scan swept the LIST, and the
+  # sub-checks honestly recorded bug-D 'own note not verified'). Fix:
+  # scroll to the ROW-ONLY text (the full row phone — the query box holds
+  # only the token) FIRST, then click it; every success path is gated on
+  # detail_open_proof so a query-box click can never read as success.
+  if [ -n "$rowphone" ]; then
+    v_scroll_find "$rowphone" 6 || v_scroll_find "$token" 6 || true
+  else
+    v_scroll_find "$token" 6 || true
+  fi
   ocr_capture || true
   snap "${stem}-filtered" || true
   # click the row: the full phone string (row-only text — the search box
   # holds only the token), falling back to the token itself (the box may
-  # OCR-match first — the try_hits pass reaches the row hit)
+  # OCR-match first — the detail_open_proof gate rejects a false open)
+  local opened="no"
   if [ -n "$rowphone" ]; then
     if v_click "$rowphone" "${stem}-row" "$full" || v_click_try_hits "$rowphone" "${stem}-row" "$full" || v_click_try_hits "$token" "${stem}-row2" "$full"; then
       sleep 2
-      snap "${stem}-detail" || true
-      return 0
+      if detail_open_proof "$stem"; then
+        opened="yes"
+      else
+        probe "open-by-token[$stem]: the click did NOT open the detail (the list search bar is still present) — no false success"
+      fi
     fi
   else
     if v_click_try_hits "$token" "${stem}-row" "$full"; then
       sleep 2
-      snap "${stem}-detail" || true
-      return 0
+      if detail_open_proof "$stem"; then
+        opened="yes"
+      else
+        probe "open-by-token[$stem]: the click did NOT open the detail (the list search bar is still present) — no false success"
+      fi
     fi
+  fi
+  if [ "$opened" = "yes" ]; then
+    snap "${stem}-detail" || true
+    return 0
   fi
   snap "${stem}-row-failed" || true
   return 1
@@ -4026,7 +4084,10 @@ focus_patients() {
   surface_section "Patient data isolation (sentinel scans)"
   # John (also seeds recentlyViewed with the PRE-EDIT object — required for
   # the later stale-entry regression proof)
-  if open_patient_detail "$PAT_A_FIRST $PAT_A_LAST" "pi-john"; then
+  # (run 34930796719 D-fix): the row-needle is John's unique phone line —
+  # the bare 'John Test' name needle prefix-matched the PC8 similar-name
+  # cohort rows and opened John Test-Hyphen's detail (the FALSE P0).
+  if open_patient_detail "$PAT_A_FIRST $PAT_A_LAST" "pi-john" "$PAT_A_PHONE"; then
     scan_detail_multi "$PAT_A_NOTE" "$FOREIGN_ALL"
     if [ "$SCAN_FOREIGN_SEEN" = "yes" ]; then
       bug P0 PATIENT_DATA_ISOLATION "John Test's detail shows another patient's sentinel note ($SCAN_FOREIGN_WHICH) — CROSS-PATIENT DATA LEAK"
@@ -4142,7 +4203,7 @@ focus_patients() {
   note "=== patients PE: the edit battery ==="
 
   # PE1 — cancel edit: the typed value must NOT persist
-  if open_patient_detail "$PAT_A_FIRST $PAT_A_LAST" "pe1-john"; then
+  if open_patient_detail "$PAT_A_FIRST $PAT_A_LAST" "pe1-john" "$PAT_A_PHONE"; then
     if v_click_edit_pencil "$PAT_A_FIRST $PAT_A_LAST" "pe1-edit-open"; then
       v_type_into "Phone" "999-999-9999" "pe1-phone" || true
       snap "pe1-form-typed" || true
@@ -4170,7 +4231,7 @@ focus_patients() {
   # stale-snapshot regression for the entry-point battery
   v_scroll_top 10 || true
   PE2_RC=0
-  if open_patient_detail "$PAT_A_FIRST $PAT_A_LAST" "pe2-john"; then
+  if open_patient_detail "$PAT_A_FIRST $PAT_A_LAST" "pe2-john" "$PAT_A_PHONE"; then
     if v_click_edit_pencil "$PAT_A_FIRST $PAT_A_LAST" "pe2-edit-open"; then
       v_type_into "Phone" "$JOHN_NEW_PHONE" "pe2-phone" no no yes || true
       v_clear_field "Notes" "pe2-notes-clear" || true
@@ -4486,9 +4547,10 @@ focus_patients() {
   surface_section "Entry-point consistency (the stale/skeleton regression)"
   local PV_FAILS=0
 
-  # PV1 — the Recent Patients list row
+  # PV1 — the Recent Patients list row (row-needle = the post-edit phone
+  # line — the bare name needle collides with the PC8 similar-name cohort)
   v_scroll_top 10 || true
-  if open_patient_detail "$PAT_A_FIRST $PAT_A_LAST" "pv1-list-row"; then
+  if open_patient_detail "$PAT_A_FIRST $PAT_A_LAST" "pv1-list-row" "$JOHN_NEW_PHONE"; then
     verify_detail_authoritative "$PAT_A_FIRST $PAT_A_LAST" "$JOHN_NEW_PHONE" "$PAT_A_EMAIL" "$PAT_A_NOTE" "pv1" "$FOREIGN_ALL"
     if [ "$VDA_PHONE" = "1" ] && [ "$VDA_SKELETON" = "0" ] && [ "$VDA_FOREIGN_SEEN" != "yes" ]; then
       qa_cap ENTRY_POINT_LIST_ROW "GREEN (list row → the authoritative record: the NEW phone is visible; no skeleton; no foreign sentinels)"
@@ -4991,7 +5053,7 @@ focus_patients() {
       wait_for_ocr "Add Patient" 30 "nv6-dash" || true
       clear_search_box || true
       v_scroll_top 10 || true
-      if open_patient_detail "$PAT_A_FIRST $PAT_A_LAST" "nv6-reopen"; then
+      if open_patient_detail "$PAT_A_FIRST $PAT_A_LAST" "nv6-reopen" "$JOHN_NEW_PHONE"; then
         ocr_capture || true
         if ocr_grep "0777"; then
           qa_cap NAV_SEARCH_CLEAR_REOPEN "GREEN (search → open → clear → reopen: the same authoritative record both times)"
@@ -5117,7 +5179,7 @@ focus_patients() {
 
   # John's EDITED values + sentinel survived (the authoritative record)
   v_scroll_top 10 || true
-  if open_patient_detail "$PAT_A_FIRST $PAT_A_LAST" "pp-john"; then
+  if open_patient_detail "$PAT_A_FIRST $PAT_A_LAST" "pp-john" "$JOHN_NEW_PHONE"; then
     verify_detail_authoritative "$PAT_A_FIRST $PAT_A_LAST" "$JOHN_NEW_PHONE" "$PAT_A_EMAIL" "$PAT_A_NOTE" "pp-john" "$FOREIGN_ALL"
     if [ "$VDA_PHONE" = "1" ] && [ "$VDA_NOTE" = "1" ] && [ "$VDA_FOREIGN_SEEN" != "yes" ]; then
       qa_cap PATIENT_PERSISTENCE "GREEN (the edited values + sentinel notes survived the quit/reopen: John's new phone + note; isolation intact; path $PP_PATH)"
