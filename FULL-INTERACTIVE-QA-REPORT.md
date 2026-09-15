@@ -275,3 +275,46 @@ validation re-run; targeted ARM64 rerun dispatched.
 Run-2 evidence preserved: artifact 10372732041 (47 files — 43 screenshots
 incl. the full PC0/PC1/PC1b chains, probes.log, registers) + the GUI job
 log + the VLM proof reads recorded in BUG-REGISTER.md.
+
+---
+
+## Patients focus — RUN 3 (34907338207 @ be9e76c, 2026-09-14 23:07–23:43)
+
+**Outcome: P1-RED at PC5 — a REAL product defect (the missing session
+refresh), plus the first honest D on the visit-scheduler select.**
+
+The run-1 and run-2 fixes ALL held: PC0 GREEN (cancel + count 0 + the
+**dialog-state-leak regression probe GREEN** — the reopened dialog clean,
+`pc0-reopen-after.png`, the P2 fix proven in the real GUI), PC1 GREEN
+(empty-names rejection + the bubble), PC1b GREEN (last-name-only rejection
+— with the clean dialog the probe now genuinely exercises the empty first
+name), PC2 GREEN (John Test created with the ONLY-JOHN-ALPHA sentinel),
+PS: honest D (the shadcn-select patient dropdown could not be automated —
+"the dialog-footer 'Schedule Visit' could not be anchored" — the PV6/7/8
+entry-point probes will record NOT-EXERCISED; the known limitation,
+recorded not hidden), PC3 GREEN (Jane, optional-empty), PC4 GREEN
+(Muhammad, the Arabic create).
+
+PC5 (Élodie Müller — accented Latin): the form filled correctly (VLM read:
+Élodie/Müller + all fields + the ONLY-ELODIE-DELTA sentinel note), the
+submit clicked — and the dialog showed **"Authentication required"**: the
+POST returned 401. Root cause: the access token lives 15 minutes, the
+refresh cookie + endpoint exist, and the web frontend never calls the
+refresh — after ~15 min of continuous use every authenticated request
+fails (PC2-PC4 were inside the window; PC5 at ~24 min was outside). The
+surface/account focuses never wrote past 15 min, which is why this is the
+patients focus's find — precisely the deep-lifecycle discovery the
+directive asked for.
+
+**Disposition (P1 first-red discipline):** proven (the error box + the
+source + the timeline); the minimal product fix applied at the single
+point every API request flows through — the global fetch adapter
+(src/lib/fetch-csrf.ts) now performs one single-flight /api/auth/refresh
+on a 401 and retries the original request with the rotated CSRF pair
+(auth endpoints + Bearer transport exempt; failed refresh = the original
+401). Regression test: the battery itself (PC5+ run >15 min into the
+session). Targeted ARM64 rerun dispatched.
+
+Run-3 evidence preserved: artifact 10373009495 (119 files — 115
+screenshots through PC5, probes.log, registers) + the GUI job log + the
+VLM proof reads in BUG-REGISTER.md.

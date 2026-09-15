@@ -169,3 +169,52 @@ above)
   pc1b-lastonly-submit-enter.png + bug-01-PATIENTSREQUIREDFIELDS.png
   (Patients card = 1), pc1-empty-open-before.png (Patients card = 0),
   probes.log lines 291-311, artifact 10372732041.
+
+### BUG-P1 [P1] SESSION_REFRESH_MISSING (patients focus, run 34907338207 — run 3)
+
+- **Class**: P1 — core workflow unusable after 15 minutes (proven; minimal
+  product fix applied per the first-red discipline)
+- **Area**: authentication — web session lifecycle
+- **Detail**: the access token (`mvlt_session` cookie) has a 15-minute TTL
+  and the 48-hour refresh token (`mvlt_refresh` cookie) + the rotating
+  `/api/auth/refresh` endpoint both exist — but the web frontend NEVER
+  calls the refresh endpoint. After 15 minutes of continuous use every
+  authenticated request fails with 401 "Authentication required" until the
+  user manually logs out and back in. The mid-session casualty: a valid,
+  correctly-filled patient create (all fields + the sentinel note) failed
+  with the error rendered in the dialog while the form data was preserved
+  (the only reason no data was lost).
+- **Proof chain (run 34907338207)**: PC2/PC3/PC4 creates all succeeded
+  (authenticated POSTs within the 15-min window); PC5's identical create —
+  ~24 minutes after login — returned the visible "Authentication required"
+  error (bug-02-ACCENTEDLATINCREATE.png + its OCR context line
+  "Authentication required|370|163"; the VLM read confirms the correctly
+  filled form + the error box). The session TTL is 48h (AuthSession) but
+  the ACCESS token is 15 min (auth-service `15 * 60`); `rg 'auth/refresh'`
+  over `src/` shows the frontend never calls it (the only hits are a
+  route-permissions table row and comments).
+- **Why the earlier focuses stayed GREEN**: the surface focus made no
+  authenticated writes after the first ~15 min (pure GUI reading), and the
+  account focus's writes all landed inside its login cycles' 15-min
+  windows. The patients battery is the first focus to write continuously
+  for >15 minutes — exactly what a deep lifecycle walk is for.
+- **Root cause (source)**: no client-side refresh path; the dialogs' raw
+  `fetch()` calls return the 401 to the component error states.
+- **Fix (applied — minimal, single point)**: the global fetch adapter
+  (src/lib/fetch-csrf.ts, which already wraps every mutating /api request
+  with the CSRF header and is imported once by the app page) now, on a 401
+  from a cookie-mode /api request: attempts ONE single-flight
+  `POST /api/auth/refresh` (CSRF-attached, credentials included), and on
+  success retries the original request with the ROTATED CSRF pair. Auth
+  endpoints that legitimately 401 (login/setup/csrf/refresh/mobile) and
+  Bearer-transport requests are exempt; a failed refresh returns the
+  original 401 untouched (the honest logged-out path). This also silently
+  hardens the boot session-restore path (GET /api/auth/me after an expired
+  access token now refreshes instead of bouncing to Sign In).
+- **Regression test**: the patients battery itself — PC5+ run ~20+ minutes
+  into the session; with the fix, the accented create (and every later
+  write: edits, visits, deletes) must complete transparently. A run-4
+  completion past the 15-min mark is the proof.
+- **Evidence**: bug-02-ACCENTEDLATINCREATE.png (the 401 error box in the
+  correctly-filled dialog), pc5-elodie-dialog-still-open.png,
+  probes.log lines 827-875, artifact 10373009495 (119 files).
