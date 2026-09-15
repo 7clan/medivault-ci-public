@@ -147,6 +147,26 @@ bug_discipline() {
   esac
 }
 
+capture_backend_logs() { # preserve the API/supervisor logs on any stop-class bug
+  # D-diagnostic (run 34911558547): the P1's evidence chain stopped at the
+  # webview's visible error — the backend's own request log (pino: every
+  # request with method/url/statusCode; authorization/cookie headers
+  # redacted; bodies never logged) tells the OTHER side of the story (what
+  # status /api/auth/refresh actually returned, CSRF rejections, etc).
+  # Preserved for every stop-class first-red from now on.
+  local bl dest
+  for bl in "$HOME/Library/Logs/MediVault/api.log" \
+            "$HOME/Library/Logs/MediVault/supervisor.log" \
+            "$HOME/Library/Logs/MediVault/provisioner.log" \
+            "$HOME/Library/Logs/MediVault/postgres.log"; do
+    if [ -s "$bl" ]; then
+      dest="$EVID_DIR/backend-$(basename "$bl")"
+      tail -n 400 "$bl" > "$dest" 2>/dev/null || true
+      probe "backend log preserved: $dest (last 400 lines)"
+    fi
+  done
+}
+
 bug() { # <class> <area> <detail> [stop] — the exploratory first-red recorder
   local cls="$1" area="$2" detail="$3" stopmode="${4:-}"
   BUG_COUNT=$((BUG_COUNT + 1))
@@ -180,18 +200,21 @@ bug() { # <class> <area> <detail> [stop] — the exploratory first-red recorder
   case "$cls" in
     P0)
       QA_OUTCOME="P0-STOP"
+      capture_backend_logs
       write_caps
       echo "EXPLORATORY-QA-P0-STOP"
       exit 2
       ;;
     P1)
       QA_OUTCOME="P1-RED"
+      capture_backend_logs
       write_caps
       echo "EXPLORATORY-QA-P1-RED"
       exit 3
       ;;
     P2)
       QA_OUTCOME="P2-RED"
+      capture_backend_logs
       write_caps
       echo "EXPLORATORY-QA-P2-RED"
       exit 4
