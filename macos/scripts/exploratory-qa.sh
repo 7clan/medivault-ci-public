@@ -3384,30 +3384,18 @@ create_patient_deep() { # <first> <last> <phone> <email> <address> <notes> <stem
   [ -n "$email" ] && { v_type_into "Email" "$email" "${stem}-email" || nfail=$((nfail + 1)); }
   [ -n "$address" ] && { v_type_into "Address" "$address" "${stem}-address" || nfail=$((nfail + 1)); }
   [ -n "$notes" ] && { v_type_into "Notes" "$notes" "${stem}-notes" || nfail=$((nfail + 1)); }
-  # DOB (type=date): WebKit fills the month/day/year segments from raw
-  # digits — ONE honest attempt; the row/detail shows 'DOB:' when it took.
+  # DOB (type=date): NOT CALLED by the patients battery — the System Events
+  # keystroke automation cannot enter the WebKit date segments (three runs
+  # of proof; the attempt also leaves the field mid-segment-edit, which
+  # blocks the whole form submit with 'Invalid value'). Recorded as the
+  # DOB_DATE_INPUT_AUTOMATION ENV entry at PC7. The parameter stays for a
+  # future lane that finds a working path (e.g. a paste-based approach).
   if [ -n "$dob" ]; then
     if v_type_into "Date of Birth" "$dob" "${stem}-dob"; then
       probe "create[$stem]: typed the DOB digits — verified functionally on the row/detail later"
     else
       probe "create[$stem]: the DOB digits could not be typed/verified (type=date automation limit — honest record; the field is optional)"
     fi
-    # D-fix (runs 34917898200 + 34921354377 PC7): the DOB type=date field
-    # ends mid-segment-edit after the digit attempt (a segment selected, the
-    # placeholder showing) — WebKit's form validation then reports 'Invalid
-    # value' for the field and blocks the WHOLE submit (no API POST ever
-    # sent; observed twice). A single Tab only moves ONE segment (month →
-    # day); the focus must cycle THROUGH the segments to exit the field —
-    # the committed value becomes the field's value (complete date → kept;
-    # partial/empty → the optional field is valid). A real user tabs
-    # through; the harness must too. (Escape is deliberately NOT used: if
-    # the field is not in segment-edit mode it would close the dialog.)
-    local dobtab=0
-    while [ "$dobtab" -lt 4 ]; do
-      osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 48' 10 || true
-      sleep 1
-      dobtab=$((dobtab + 1))
-    done
   fi
   snap "${stem}-form-filled" || true
   [ "$nfail" -gt 0 ] && probe "create[$stem]: $nfail typing step(s) not visually verified (kept — the dialog-close + row + count verify is the functional proof)"
@@ -3896,21 +3884,23 @@ focus_patients() {
     bug P1 APOSTROPHE_CREATE "the O'Connor create did not complete (rc=$PC6_RC)"
   fi
 
-  # PC7 — the very long name + long values + the DOB attempt
+  # PC7 — the very long name + long values (the DOB digit attempt is
+  # recorded as an ENV limitation — see the DOB_DATE_INPUT_AUTOMATION note)
   v_scroll_top 10 || true
   PC7_RC=0
-  create_patient_deep "$PAT_F_FIRST" "$PAT_F_LAST" "$PAT_F_PHONE" "$PAT_F_EMAIL" "$PAT_F_ADDR" "$PAT_F_NOTE" "pc7-long" no 06151990 >/dev/null 2>&1 || PC7_RC=$?
+  create_patient_deep "$PAT_F_FIRST" "$PAT_F_LAST" "$PAT_F_PHONE" "$PAT_F_EMAIL" "$PAT_F_ADDR" "$PAT_F_NOTE" "pc7-long" >/dev/null 2>&1 || PC7_RC=$?
+  bug ENV DOB_DATE_INPUT_AUTOMATION "the type=date DOB automation is not feasible via System Events keystrokes: three runs (34917898200, 34921354377, 34924632947) prove the digits never enter the WebKit date segments, and the attempt leaves the field mid-segment-edit which blocks the WHOLE form submit ('Invalid value' — no API POST ever sent; neither a Tab segment-cycle nor a blur clears it). The DOB digit attempt is NOT EXERCISED by this lane; the DOB display is verified on the row/detail only if set by other means. The long-values create itself (the 46-char name + long phone/email/address/notes) is the probe's substance."
   if [ "$PC7_RC" = "0" ]; then
     sleep 2
     read_patient_count
     if v_scroll_find "MediVault Testing" 12; then
       ocr_capture || true
       if ocr_grep "DOB"; then
-        probe "pc7: the long-name patient's row shows a DOB — the type=date digit entry TOOK"
-        qa_cap PATIENT_DOB "GREEN (the Date of Birth was enterable through the type=date field — 'DOB' visible on the row)"
+        probe "pc7: the long-name patient's row shows a DOB — set by another path (honest record)"
+        qa_cap PATIENT_DOB "GREEN (a DOB is visible on the row)"
       else
-        probe "pc7: no DOB visible on the row (the type=date digit entry did not take — honest record; creation succeeded without it)"
-        qa_cap PATIENT_DOB "NOT EXERCISABLE (the type=date field did not accept the digit entry — an honest automation limit; the field is optional)"
+        probe "pc7: no DOB visible on the row (the digit-entry attempt is not exercised — the ENV record above; the field is optional)"
+        qa_cap PATIENT_DOB "NOT EXERCISED (the type=date automation limit — the ENV record above; the field is optional)"
       fi
       qa_cap LONG_VALUES_CREATE "GREEN (the very long synthetic name + long address/notes/phone-with-extension accepted; badge=$PATIENTS_COUNT)"
       surface_row "Long values create" "Add Patient dialog (46-char first name + long address/notes)" "—" "long values create and display (truncation in tight UI slots is fine)" "created 'Very Long Synthetic Patient Name For MediVault Testing'" "GREEN" "pc7-*" "OK"
