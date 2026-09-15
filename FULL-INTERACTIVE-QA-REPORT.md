@@ -366,3 +366,32 @@ stopping point), then PE → PV×8 → PDEL → PNAV → PP.
 
 Run-10 evidence preserved: artifact 10382368515 (249 files, 84MB) at
 /tmp/qa-patients-run10/ + the GUI job log (1190 lines).
+
+## Patients focus — RUN 11 (34936649898 @ 4a19c7e, 2026-09-15 06:22–07:11)
+
+The run-10 fixes PROVEN working, one layer deeper: PC0–PC7 GREEN, PC8 3/3
+creates GREEN (badge 9), then the pc8-1101 sub-check (John Tester) — the
+first correctly-exercised cohort isolation scan of the campaign (scrolled
+to the row phone, clicked the ROW, `detail_open_proof` confirmed the real
+detail opened: "the list search bar is absent and a detail section marker
+is visible") — the detail showed John Tester's own name+phone+email+note,
+all self-consistent… and the run still stopped at a P0: the FOREIGN_ALL
+list contains the scanned patient's own sentinel (ONLY-TESTER-GOLF), so
+his own note read as "foreign". **Reclassified D (FALSE) — the second
+onion layer of the same isolation-check defect; no product bug** (full
+chain in BUG-REGISTER: FOREIGN_LIST_NOT_RELATIVE).
+
+The structural audit that followed: FOREIGN_ALL contains the sentinels of
+EVERY patient the battery scans with it (Jane/Muhammad/Élodie/
+O'Connor/LongName/Zed/the PC8 trio — everyone except John Test himself).
+Runs 1–10 never reached those scans with a working open, so the two
+defect layers (row targeting, then list relativization) were exposed one
+per run. Fix applied at the single point both scan functions share (the
+own note is stripped from the foreign list by construction — +21 lines,
+zero product code; functional-tested: GOLF→8 foreign, ALPHA→no-op 9,
+ZED-DELETE→8, empty→unchanged).
+
+Run-11 evidence preserved: artifact 10384822943 (201 files) +
+the GUI job log. Targeted ARM64 rerun dispatched — continuing from the
+exact stopping point (the pc8 sub-checks → PI → PE → PV×8 → PDEL → PNAV
+→ PP).

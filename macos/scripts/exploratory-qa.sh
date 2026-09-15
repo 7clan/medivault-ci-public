@@ -3491,6 +3491,19 @@ v_click_near_anchor_y() { # <needle> <anchor-needle> <stem> [tolerance-pts] — 
 scan_detail_multi() { # <own-note> <foreign-csv> — the N-sentinel isolation scan of the detail view
   SCAN_OWN_SEEN=no; SCAN_FOREIGN_SEEN=no; SCAN_FOREIGN_WHICH=""
   local own="$1" flist="$2"
+  # (run 34936649898, class D — the foreign list must be RELATIVE to the
+  # scanned patient): FOREIGN_ALL carries the sentinels of the OTHER
+  # patients — but it also contains the sentinels of every patient that IS
+  # scanned by this function (Jane/Muhammad/Élodie/O'Connor/LongName/Zed
+  # and the PC8 trio). A correctly-opened, correctly-isolated detail then
+  # matched its OWN note as 'foreign' and fired a FALSE P0 (John Tester's
+  # ONLY-TESTER-GOLF at the pc8 sub-check, 07:11:32Z — the detail showed
+  # name+phone+note all his own). Strip the own note from the foreign list
+  # HERE — the single point that fixes every current and future call site
+  # by construction. (John Test's ALPHA is not in the list — a no-op there.)
+  if [ -n "$own" ] && [ -n "$flist" ]; then
+    flist="$(printf '%s' "$flist" | tr ',' '\n' | { grep -vx -- "$own" || true; } | tr '\n' ',' | sed 's/,$//')"
+  fi
   local up=0
   while [ "$up" -lt 8 ]; do
     scroll_burst up
@@ -3533,6 +3546,14 @@ verify_detail_authoritative() { # <full-name> <phone> <email> <note> <stem> [for
   VDA_NAME=0; VDA_PHONE=0; VDA_EMAIL=0; VDA_NOTE=0; VDA_SKELETON=0
   VDA_FOREIGN_SEEN=no; VDA_FOREIGN_WHICH=""
   local full="$1" phone="$2" email="$3" note="$4" stem="$5" flist="${6:-}"
+  # (run 34936649898, class D — same as scan_detail_multi): the foreign
+  # list must be RELATIVE to the scanned patient. Zed's own
+  # ONLY-ZED-DELETE is IN FOREIGN_ALL, so pe-other-zed's gate
+  # (VDA_FOREIGN_SEEN != yes) and pv4's probe would each read his OWN note
+  # as foreign on a perfectly correct detail. Strip the own note here.
+  if [ -n "$note" ] && [ -n "$flist" ]; then
+    flist="$(printf '%s' "$flist" | tr ',' '\n' | { grep -vx -- "$note" || true; } | tr '\n' ',' | sed 's/,$//')"
+  fi
   local up=0
   while [ "$up" -lt 8 ]; do
     scroll_burst up

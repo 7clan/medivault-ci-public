@@ -295,3 +295,48 @@ above)
   (82,387)/(83,388)/(82,389)), backend-api.log (no detail GETs in that
   window), pc8-1101/1102/1103-search-after.png + -filtered.png (the row
   below the fold), artifact 10382368515.
+
+### BUG-P0 → reclassified D (2) [D] FOREIGN_LIST_NOT_RELATIVE — run 34936649898 (patients focus, run 11)
+
+- **Class**: recorded P0 by the harness, **reclassified D after the prove
+  step — a FALSE positive: no cross-patient data leak occurred. The
+  run-10 row-targeting fixes themselves worked perfectly.**
+- **The reported red**: `[bug-P0] PATIENT_DATA_ISOLATION: a similar-name
+  patient (John Tester) shows ANOTHER patient's sentinel note
+  (ONLY-TESTER-GOLF) — cross-patient data leak` at the pc8 sub-check
+  (07:11:32Z, exit 2).
+- **What actually happened (the proof chain)**:
+  1. The run-10 fixes held: pc8-1101 scrolled to the ROW phone
+     ('+1 555 1101'), clicked the ROW (145,434), and the NEW
+     `detail_open_proof` confirmed the real detail ("the list search bar
+     is absent and a detail section marker is visible") — the first
+     correctly-exercised cohort isolation scan of the campaign.
+  2. The opened detail is John Tester's OWN record, self-consistent:
+     name "John Tester", phone "+1 555 1101", email
+     "john.tester@example.invalid", Notes "ONLY-TESTER-GOLF" — exactly
+     the pc8a create assignment (verified against the run's own OCR
+     line at 07:10:57).
+  3. `scan_detail_multi "$expect_note" "$FOREIGN_ALL"` — but
+     FOREIGN_ALL **contains ONLY-TESTER-GOLF** (John Tester's own
+     sentinel). His own note matched the "foreign" list → false P0.
+- **Root cause (harness, class D — structural)**: FOREIGN_ALL is the
+  sentinel set of all OTHER patients *from John Test's perspective* —
+  but it also contains the sentinels of EVERY patient the battery scans
+  with it: Jane (BRAVO), Muhammad (CHARLIE), Élodie (DELTA), O'Connor
+  (ECHO), LongName (FOXTROT), Zed (ZED-DELETE), and the PC8 trio
+  (GOLF/HOTEL/INDIA). Any correctly-opened, correctly-isolated detail of
+  those patients would false-P0/false-P1 the moment the scan works.
+  Runs 1–10 never reached these scans with a working open — the two
+  defects were masked layers of the same onion.
+- **Fix (applied — harness-only, +21 lines, single point)**: BOTH scan
+  functions (`scan_detail_multi` and `verify_detail_authoritative`)
+  receive the patient's own note as a parameter — each now strips it from
+  the foreign list before scanning (`tr ',' '\n' | grep -vx -- "$own" ||
+  true | tr '\n' ',' | sed 's/,$//'`), fixing every current and future
+  call site by construction. Functional test: own=GOLF → 8 foreign;
+  own=ALPHA (John, not in list) → unchanged 9 (no-op); own=ZED-DELETE →
+  8; empty own → unchanged. This also pre-fixes pe-other-zed's
+  VDA_FOREIGN_SEEN gate (Zed) and pv4's probe noise.
+- **Evidence**: bug-03-PATIENTDATAISOLATION.png, pc8-1101-detail.png,
+  pc8-1101-row-before.png + the 07:10:57 OCR line (the self-consistent
+  triple), artifact 10384822943 (201 files).
