@@ -392,3 +392,45 @@ the pencil top-restore, PE4's rounds should exercise the real
 consecutive-edit semantics (edit → save → edit again). Reclassified D
 (root cause BUG-PD5); the PE4 probe itself remains the regression test
 for the rerun.
+
+### BUG-PD6 [D] EDIT_DIALOG_LABEL_COLLISION — run 35017083195 (patients focus, run 13)
+
+- **Class**: D — harness targeting defect (the run's stopping P1 +
+  a vacuous pe1 GREEN)
+- **The reported red**: `[bug-P1] PATIENT_EDIT: saving John's edit
+  produced no visible change` at PE2 (21:27:31Z) — the edit battery's
+  arming edit never happened.
+- **What actually happened (the proof chain)**:
+  1. The run-12 fixes held: PE1/PE2 opened John via the phone-token
+     search (detail-proof confirmed) and the pencil opened the Edit
+     Patient dialog (the anchored fallback; the dialog verified by its
+     'First Name' + 'Completion' + '5 of 7 fields' markers).
+  2. `v_type_into "Phone"` looked up the label 'Phone' — and found the
+     PATIENT DETAIL banner's 'Phone' label at (141,351), not the
+     dialog's field label (~x=313): the edit dialog renders over the
+     detail page, whose banner carries the SAME short labels
+     (Phone/Notes/Email/Address) at the LEFT edge, and the lookup's
+     first-hit in reading order picked the banner's.
+  3. The label click at (141,351) landed on the dialog OVERLAY, left of
+     the dialog card — the modal DISMISSED itself (outside-click
+     dismissal) before a single keystroke. The subsequent OCRs show the
+     dashboard/detail with no dialog; 'Notes', 'Cancel', and 'Save
+     Changes' were all 'NOT FOUND' → PE2_RC=1 → the P1.
+  4. PE1 had the SAME dismissal (its typing went nowhere) — its recorded
+     "Cancel edit — GREEN" is VACUOUS (the dialog was already dismissed;
+     nothing was ever typed; the 999-absent check passed trivially). The
+     rerun must re-earn it.
+- **Root cause (harness, class D)**: the label lookup has no notion of
+  the dialog card's x-range; over the detail page the same-named banner
+  labels win the first-hit.
+- **Fix (applied, harness-only, +47/−16)**: `v_type_into` (optional 7th
+  arg) and `v_clear_field` (optional 3rd arg) accept an `xmin` label
+  filter — when set, the OCR lines are filtered to x ≥ xmin (scaled)
+  before the label lookup and restored after; all 13 edit-battery
+  typing sites (pe1/pe2/pe3/pe4/pe5/pe6/pe7 + nv2) pass 250 (the dialog
+  card's fields sit at x≥~300; the banner labels at x≈141). Default
+  empty = byte-identical for every pre-existing call site (the create
+  dialog sits over the dashboard, which has no such labels — 13 runs of
+  evidence).
+- **Evidence**: pe1/pe2 label hits at (141,351), the post-click OCRs
+  (dashboard, no dialog), bug-03, artifact 10419362290 (311 files).

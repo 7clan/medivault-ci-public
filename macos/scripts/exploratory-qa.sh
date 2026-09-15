@@ -1104,23 +1104,43 @@ v_click_edit_pencil() { # <patient-full-name> <stem> [yband-adj]
   return 1
 }
 
-v_type_into() { # <label-needle> <text> <stem> [secret yes|no] [arabic yes|no] [clear yes|no]
+v_type_into() { # <label-needle> <text> <stem> [secret yes|no] [arabic yes|no] [clear yes|no] [xmin]
   local label="$1"
   local text="$2"
   local stem="$3"
   local secret="${4:-no}"
   local arabic="${5:-no}"
   local clear="${6:-no}"
+  local xmin="${7:-}"
   if [ "$OCR_STACK" != "yes" ]; then
     probe "vtype[$stem]: visual stack unavailable — skipped"
     return 1
   fi
   ocr_capture || return 1
   snap_file "$MV_SHOT" "${stem}-before" || true
+  # (run 35017083195, class D — the edit-dialog label collision): the EDIT
+  # dialog renders over the patient DETAIL page whose banner carries the
+  # SAME short labels (Phone/Notes/Address/Email) at the LEFT edge
+  # (x≈141 screen pts) — the label lookup's FIRST hit picked the banner's
+  # label, the click landed on the dialog OVERLAY left of the card, and
+  # the modal DISMISSED itself before a single keystroke (then Notes /
+  # Cancel / Save were all 'not found' and the edit battery P1'd). The
+  # optional xmin restricts the label search to the dialog card's x-range
+  # (the card's field labels sit at x≥~300): the edit-battery call sites
+  # pass 250. Default empty = byte-identical behavior for every
+  # pre-existing call site (the create dialog sits over the dashboard,
+  # which has no Phone/Notes/Email/Address short labels).
+  local saved_ocr="$OCR_TEXT"
+  if [ -n "$xmin" ]; then
+    OCR_TEXT="$(printf '%s\n' "$OCR_TEXT" | awk -F'|' -v m="$xmin" -v s="${MV_SCALE:-1}" '($3+0)/s >= m')"
+    [ -n "$OCR_TEXT" ] || OCR_TEXT="$saved_ocr"
+  fi
   if ! ocr_lookup "$label" "first" "label"; then
+    OCR_TEXT="$saved_ocr"
     probe "vtype[$stem]: label '$label' NOT FOUND on screen — no click attempted"
     return 1
   fi
+  OCR_TEXT="$saved_ocr"
   local lx ly tx ty
   lx="$OCR_HIT_X"
   ly="$OCR_HIT_Y"
@@ -3316,13 +3336,24 @@ read_patient_count() { # → PATIENTS_COUNT (number | 0 | unreadable)
   probe "read-patient-count: badge='$PATIENTS_COUNT'"
 }
 
-v_clear_field() { # <label-needle> <stem> — Cmd+A + Delete in the field under the label
-  local label="$1" stem="$2"
+v_clear_field() { # <label-needle> <stem> [xmin] — Cmd+A + Delete in the field under the label
+  local label="$1" stem="$2" xmin="${3:-}"
   ocr_capture || return 1
+  # (run 35017083195, class D — same as v_type_into's xmin): restrict the
+  # label search to the EDIT dialog card's x-range when requested — the
+  # detail banner behind the dialog carries the same short labels at the
+  # left edge and the first-hit click dismissed the modal via the overlay.
+  local saved_ocr="$OCR_TEXT"
+  if [ -n "$xmin" ]; then
+    OCR_TEXT="$(printf '%s\n' "$OCR_TEXT" | awk -F'|' -v m="$xmin" -v s="${MV_SCALE:-1}" '($3+0)/s >= m')"
+    [ -n "$OCR_TEXT" ] || OCR_TEXT="$saved_ocr"
+  fi
   if ! ocr_lookup "$label" "first" "label"; then
+    OCR_TEXT="$saved_ocr"
     probe "vclear[$stem]: label '$label' NOT FOUND — no click attempted"
     return 1
   fi
+  OCR_TEXT="$saved_ocr"
   "$MV_MOUSE" "$OCR_HIT_X" "$(( OCR_HIT_Y + 6 ))" 2>>"$LOG" || return 1
   sleep 1
   osa 'tell application "System Events" to tell (first process whose name contains "edivault") to keystroke "a" using command down' 10 || true
@@ -4250,7 +4281,7 @@ focus_patients() {
   # the phone-token search — his row sits below the 8-row panel cap)
   if open_patient_by_phone_token "0101" "$PAT_A_FIRST $PAT_A_LAST" "pe1-john" "$PAT_A_PHONE"; then
     if v_click_edit_pencil "$PAT_A_FIRST $PAT_A_LAST" "pe1-edit-open"; then
-      v_type_into "Phone" "999-999-9999" "pe1-phone" || true
+      v_type_into "Phone" "999-999-9999" "pe1-phone" no no no 250 || true
       snap "pe1-form-typed" || true
       v_click "Cancel" "pe1-cancel" "" || true
       sleep 2
@@ -4279,9 +4310,9 @@ focus_patients() {
   PE2_RC=0
   if open_patient_by_phone_token "0101" "$PAT_A_FIRST $PAT_A_LAST" "pe2-john" "$PAT_A_PHONE"; then
     if v_click_edit_pencil "$PAT_A_FIRST $PAT_A_LAST" "pe2-edit-open"; then
-      v_type_into "Phone" "$JOHN_NEW_PHONE" "pe2-phone" no no yes || true
-      v_clear_field "Notes" "pe2-notes-clear" || true
-      v_type_into "Notes" "$JOHN_NEW_NOTE" "pe2-notes" || true
+      v_type_into "Phone" "$JOHN_NEW_PHONE" "pe2-phone" no no yes 250 || true
+      v_clear_field "Notes" "pe2-notes-clear" 250 || true
+      v_type_into "Notes" "$JOHN_NEW_NOTE" "pe2-notes" no no no 250 || true
       snap "pe2-form-edited" || true
       if v_click_near_anchor_y "Save Changes" "Cancel" "pe2-save" 40; then
         sleep 3
@@ -4336,7 +4367,7 @@ focus_patients() {
   PE3_RC=0
   if open_patient_by_phone_token "0304" "Élodie" "pe3-elodie" "$PAT_D_PHONE"; then
     if v_click_edit_pencil "$PAT_D_PHONE" "pe3-edit-open" -38; then
-      v_type_into "Phone" "+33 1 555 0304" "pe3-phone" no no yes || true
+      v_type_into "Phone" "+33 1 555 0304" "pe3-phone" no no yes 250 || true
       snap "pe3-form-edited" || true
       if v_click_near_anchor_y "Save Changes" "Cancel" "pe3-save" 40; then
         sleep 3
@@ -4375,8 +4406,8 @@ focus_patients() {
     local round
     for round in 1 2; do
       if v_click_edit_pencil "$PAT_E_PHONE" "pe4-edit-open-r$round" -38; then
-        v_clear_field "Notes" "pe4-notes-clear-r$round" || true
-        v_type_into "Notes" "ONLY-OCONNOR-ECHO round$round" "pe4-notes-r$round" || true
+        v_clear_field "Notes" "pe4-notes-clear-r$round" 250 || true
+        v_type_into "Notes" "ONLY-OCONNOR-ECHO round$round" "pe4-notes-r$round" no no no 250 || true
         if v_click_near_anchor_y "Save Changes" "Cancel" "pe4-save-r$round" 40; then
           sleep 3
         else
@@ -4423,8 +4454,8 @@ focus_patients() {
   PE6_RC=0
   if open_patient_by_phone_token "0304" "Élodie" "pe6-elodie" "+33 1 555 0304"; then
     if v_click_edit_pencil "+33 1 555 0304" "pe6-edit-open" -38; then
-      v_clear_field "Address" "pe6-addr-clear" || true
-      v_type_into "Address" "22 Avenue de la République" "pe6-addr" no yes || true
+      v_clear_field "Address" "pe6-addr-clear" 250 || true
+      v_type_into "Address" "22 Avenue de la République" "pe6-addr" no yes no 250 || true
       snap "pe6-form-edited" || true
       if v_click_near_anchor_y "Save Changes" "Cancel" "pe6-save" 40; then
         sleep 3
@@ -4465,7 +4496,7 @@ focus_patients() {
   PE5_RC=0
   if open_patient_by_phone_token "0304" "Élodie" "pe5-elodie" "+33 1 555 0304"; then
     if v_click_edit_pencil "+33 1 555 0304" "pe5-edit-open" -38; then
-      v_clear_field "Phone" "pe5-phone-clear" || true
+      v_clear_field "Phone" "pe5-phone-clear" 250 || true
       snap "pe5-phone-cleared" || true
       if v_click_near_anchor_y "Save Changes" "Cancel" "pe5-save" 40; then
         sleep 3
@@ -4530,8 +4561,8 @@ focus_patients() {
   PE7_RC=0
   if open_patient_by_phone_token "0202" "محمد" "pe7-mohammad" "$PAT_C_PHONE"; then
     if v_click_edit_pencil "$PAT_C_PHONE" "pe7-edit-open" -38; then
-      v_clear_field "Notes" "pe7-notes-clear" || true
-      v_type_into "Notes" "ONLY-MOHAMMAD-CHARLIE تحديث" "pe7-notes" no yes || true
+      v_clear_field "Notes" "pe7-notes-clear" 250 || true
+      v_type_into "Notes" "ONLY-MOHAMMAD-CHARLIE تحديث" "pe7-notes" no yes no 250 || true
       snap "pe7-form-edited" || true
       if v_click_near_anchor_y "Save Changes" "Cancel" "pe7-save" 40; then
         sleep 3
@@ -5028,7 +5059,7 @@ focus_patients() {
   v_scroll_top 10 || true
   if open_patient_detail "$PAT_B_FIRST $PAT_B_LAST" "nv2-jane"; then
     if v_click_edit_pencil "$PAT_B_FIRST $PAT_B_LAST" "nv2-edit-open"; then
-      v_type_into "Phone" "888-000-7777" "nv2-phone" || true
+      v_type_into "Phone" "888-000-7777" "nv2-phone" no no no 250 || true
       snap "nv2-edit-typed" || true
       v_click "Dashboard" "nv2-nav-away" "" || true
       sleep 2

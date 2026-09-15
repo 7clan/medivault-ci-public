@@ -428,3 +428,35 @@ Run-12 evidence preserved: artifact 10406119085 (302 files) + the GUI
 job log. Targeted ARM64 rerun dispatched — continuing from the exact
 stopping point (PE4's consecutive edits → PE5-PE7 → PV×8 → PDEL →
 PNAV → PP).
+
+## Patients focus — RUN 13 (35017083195 @ e391b85, 2026-09-15 20:01–21:27)
+
+The deepest and cleanest walk yet (~86 min): PC0–PC7 GREEN, PC8 3/3
+GREEN, the pc8 isolation sub-checks GREEN, and — for the first time —
+**ALL NINE isolation scans GREEN**: John Test (via the fixed token
+open), Jane, Muhammad, Élodie, O'Connor, the long-name patient, and the
+three similar-name cohort patients — own sentinel present, ZERO foreign
+sentinels across every full-detail scan. The product's patient data
+isolation stands proven across the entire cohort.
+
+PE1/PE2 opened John correctly (the run-12 token-search fix proven), the
+pencil opened the Edit Patient dialog — and then the run stopped at
+PE2's P1 ("saving John's edit produced no visible change"). The prove
+step found the harness defect: the label lookup for the dialog's Phone
+field picked the DETAIL BANNER's 'Phone' label at the left edge (the
+edit dialog renders over the detail page); the label click landed on
+the dialog OVERLAY and the modal dismissed itself before a single
+keystroke — Notes/Cancel/Save then all "not found" → the P1. PE1's
+recorded "Cancel edit — GREEN" was vacuous (the same dismissal —
+nothing was ever typed) and must be re-earned by the rerun. No product
+defect: no edit was ever attempted, let alone lost.
+
+Fix shipped (harness-only, +47/−16): the optional xmin label filter on
+v_type_into/v_clear_field — all 13 edit-battery typing sites restrict
+the label search to the dialog card's x-range (250). Static validation
+all GREEN (bash -n, no bash-4 constructs, def-before-use 68 fns,
+surface_row 165×8, frozen lanes, secret/PHI clean).
+
+Run-13 evidence preserved: artifact 10419362290 (311 files). Targeted
+ARM64 rerun dispatched — continuing from the exact stopping point
+(PE2's edit → PE3–PE7 → PV×8 → PDEL → PNAV → PP → the final report).
