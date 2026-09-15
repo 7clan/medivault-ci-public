@@ -3392,14 +3392,22 @@ create_patient_deep() { # <first> <last> <phone> <email> <address> <notes> <stem
     else
       probe "create[$stem]: the DOB digits could not be typed/verified (type=date automation limit — honest record; the field is optional)"
     fi
-    # D-fix (run 34917898200 PC7): a type=date field left mid-segment-edit
-    # makes the form's native validation reject the WHOLE submit with
-    # 'Invalid value' (the value is not committed while a segment is
-    # selected — observed blocking the long-name create with no API POST
-    # ever sent). A real user tabs out of the field; the harness must too.
-    # Tab commits the segments and moves focus to the next field.
-    osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 48' 10 || true
-    sleep 1
+    # D-fix (runs 34917898200 + 34921354377 PC7): the DOB type=date field
+    # ends mid-segment-edit after the digit attempt (a segment selected, the
+    # placeholder showing) — WebKit's form validation then reports 'Invalid
+    # value' for the field and blocks the WHOLE submit (no API POST ever
+    # sent; observed twice). A single Tab only moves ONE segment (month →
+    # day); the focus must cycle THROUGH the segments to exit the field —
+    # the committed value becomes the field's value (complete date → kept;
+    # partial/empty → the optional field is valid). A real user tabs
+    # through; the harness must too. (Escape is deliberately NOT used: if
+    # the field is not in segment-edit mode it would close the dialog.)
+    local dobtab=0
+    while [ "$dobtab" -lt 4 ]; do
+      osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 48' 10 || true
+      sleep 1
+      dobtab=$((dobtab + 1))
+    done
   fi
   snap "${stem}-form-filled" || true
   [ "$nfail" -gt 0 ] && probe "create[$stem]: $nfail typing step(s) not visually verified (kept — the dialog-close + row + count verify is the functional proof)"
