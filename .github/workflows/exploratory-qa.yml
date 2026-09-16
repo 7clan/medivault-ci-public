@@ -548,9 +548,14 @@ jobs:
     # (run 35041063210): the patients deep walk legitimately outgrew 90
     # minutes — the battery reached PV2 at exactly 90:00 and the job was
     # cancelled by the runner mid-battery (no harness stop, the artifact
-    # uploaded from the cleanup). 150 gives the PV×8 + PDEL + PNAV + PP
+    # uploaded from the cleanup). 150 gave the PV×8 + PDEL + PNAV + PP
     # sections their honest runtime.
-    timeout-minutes: 150
+    # (run 35121130113): the FIRST full-GREEN-path walk outgrew 150 —
+    # PC→PI→PE→PV→PDEL→nv1–nv6 ALL GREEN (~151 min) and the runner
+    # cancelled at the boundary with only nv7 + PP + the final report
+    # unstarted (no first-red, no harness stop; the same infrastructure
+    # class as the 90-min case). 210 gives the complete walk its headroom.
+    timeout-minutes: 210
 
     steps:
       - name: Checkout code
