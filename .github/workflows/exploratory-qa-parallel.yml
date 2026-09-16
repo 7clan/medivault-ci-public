@@ -37,6 +37,16 @@ on:
         type: choice
         options:
           - arm64
+      shards:
+        description: 'Comma-separated shards to run (default all; e.g. "B,C,D,E" to skip an already-green A)'
+        required: false
+        default: 'A,B,C,D,E'
+        type: string
+      sibling_run_ids:
+        description: 'Optional comma-separated EARLIER wave runs whose qa-evidence-* artifacts the combined gallery should also include (e.g. a run that already greened shard A)'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -99,6 +109,10 @@ jobs:
   shard:
     name: "Shard ${{ matrix.shard }} — ${{ matrix.label }}"
     needs: validate-source
+    # cross-shard fix discipline (directive §6): rerun only AFFECTED shards —
+    # the optional `shards` input filters the matrix (job-level if evaluated
+    # before scheduling, so skipped shards never allocate a runner)
+    if: contains(github.event.inputs.shards || 'A,B,C,D,E', matrix.shard)
     runs-on: macos-26
     timeout-minutes: 150
     strategy:
@@ -300,6 +314,32 @@ jobs:
           pattern: qa-evidence-*
           merge-multiple: false
           path: shards
+
+      - name: Download sibling wave-run evidence (cross-shard aggregation)
+        if: github.event.inputs.sibling_run_ids != ''
+        shell: bash
+        env:
+          SIBLINGS: ${{ github.event.inputs.sibling_run_ids }}
+        run: |
+          set -euo pipefail
+          for rid in $(printf '%s' "$SIBLINGS" | tr ',' ' '); do
+            [ -n "$rid" ] || continue
+            echo "pulling qa-evidence-* from sibling run $rid"
+            # REST download of each qa-evidence-* artifact zip (expired/missing skipped)
+            while read -r zid zname; do
+              [ -n "$zid" ] || continue
+              dest="shards/${zname}-sibling${rid}"
+              mkdir -p "$dest"
+              curl -sfL -H "Authorization: Bearer ${{ github.token }}" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/$zid/zip" -o "$dest/a.zip"
+              (cd "$dest" && unzip -q a.zip && rm -f a.zip)
+              echo "  staged $dest"
+            done < <(curl -sf -H "Authorization: Bearer ${{ github.token }}" \
+                 -H "Accept: application/vnd.github+json" \
+                 "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/$rid/artifacts?per_page=100" \
+                 | python3 -c "import json,sys; [print(a['id'], a['name']) for a in json.load(sys.stdin).get('artifacts',[]) if a['name'].startswith('qa-evidence-') and not a['expired']]")
+          done
+          ls -1 shards/ || true
 
       - name: Build the combined gallery (index.html + manifest + reports)
         shell: bash

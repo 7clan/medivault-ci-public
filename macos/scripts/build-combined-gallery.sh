@@ -102,20 +102,24 @@ combined_bugs = ["# Combined Bug Register (parallel wave)",
                  f"- PARALLEL RUN: {parallel_run}",
                  ""]
 
-# artifact-name-first walk (each downloaded artifact dir maps to a shard)
+# artifact-name-first walk (each downloaded artifact dir maps to a shard;
+# sibling-merged dirs are named <artifact-name>-sibling<runid> — matched by prefix)
+def shard_for(dirname):
+    for name, shard in ART_DIRS.items():
+        if dirname == name or dirname.startswith(name + "-"):
+            return shard
+    return None
+
 shard_arts = {"A": [], "B": [], "C": [], "D": [], "E": []}
 if os.path.isdir("shards"):
     for d in sorted(os.listdir("shards")):
-        if d in ART_DIRS:
-            shard_arts[ART_DIRS[d]].append(os.path.join("shards", d))
-            manifest["artifacts"].append({"artifact": d, "shard": ART_DIRS[d], "present": True})
+        shard = shard_for(d)
+        if shard:
+            shard_arts[shard].append(os.path.join("shards", d))
+            manifest["artifacts"].append({"artifact": d, "shard": shard, "present": True})
 
 for shard, label, focuses in SHARDS:
     arts = [a for a in shard_arts.get(shard, []) if os.path.isdir(a)]
-    # legacy layout fallback (qa-evidence-shard-X dirs)
-    legacy = f"shards/qa-evidence-shard-{shard}"
-    if not arts and os.path.isdir(legacy):
-        arts = [legacy]
     entry = {"shard": shard, "label": label, "focuses": focuses,
              "present": bool(arts), "screenshots": 0,
              "result": job_conclusions.get(shard, "unknown"),
