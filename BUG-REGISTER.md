@@ -526,3 +526,37 @@ for the rerun.
   present, no skeleton, no foreign sentinels).
 - **Evidence**: the 90:00 cancellation timing, PV1's GREEN, the pe7
   fallback probes, artifact 10427253185 (130MB).
+
+### BUG-PD10 [D] PDEL_TRASH_BAND + the BACKSPACE_BACK_NAVIGATION trap + the PP cascade — run 35048296418 (patients focus, run 17)
+
+- **Class**: D — three linked harness defects (the run's stopping P1 was
+  a cascade)
+- **The reported red**: `[bug-P1] PATIENT_PERSISTENCE: the patient count
+  after the restart reads '10' (expected 9 — records may have been lost)`
+  (04:41:06Z) — a CASCADE: Zed was never deleted, so 10 is the CORRECT
+  count for the actual state. No persistence defect.
+- **Defect 1 (PDEL, the trash)**: `v_click_delete_trash` had the two
+  pre-fix pencil defects — no top-restore (the search-row open leaves the
+  banner off-screen → "patient name 'Zed Delete' not found") and the
+  band from the anchor's y. Fix: the pencil's `detail_scroll_top` +
+  the shared `detail_banner_row` derivation (extracted into a helper
+  used by both icon clicks).
+- **Defect 2 (the trap)**: after the del2 D, the flow stayed on Zed's
+  DETAIL; the next `clear_search_box` ran its Cmd+K → Cmd+A →
+  **Backspace** with no input focused — WKWebView's BACK navigation
+  returned the webview to the tauri:// first-run page (the account-era
+  mechanism), and the ENTIRE PNAV battery then D'd against the
+  onboarding screen (nv1/nv2/nv3/nv6 all "could not open"). Fix: the
+  clear now GUARDS — the patients search bar must be visible before the
+  keystrokes, else it clicks Dashboard first.
+- **Defect 3 (del3's context)**: the ghost-entry probe searched for the
+  Recently Viewed section while still on the detail (it lives on the
+  dashboard). Fix: an explicit (idempotent) Dashboard navigation before
+  the probe.
+- **Also proven in run 17**: the ENTIRE edit battery GREEN (all 7 probes
+  incl. pe7 Arabic — the band clamp worked), PV1/PV2/PV4/PV5 GREEN
+  (PV3 the Recently Viewed chip D — honest; PV6-8 NOT EXERCISED — the
+  known visit-scheduler limitation).
+- **Evidence**: the del1/del2 "name not found" probes, the 04:30:39
+  clear-search followed by the onboarding OCRs, the nv D's on the
+  onboarding, the PP count-10, artifact (502 files).

@@ -1054,21 +1054,7 @@ v_click_edit_pencil() { # <patient-full-name> <stem> [yband-adj]
   # kept ONLY as the legacy fallback when no content line is found; the
   # anchor itself still verifies the right patient's detail is open.
   local band_cy x0 band_src
-  band_src="$(printf '%s\n' "$OCR_TEXT" | awk -F'|' '$1=="LINE" {y=$4+0; x=$3+0; if (y>=140 && y<=400 && x>=200 && (best=="" || y<best)) best=y} END {print (best=="" ? "" : best)}')"
-  # (run 35041063210, class D — pe7): an Arabic banner's text does not OCR,
-  # so the 'topmost content line' can pick a LOWER section line (observed
-  # 229) and drift the band 30pt below the icon row (the pe7 fallbacks at
-  # y=214 all missed; the row sits at ~180-199 like every patient). The
-  # banner's name row is ALWAYS within y 150..210 (every OCR-able patient
-  # measured 195-199). If the topmost line falls outside that window,
-  # assume the modal banner row (195).
-  case "$band_src" in
-    ''|*[!0-9]*) band_src="" ;;
-  esac
-  if [ -n "$band_src" ] && { [ "$band_src" -lt 150 ] || [ "$band_src" -gt 210 ]; }; then
-    probe "vclick-pencil[$stem]: topmost line y=$band_src is outside the banner row window (150..210) — assuming the modal banner row 195"
-    band_src=195
-  fi
+  band_src="$(detail_banner_row)"
   if [ -n "$band_src" ]; then
     band_cy=$(( band_src - 13 ))
     probe "vclick-pencil[$stem]: icon band from the topmost banner row y=$band_src → band center y=$band_cy"
@@ -1456,6 +1442,21 @@ clear_search_box() { # (run 34784559413, class D) the OCR-anchored clear failed 
   # querySelector matches the input's placeholder ATTRIBUTE which persists
   # even when the placeholder text is visually hidden). Then Cmd+A + delete.
   # Fully keyboard — no OCR, no visibility requirement.
+  # (run 35048296418, class D — the back-navigation trap): when the current
+  # view is NOT the patients list (e.g., a patient detail left open by the
+  # delete battery), the Cmd+K does not focus any input and the BACKSPACE
+  # triggers WKWebView's BACK navigation — the webview returns to the
+  # tauri:// first-run page from the back/forward cache (the account-era
+  # mechanism; in this run it trapped the whole PNAV battery on the
+  # onboarding screen). GUARD: the patients search bar must be visible
+  # before the keystrokes; otherwise click Dashboard first.
+  ocr_capture || true
+  if ! ocr_grep "Search patients"; then
+    probe "clear-search: the patients search bar is not visible — clicking Dashboard first (the Backspace back-navigation guard)"
+    v_click "Dashboard" "clear-search-goto-dash" "Add Patient" || true
+    sleep 2
+    ocr_capture || true
+  fi
   osa 'tell application "System Events" to tell (first process whose name contains "edivault") to keystroke "k" using command down' 10 || true
   sleep 1
   osa 'tell application "System Events" to tell (first process whose name contains "edivault") to keystroke "a" using command down' 10 || true
@@ -2405,13 +2406,31 @@ create_patient_full() { # <first> <last> <phone> <email> <note> <stem> — riche
 
 v_click_delete_trash() { # <patient-full-name> <stem> — the icon-only DELETE control (rightmost cluster)
   local name="$1" stem="$2"
+  # (run 35048296418, class D): a detail opened from a SEARCH-row click
+  # lands with the banner SCROLLED OFF-SCREEN — the name anchor is then
+  # 'not found' and the delete battery D's (Zed was never deleted, and the
+  # PP persistence count P1'd on the cascade). Scroll the detail to the TOP
+  # (the banner) before the anchor lookup — the pencil's own fix.
+  local up=0
+  while [ "$up" -lt 8 ]; do
+    scroll_burst up
+    sleep 1
+    up=$((up + 1))
+  done
   ocr_capture || return 1
   if ! ocr_lookup "$name" "first"; then
     probe "vclick-trash[$stem]: patient name '$name' not found on screen — no anchor, no click"
     return 1
   fi
-  local band_cy x0
-  band_cy=$(( OCR_HIT_Y - 13 ))
+  # (run 35048296418, class D): the band comes from the TOPMOST BANNER ROW
+  # (the pencil's shared derivation) — never from the anchor's own y.
+  local band_cy x0 band_src
+  band_src="$(detail_banner_row)"
+  if [ -n "$band_src" ]; then
+    band_cy=$(( band_src - 13 ))
+  else
+    band_cy=$(( OCR_HIT_Y - 13 ))
+  fi
   x0=$(( OCR_HIT_X + OCR_HIT_W + 30 ))
   probe "vclick-trash[$stem]: anchor name '$name' at ($OCR_HIT_X,$OCR_HIT_Y) — icon band center y=$band_cy"
   if [ -n "$MV_ICONSCAN" ]; then
@@ -3689,6 +3708,26 @@ detail_scroll_top() { # <stem> — the detail-page top restore (the banner): the
     up=$((up + 1))
   done
   probe "detail-top[$stem]: scrolled to the top of the detail view (the banner) before the verify"
+}
+
+detail_banner_row() { # echoes the detail banner's name/avatar row y (the icon row sits at row-13/-15); empty when no content line is found
+  # Shared by the pencil and the trash icon clicks. (runs 35026560477 +
+  # 35041063210, class D): the icon band must come from the TOPMOST
+  # CONTENT LINE (x≥200, y 140..400 — the name/avatar row), never from
+  # the anchor's own y (the contact subline sits ~171pt below the icons);
+  # and an Arabic banner's text does not OCR, so the topmost line can be
+  # a LOWER section line — clamp to the banner window [150..210] (every
+  # OCR-able patient measured 195-199) with the modal row 195 assumed
+  # outside it.
+  local row
+  row="$(printf '%s\n' "$OCR_TEXT" | awk -F'|' '$1=="LINE" {y=$4+0; x=$3+0; if (y>=140 && y<=400 && x>=200 && (best=="" || y<best)) best=y} END {print (best=="" ? "" : best)}')"
+  case "$row" in
+    ''|*[!0-9]*) row="" ;;
+  esac
+  if [ -n "$row" ] && { [ "$row" -lt 150 ] || [ "$row" -gt 210 ]; }; then
+    row=195
+  fi
+  printf '%s' "$row"
 }
 
 detail_open_proof() { # <stem> — the real detail-open gate: the LIST always shows its search bar
@@ -5058,6 +5097,11 @@ focus_patients() {
   fi
 
   # DEL3 — the stale Recently Viewed ghost entry for the DELETED patient
+  # (run 35048296418, class D): after del2 the flow can still be on Zed's
+  # DETAIL — the Recently Viewed section lives on the DASHBOARD. Navigate
+  # there first (the click is idempotent when already there).
+  v_click "Dashboard" "del3-goto-dash" "Add Patient" || true
+  wait_for_ocr "Add Patient" 20 "del3-dash" || true
   v_scroll_top 10 || true
   if v_scroll_find "Recently Viewed" 8; then
     scroll_burst down

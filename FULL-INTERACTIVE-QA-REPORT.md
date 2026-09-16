@@ -536,3 +536,32 @@ secret/PHI clean).
 
 Run-16 evidence preserved: artifact 10427253185. Targeted ARM64 rerun
 dispatched — continuing from PV2 (the exact stopping point).
+
+## Patients focus — RUN 17 (35048296418 @ c6258d4, 2026-09-16 02:31–04:42)
+
+The full battery reached PP: the ENTIRE edit battery GREEN (PE1 cancel,
+PE2 multi-field, PE3 single, PE4 consecutive ×2, PE5 clear-optional,
+PE6 Unicode address, PE7 Arabic note — the band clamp fixed pe7), then
+the entry points: PV1 list-row GREEN, PV2 search-result GREEN, PV4
+Activity Timeline GREEN (the 5ede518 fix holds), PV5 Quick Switcher
+GREEN, PV3 Recently Viewed chip D (honest), PV6-8 NOT EXERCISED (the
+known visit-scheduler limitation).
+
+PDEL's trash then D'd twice (the same two pre-fix pencil defects: no
+top-restore + the anchor-y band) — Zed was never deleted. The del2
+failure left the flow on Zed's detail, where the next clear_search_box's
+Backspace (no input focused) triggered WKWebView's BACK navigation to
+the tauri:// first-run page — the ENTIRE PNAV battery then D'd against
+the onboarding screen. PP finally P1'd on the count (10 vs the expected
+9 — the correct count for the undeleted Zed; a pure cascade).
+
+Fixes shipped (harness-only, +61/−17): the trash gets the pencil's
+top-restore + the shared `detail_banner_row` band (extracted helper);
+the clear_search_box GUARD (the patients search bar must be visible
+before the keystrokes, else click Dashboard first — the back-navigation
+trap can never fire again); del3 navigates to the dashboard before the
+ghost probe. Static validation all GREEN.
+
+Run-17 evidence preserved: artifact (502 files). Targeted ARM64 rerun
+dispatched — continuing from PDEL (the exact stopping point: the delete
+battery → PNAV → PP → the final report).
