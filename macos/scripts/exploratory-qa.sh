@@ -5154,7 +5154,7 @@ focus_patients() {
     sleep 1
     v_scroll_top 10 || true
     if open_patient_detail "$PAT_B_FIRST $PAT_B_LAST" "nv1-second"; then
-      ocr_capture || true
+      detail_scroll_top "nv1-second-verify" || true
       if ocr_grep "$PAT_B_NOTE"; then
         probe "nv1: the immediate switch landed on JANE's record (her sentinel present)"
         qa_cap NAV_IMMEDIATE_SWITCH "GREEN (open → immediate switch → the second patient's own record)"
@@ -5190,7 +5190,7 @@ focus_patients() {
       wait_for_ocr "Add Patient" 20 "nv2-dashboard" || true
       v_scroll_top 10 || true
       if open_patient_detail "$PAT_B_FIRST $PAT_B_LAST" "nv2-reopen"; then
-        ocr_capture || true
+        detail_scroll_top "nv2-reopen-verify" || true
         if ocr_grep "888-000-7777"; then
           bug P1 NAV_EDIT_NAVIGATE_AWAY "navigating away from a typed (unsaved) edit dialog PERSISTED the value 888-000-7777 — the abandoned edit must not save"
         else
@@ -5325,7 +5325,7 @@ focus_patients() {
     wait_for_ocr "Add Patient" 60 "nv7-dashboard" || bug P1 NAV_LOGOUT_FROM_DETAIL "no dashboard after the re-login"
     v_scroll_top 10 || true
     if open_patient_by_phone_token "0202" "محمد" "nv7-reopen" "$PAT_C_PHONE"; then
-      ocr_capture || true
+      detail_scroll_top "nv7-reopen-verify" || true
       if ocr_grep "$PAT_C_NOTE"; then
         qa_cap NAV_LOGOUT_FROM_DETAIL "GREEN (logout from the patient detail → clean login screen (no patient data) → re-login → the same patient reopens with his data intact)"
         surface_row "Logout from a patient detail" "patient detail → profile → Sign Out → Sign In → reopen" "—" "no patient data logged-out; the record reopens intact after re-login" "sentinel absent logged-out; present after the reopen" "GREEN" "nv7-*" "OK"

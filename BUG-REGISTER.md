@@ -651,3 +651,24 @@ for the rerun.
 - **Evidence**: pc1b-open-before (Dashboard) → pc1b-open-after
   (Settings), the Settings-page form-filled/submit-failed snaps, the
   zero create POSTs, bug-01, artifact (546+ files).
+
+### BUG-PD15 [D] NV7_BARE_GREP_PAST_BANNER — run 35102143182 (patients focus, run 22)
+
+- **Class**: D — the last of the scrolled-past-banner bare-grep family
+  (the run's stopping P1 — FALSE)
+- **The reported red**: `[bug-P1] NAV_LOGOUT_FROM_DETAIL: after the
+  re-login + reopen, Muhammad's sentinel note is not visible (the
+  record lost data across the logout cycle?)` (16:16:16Z).
+- **What actually happened**: the logout/re-login/reopen all WORKED
+  (the flow reached the reopen; the token open succeeded) — but the
+  verify's bare `ocr_grep` read the mid-page capture (the banner, where
+  the sentinel renders, was scrolled off-screen). The SAME pattern also
+  existed in nv1's and nv2's verifies (nv2's is an absence check that
+  passed vacuously — the restore makes it real).
+- **Fix (applied, harness-only, 3 sites)**: nv1-second, nv2-reopen, and
+  nv7-reopen use `detail_scroll_top` (the OCR-refreshing restore) before
+  their greps — the systematic sweep now shows ZERO remaining
+  bare-grep-after-open sites in the battery.
+- **Also proven in run 22**: nv1-nv6 all GREEN (the first run through
+  the ENTIRE navigation battery).
+- **Evidence**: bug-05, the artifact (run 22).
