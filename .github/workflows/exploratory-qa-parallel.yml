@@ -106,36 +106,59 @@ jobs:
           retention-days: 14
           path: dmg/
 
+  prep-shards:
+    name: "Prepare the shard matrix (filter per the shards input)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      include: ${{ steps.set.outputs.include }}
+      any: ${{ steps.set.outputs.any }}
+    steps:
+      - id: set
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILTER="${{ github.event.inputs.shards || 'A,B,C,D,E' }}"
+          INCLUDE="$(python3 - "$FILTER" <<'PYEOF'
+          import json, sys
+          filt = [s.strip().upper() for s in sys.argv[1].split(',') if s.strip()]
+          ALL = [
+              {"shard": "A", "label": "search + settings + persistence",
+               "focus_list": "search settings persistence"},
+              {"shard": "B", "label": "documents + scan + file management",
+               "focus_list": "documents"},
+              {"shard": "C", "label": "clinical workflow (visits/notes/rx/reports)",
+               "focus_list": "clinical"},
+              {"shard": "D", "label": "data-io + dashboard + analytics + notifications + global",
+               "focus_list": "dataio"},
+              {"shard": "E", "label": "macOS save/print + error/recovery",
+               "focus_list": "desktop"},
+          ]
+          include = [e for e in ALL if e["shard"] in filt]
+          print(json.dumps(include))
+          PYEOF
+          )"
+          echo "include=${INCLUDE}" >> "$GITHUB_OUTPUT"
+          if [ "$INCLUDE" = "[]" ]; then
+            echo "any=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "any=true" >> "$GITHUB_OUTPUT"
+          fi
+
   shard:
     name: "Shard ${{ matrix.shard }} — ${{ matrix.label }}"
-    needs: validate-source
+    needs: [validate-source, prep-shards]
     # cross-shard fix discipline (directive §6): rerun only AFFECTED shards —
-    # the optional `shards` input filters the matrix (job-level if evaluated
-    # before scheduling, so skipped shards never allocate a runner)
-    if: contains(github.event.inputs.shards || 'A,B,C,D,E', matrix.shard)
+    # the `shards` input filters the matrix at prepare time (skipped shards
+    # are simply absent from the matrix; no runner is ever allocated)
+    if: needs.prep-shards.outputs.any == 'true'
     runs-on: macos-26
     timeout-minutes: 150
     strategy:
       fail-fast: false
       max-parallel: 5
       matrix:
-        include:
-          - shard: A
-            label: "search + settings + persistence"
-            # sequential: 3 clean invocations of ALREADY-IMPLEMENTED focuses
-            focus_list: "search settings persistence"
-          - shard: B
-            label: "documents + scan + file management"
-            focus_list: "documents"
-          - shard: C
-            label: "clinical workflow (visits/notes/rx/reports)"
-            focus_list: "clinical"
-          - shard: D
-            label: "data-io + dashboard + analytics + notifications + global"
-            focus_list: "dataio"
-          - shard: E
-            label: "macOS save/print + error/recovery"
-            focus_list: "desktop"
+        include: ${{ fromJSON(needs.prep-shards.outputs.include) }}
     env:
       EXPECTED_ARCH: arm64
       SOURCE_RUN_ID: ${{ github.event.inputs.source_run_id }}
@@ -300,7 +323,7 @@ jobs:
 
   combined-gallery:
     name: "Combined post-run evidence gallery"
-    needs: [shard]
+    needs: [shard, prep-shards]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
