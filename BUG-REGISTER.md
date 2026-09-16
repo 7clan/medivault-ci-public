@@ -606,3 +606,22 @@ for the rerun.
   v_scroll_find re-captures internally.)
 - **Evidence**: the three hop rows' correct clicks + detail-proofs, the
   stale-OCR greps, bug-04, artifact (531 files).
+
+### BUG-PD13 [D] NV6_BARE_GREP_PAST_BANNER — run 35083580318 (patients focus, run 20)
+
+- **Class**: D — the same scrolled-past-banner family (the run's stopping P1 — FALSE)
+- **The reported red**: `[bug-P1] NAV_SEARCH_CLEAR_REOPEN: the reopen
+  after clearing the search lost the edited phone (0777 absent)`.
+- **What actually happened**: the reopen WORKED — the retry clicked
+  John's 0777 row, the detail opened (the OCRs show its sections) — but
+  the verify's bare `ocr_grep "0777"` read the mid-page capture (the
+  banner, where the phone renders, was scrolled off-screen). nv3 was
+  GREEN this run (the OCR-refresh fix proven); the same bare-grep
+  pattern remained in nv6 (and PP's Muhammad check).
+- **Fix (applied, harness-only)**: nv6's reopen verify + PP's Muhammad
+  verify use `detail_scroll_top` (the OCR-refreshing restore) before
+  their greps. The PP John verify was already safe
+  (verify_detail_authoritative scrolls internally); the PP Zed-gone
+  check is an absence check on the search page.
+- **Evidence**: the 0777 row-retry click, the mid-page post-open OCRs,
+  bug-04, artifact (546 files).

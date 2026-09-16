@@ -5266,7 +5266,10 @@ focus_patients() {
       clear_search_box || true
       v_scroll_top 10 || true
       if open_patient_detail "$PAT_A_FIRST $PAT_A_LAST" "nv6-reopen" "$JOHN_NEW_PHONE"; then
-        ocr_capture || true
+        # (run 35083580318, class D): the reopen's detail can land scrolled
+        # past the banner where the edited phone renders — the restore (which
+        # refreshes the OCR) before the grep.
+        detail_scroll_top "nv6-reopen-verify" || true
         if ocr_grep "0777"; then
           qa_cap NAV_SEARCH_CLEAR_REOPEN "GREEN (search → open → clear → reopen: the same authoritative record both times)"
           surface_row "Search → clear → reopen" "search box, row click, clear, list reopen" "—" "the record is stable across search states" "both opens showed the edited phone" "GREEN" "nv6-*" "OK"
@@ -5408,7 +5411,9 @@ focus_patients() {
   # Muhammad's Arabic-mixed note survived
   v_scroll_top 10 || true
   if open_patient_by_phone_token "0202" "محمد" "pp-mohammad" "$PAT_C_PHONE"; then
-    ocr_capture || true
+    # (run 35083580318, class D — same as nv6): the restore (OCR-refreshing)
+    # before the sentinel grep — the search-row open can land past the banner.
+    detail_scroll_top "pp-mohammad-verify" || true
     if ocr_grep "$PAT_C_NOTE"; then
       probe "pp: Muhammad's Arabic-mixed note survived the restart (sentinel visible)"
     else
