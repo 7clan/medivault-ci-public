@@ -64,7 +64,9 @@ if token and parallel_run not in ("", "unknown"):
 # 2. walk shard artifacts (directive §9 names → shard letters)
 ART_DIRS = {
     "qa-evidence-search": "A",
+    "qa-evidence-settings": "A",
     "qa-evidence-settings-persistence": "A",
+    "qa-evidence-persistence": "A",
     "qa-evidence-documents-scan": "B",
     "qa-evidence-clinical": "C",
     "qa-evidence-data-io": "D",

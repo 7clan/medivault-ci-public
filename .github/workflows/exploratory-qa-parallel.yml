@@ -123,16 +123,23 @@ jobs:
           import json, sys
           filt = [s.strip().upper() for s in sys.argv[1].split(',') if s.strip()]
           ALL = [
-              {"shard": "A", "label": "search + settings + persistence",
-               "focus_list": "search settings persistence"},
+              # Shard A = three CLEAN-VM jobs (the harness gateway demands a
+              # pristine runner per invocation — sequential focuses on one VM
+              # fail FRESH_STATE, proven by run 35157098933's settings ENV-RED)
+              {"shard": "A", "label": "search", "focus_list": "search",
+               "artifact": "search"},
+              {"shard": "A", "label": "settings", "focus_list": "settings",
+               "artifact": "settings"},
+              {"shard": "A", "label": "persistence", "focus_list": "persistence",
+               "artifact": "persistence"},
               {"shard": "B", "label": "documents + scan + file management",
-               "focus_list": "documents"},
+               "focus_list": "documents", "artifact": "documents-scan"},
               {"shard": "C", "label": "clinical workflow (visits/notes/rx/reports)",
-               "focus_list": "clinical"},
+               "focus_list": "clinical", "artifact": "clinical"},
               {"shard": "D", "label": "data-io + dashboard + analytics + notifications + global",
-               "focus_list": "dataio"},
+               "focus_list": "dataio", "artifact": "data-io"},
               {"shard": "E", "label": "macOS save/print + error/recovery",
-               "focus_list": "desktop"},
+               "focus_list": "desktop", "artifact": "desktop-print"},
           ]
           include = [e for e in ALL if e["shard"] in filt]
           print(json.dumps(include))
@@ -244,81 +251,32 @@ jobs:
       - name: Upload shard evidence (always, directive §9 names)
         if: always()
         shell: bash
+        env:
+          ART: ${{ matrix.artifact }}
         run: |
           set -uo pipefail
-          case "$SHARD" in
-            A)
-              # search focus + the settings/persistence pair, per §9
-              if [ -d gui-evidence-search ]; then
-                (cd gui-evidence-search && zip -qr "$OLDPWD/qa-evidence-search.zip" . ) || true
-              fi
-              if [ -d gui-evidence-settings ] || [ -d gui-evidence-persistence ]; then
-                mkdir -p sp/settings sp/persistence || true
-                [ -d gui-evidence-settings ] && cp -R gui-evidence-settings/. sp/settings/ || true
-                [ -d gui-evidence-persistence ] && cp -R gui-evidence-persistence/. sp/persistence/ || true
-                (cd sp && zip -qr "$OLDPWD/qa-evidence-settings-persistence.zip" . ) || true
-              fi
-              ;;
-            B) (cd gui-evidence-documents 2>/dev/null && zip -qr "$OLDPWD/qa-evidence-documents-scan.zip" . ) || true ;;
-            C) (cd gui-evidence-clinical   2>/dev/null && zip -qr "$OLDPWD/qa-evidence-clinical.zip" . ) || true ;;
-            D) (cd gui-evidence-dataio      2>/dev/null && zip -qr "$OLDPWD/qa-evidence-data-io.zip" . ) || true ;;
-            E) (cd gui-evidence-desktop    2>/dev/null && zip -qr "$OLDPWD/qa-evidence-desktop-print.zip" . ) || true ;;
-          esac
-          echo "zips ready:"; ls -1 qa-evidence-*.zip 2>/dev/null || echo "(none — harness may have stopped before evidence)"
-        # (the actual upload uses the matrix artifact suffix below)
+          # the battery step renames gui-evidence -> gui-evidence-<focus> per invocation
+          src=""
+          for d in gui-evidence-*/; do
+            [ -d "$d" ] || continue
+            if [ -z "$src" ]; then src="$d"; else src=""; break; fi   # ambiguity guard: exactly one focus dir expected
+          done
+          if [ -z "$src" ]; then
+            echo "(no focus evidence dir found — harness may have stopped before evidence; listing cwd)"
+            ls -1 || true
+          else
+            (cd "$src" && zip -qr "$OLDPWD/qa-evidence-${ART}.zip" . ) || true
+            echo "zipped ${src} -> qa-evidence-${ART}.zip"
+          fi
+          ls -1 qa-evidence-*.zip 2>/dev/null || echo "(no evidence zip this job)"
 
-      - name: Upload A — search
-        if: always() && matrix.shard == 'A'
+      - name: Upload shard evidence artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: qa-evidence-search
+          name: qa-evidence-${{ matrix.artifact }}
           retention-days: 14
-          path: qa-evidence-search.zip
-          if-no-files-found: warn
-
-      - name: Upload A — settings + persistence
-        if: always() && matrix.shard == 'A'
-        uses: actions/upload-artifact@v4
-        with:
-          name: qa-evidence-settings-persistence
-          retention-days: 14
-          path: qa-evidence-settings-persistence.zip
-          if-no-files-found: warn
-
-      - name: Upload B — documents + scan
-        if: always() && matrix.shard == 'B'
-        uses: actions/upload-artifact@v4
-        with:
-          name: qa-evidence-documents-scan
-          retention-days: 14
-          path: qa-evidence-documents-scan.zip
-          if-no-files-found: warn
-
-      - name: Upload C — clinical
-        if: always() && matrix.shard == 'C'
-        uses: actions/upload-artifact@v4
-        with:
-          name: qa-evidence-clinical
-          retention-days: 14
-          path: qa-evidence-clinical.zip
-          if-no-files-found: warn
-
-      - name: Upload D — data-io
-        if: always() && matrix.shard == 'D'
-        uses: actions/upload-artifact@v4
-        with:
-          name: qa-evidence-data-io
-          retention-days: 14
-          path: qa-evidence-data-io.zip
-          if-no-files-found: warn
-
-      - name: Upload E — desktop + print
-        if: always() && matrix.shard == 'E'
-        uses: actions/upload-artifact@v4
-        with:
-          name: qa-evidence-desktop-print
-          retention-days: 14
-          path: qa-evidence-desktop-print.zip
+          path: qa-evidence-${{ matrix.artifact }}.zip
           if-no-files-found: warn
 
   combined-gallery:
