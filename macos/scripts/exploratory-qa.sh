@@ -36,7 +36,7 @@ set -uo pipefail
 EXPECTED_ARCH="${EXPECTED_ARCH:-arm64}"
 QA_FOCUS="${QA_FOCUS:-surface}"
 case "$QA_FOCUS" in
-  surface|account|patients|search|settings|persistence) : ;;
+  surface|account|patients|search|settings|persistence|documents|clinical|dataio|desktop) : ;;
   *) echo "::error::QA_FOCUS must be surface|account|patients|search|settings|persistence|documents|clinical|dataio|desktop (got '$QA_FOCUS')"; exit 1 ;;
 esac
 DMG_PATH="${DMG_PATH:?DMG_PATH env is required (the built test DMG)}"
