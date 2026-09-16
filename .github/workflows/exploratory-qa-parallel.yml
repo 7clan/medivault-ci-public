@@ -124,8 +124,6 @@ jobs:
             focus_list: "desktop"
     env:
       EXPECTED_ARCH: arm64
-      DMG_PATH: ${{ runner.temp }}/dmg/MediVault-0.1.1-firstrun-arm64.dmg
-      DMG_SHA256_FILE: ${{ runner.temp }}/dmg/MediVault-0.1.1-firstrun-arm64.dmg.sha256
       SOURCE_RUN_ID: ${{ github.event.inputs.source_run_id }}
       SHARD: ${{ matrix.shard }}
     steps:
@@ -140,6 +138,9 @@ jobs:
 
       - name: Prove the DMG SHA-256 in this shard too
         shell: bash
+        env:
+          DMG_PATH: ${{ runner.temp }}/dmg/MediVault-0.1.1-firstrun-arm64.dmg
+          DMG_SHA256_FILE: ${{ runner.temp }}/dmg/MediVault-0.1.1-firstrun-arm64.dmg.sha256
         run: |
           set -euo pipefail
           EXPECTED="$(awk '{print $1}' "$DMG_SHA256_FILE")"
@@ -149,6 +150,9 @@ jobs:
 
       - name: Run the shard battery (each focus = full clean gateway + honest first-red)
         shell: bash
+        env:
+          DMG_PATH: ${{ runner.temp }}/dmg/MediVault-0.1.1-firstrun-arm64.dmg
+          DMG_SHA256_FILE: ${{ runner.temp }}/dmg/MediVault-0.1.1-firstrun-arm64.dmg.sha256
         run: |
           set -euo pipefail
           rc_all=0
