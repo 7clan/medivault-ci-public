@@ -560,3 +560,29 @@ for the rerun.
 - **Evidence**: the del1/del2 "name not found" probes, the 04:30:39
   clear-search followed by the onboarding OCRs, the nv D's on the
   onboarding, the PP count-10, artifact (502 files).
+
+### BUG-PD11 [D] NV3_STALE_PRE_EDIT_TOKEN — run 35057060814 (patients focus, run 18)
+
+- **Class**: D — harness defect (the run's stopping P1 — a FALSE
+  positive; no product defect)
+- **The reported red**: `[bug-P1] NAV_RAPID_SWITCHING: a rapid-switch hop
+  landed on the wrong record (a sentinel mismatched)` (07:21:55Z).
+- **What actually happened**: hop 3 searched the phone token **'0101' —
+  John's PRE-edit number**. PE2 had changed John's phone to
+  +1 555 0777 hours earlier in the battery; the search for the stale
+  token returned **"No patients found"** (the OCR evidence), the row
+  click had nothing to click, the open returned failure — and the
+  conflated verdict logic reported it as "landed on the wrong record".
+  Hops 1 (Muhammad) and 2 (O'Connor) opened correctly with their
+  sentinels verified. No wrong record was ever rendered.
+- **Fix (applied, harness-only, +28/−10)**: hop 3 now searches the
+  POST-edit token '0777' with $JOHN_NEW_PHONE as the row needle; each
+  hop's sentinel grep is preceded by the detail top-restore (the
+  search-row open can land past the banner); and a FAILED OPEN is an
+  honest D — only a real sentinel mismatch records the P1.
+- **Also proven in run 18**: **PDEL ALL GREEN** (the Delete dialog
+  opened via the fixed trash, the cancel delete GREEN, the confirm
+  delete GREEN — Zed DELETED, the count badge 9 — and the ghost entry
+  GREEN/clean), nv2 edit-navigate-away GREEN.
+- **Evidence**: the "No patients found" OCRs at 07:21, the hop1/hop2
+  sentinel passes, bug-05, artifact (536 files).

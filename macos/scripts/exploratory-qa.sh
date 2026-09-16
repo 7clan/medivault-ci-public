@@ -5205,24 +5205,42 @@ focus_patients() {
   fi
 
   # NV3 — rapid patient switching (3 hops, each verified by the own-sentinel)
+  # (run 35057060814, class D): hop3 searched the STALE pre-edit token '0101'
+  # — John's phone is $JOHN_NEW_PHONE after PE2, so the search found 0
+  # patients, the open failed, and the conflated P1 claimed 'landed on the
+  # wrong record'. The token is now the post-edit 0777; each sentinel grep
+  # is preceded by the detail top-restore (the search-row open can land
+  # past the banner where the sentinel renders); and a FAILED OPEN is an
+  # honest D — only a real sentinel mismatch is the P1.
   v_scroll_top 10 || true
-  NV3_RC=0
+  NV3_RC=0; NV3_OPENFAIL=0
   if open_patient_by_phone_token "0202" "محمد" "nv3-hop1" "$PAT_C_PHONE"; then
+    detail_scroll_top "nv3-hop1-verify" || true
     ocr_grep "$PAT_C_NOTE" || NV3_RC=1
     v_click "Dashboard" "nv3-back1" "Add Patient" || true
     sleep 1
     v_scroll_top 10 || true
-    open_patient_by_phone_token "0105" "O'Connor" "nv3-hop2" "$PAT_E_PHONE" || NV3_RC=1
-    ocr_grep "$PAT_E_NOTE" || NV3_RC=1
-    v_click "Dashboard" "nv3-back2" "Add Patient" || true
-    sleep 1
-    v_scroll_top 10 || true
-    open_patient_by_phone_token "0101" "John" "nv3-hop3" "$PAT_A_PHONE" || NV3_RC=1
-    ocr_grep "$PAT_A_NOTE" || NV3_RC=1
-    if [ "$NV3_RC" = "0" ]; then
+    if open_patient_by_phone_token "0105" "O'Connor" "nv3-hop2" "$PAT_E_PHONE"; then
+      detail_scroll_top "nv3-hop2-verify" || true
+      ocr_grep "$PAT_E_NOTE" || NV3_RC=1
+      v_click "Dashboard" "nv3-back2" "Add Patient" || true
+      sleep 1
+      v_scroll_top 10 || true
+      if open_patient_by_phone_token "0777" "John" "nv3-hop3" "$JOHN_NEW_PHONE"; then
+        detail_scroll_top "nv3-hop3-verify" || true
+        ocr_grep "$PAT_A_NOTE" || NV3_RC=1
+      else
+        NV3_OPENFAIL=1
+        bug D PATIENTS_NAV "the third rapid-switch hop could not open John (the post-edit 0777 search — honest)"
+      fi
+    else
+      NV3_OPENFAIL=1
+      bug D PATIENTS_NAV "the second rapid-switch hop could not open O'Connor (honest)"
+    fi
+    if [ "$NV3_OPENFAIL" = "0" ] && [ "$NV3_RC" = "0" ]; then
       qa_cap NAV_RAPID_SWITCHING "GREEN (3 rapid patient hops — each landed on its own record with its own sentinel)"
       surface_row "Rapid patient switching" "open → back → open ×3 at human speed" "—" "each open renders the correct record" "3 hops; each sentinel verified" "GREEN" "nv3-*" "OK"
-    else
+    elif [ "$NV3_OPENFAIL" = "0" ]; then
       bug P1 NAV_RAPID_SWITCHING "a rapid-switch hop landed on the wrong record (a sentinel mismatched — see the nv3 evidence)"
     fi
     v_click "Dashboard" "nv3-back" "Add Patient" || true

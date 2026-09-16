@@ -565,3 +565,24 @@ ghost probe. Static validation all GREEN.
 Run-17 evidence preserved: artifact (502 files). Targeted ARM64 rerun
 dispatched — continuing from PDEL (the exact stopping point: the delete
 battery → PNAV → PP → the final report).
+
+## Patients focus — RUN 18 (35057060814 @ 37ba9a8, 2026-09-16 04:48–07:22)
+
+**THE DELETE BATTERY IS GREEN**: the trash fix proven — the Delete
+Patient dialog opened, the CANCEL delete verified (Zed survived), the
+CONFIRM delete verified (Zed deleted, count 9), and the deleted-patient
+ghost entry checked clean. nv2 (edit → navigate away) GREEN.
+
+The run stopped at nv3's rapid-switch P1 — a FALSE positive: hop 3
+searched John's PRE-edit phone token '0101' (his number is 0777 since
+PE2), the search found no patients, the open failed, and the conflated
+verdict wording claimed a wrong record. Hops 1-2 verified correctly. No
+product defect (BUG-PD11).
+
+Fix shipped (harness-only, +28/−10): the post-edit token; the
+top-restore before each hop's sentinel grep; the open-failure D vs the
+sentinel-mismatch P1 split. Static validation all GREEN.
+
+Run-18 evidence preserved: artifact (536 files). Targeted ARM64 rerun
+dispatched — continuing from nv3 (the exact stopping point: the
+rapid-switch hops → nv6 → PP → the final report).
