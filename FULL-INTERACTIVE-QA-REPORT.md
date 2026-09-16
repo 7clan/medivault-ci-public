@@ -512,3 +512,27 @@ lanes, secret/PHI clean).
 Run-15 evidence preserved: artifact (362 files). Targeted ARM64 rerun
 dispatched — continuing from the exact stopping point (pe4's visual
 confirm → pe5/pe6/pe7 → PV×8 → PDEL → PNAV → PP → the final report).
+
+## Patients focus — RUN 16 (35041063210 @ 3743fd6, 2026-09-16 00:41–02:26)
+
+The deepest walk: PC0–PC10, all NINE isolation scans, the FULL edit
+battery (PE1 cancel, PE2 multi-field, PE3 single-field, PE4 CONSECUTIVE
+— both rounds saved and visually confirmed, PE5 clear-optional, PE6
+Unicode address), then PV began — **PV1 the list-row entry point GREEN**
+(the post-edit John's 0777 row; the authoritative record verified) —
+and PV2's search was mid-flight when the job hit the workflow's
+`timeout-minutes: 90` and was CANCELLED at exactly 90:00 elapsed (the
+artifact uploaded by the cleanup). Classification: infrastructure — the
+battery legitimately outgrew the 90-minute budget now that PE completes.
+pe7's Arabic pencil also D'd (the band derivation picked a section line
+at 229 for the un-OCR-able Arabic banner — 30pt below the icon row).
+
+Fixes shipped: the GUI job timeout raised to 150 minutes (the
+campaign's own workflow file — no frozen lane touched); the pencil band
+clamped to the banner window [150..210] with the modal row (195)
+assumed outside it. Static validation all GREEN (bash -n, yaml parse,
+no bash-4 constructs, def-before-use, surface_row 165×8, frozen lanes,
+secret/PHI clean).
+
+Run-16 evidence preserved: artifact 10427253185. Targeted ARM64 rerun
+dispatched — continuing from PV2 (the exact stopping point).

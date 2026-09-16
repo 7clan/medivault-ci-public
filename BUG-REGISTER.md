@@ -497,3 +497,32 @@ for the rerun.
 - **Evidence**: the two 200 PUTs, the reopened detail's mid-page OCRs,
   the 'NOT visible after 8 down scroll bursts' probe, bug-03, artifact
   (run 15, 362 files).
+
+### BUG-PD9 [D] PENCIL_BAND_ARABIC_BANNER + [INFRA] JOB_TIMEOUT_90 — run 35041063210 (patients focus, run 16)
+
+- **Class**: D (pe7) + an infrastructure classification for the run's
+  CANCELLED conclusion
+- **The cancellation (classified)**: the GUI job was cancelled at exactly
+  90:00 elapsed (started 00:55:42, cancelled 02:26:15 — the workflow's
+  `timeout-minutes: 90`), mid-PV2, with the artifact uploaded by the
+  post-cancel cleanup. NOT a harness stop, NOT a product failure: the
+  battery legitimately outgrew 90 minutes now that PE completes (the
+  run reached PV2 at 90:00; PV1 was already GREEN). Fix: the GUI job's
+  timeout raised to 150 minutes (the campaign's own workflow file, not
+  a frozen lane).
+- **pe7 (the pencil's last gap)**: Muhammad's ARABIC banner text does
+  not OCR — the topmost-content-line band derivation (run 15's fix)
+  picked a lower section line (y=229), drifting the fallback band 30pt
+  below the icon row (the pe7 fallbacks at y=214 all missed; every
+  OCR-able patient's row measured 195-199 with the icons at ~180-199).
+  Fix: the derived row is CLAMPED to the banner window [150,210] —
+  outside it, the modal row (195) is assumed (the exact position that
+  worked for pe3-pe6).
+- **Also proven in run 16**: PE4 CONSECUTIVE GREEN (both rounds saved
+  AND visually confirmed — the run-15 verify fix), pe5 CLEAR-OPTIONAL
+  GREEN, pe6 UNICODE GREEN (implied by reaching pe7), **PV1 the
+  list-row entry point GREEN** (the post-edit 0777 row found via the
+  retry; the authoritative record verified: name/phone/email/note all
+  present, no skeleton, no foreign sentinels).
+- **Evidence**: the 90:00 cancellation timing, PV1's GREEN, the pe7
+  fallback probes, artifact 10427253185 (130MB).

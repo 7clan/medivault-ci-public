@@ -545,7 +545,12 @@ jobs:
     name: "Exploratory QA (real GUI, arm64, focus: ${{ github.event.inputs.focus || 'surface' }})"
     needs: build-test-dmg
     runs-on: macos-26
-    timeout-minutes: 90
+    # (run 35041063210): the patients deep walk legitimately outgrew 90
+    # minutes — the battery reached PV2 at exactly 90:00 and the job was
+    # cancelled by the runner mid-battery (no harness stop, the artifact
+    # uploaded from the cleanup). 150 gives the PV×8 + PDEL + PNAV + PP
+    # sections their honest runtime.
+    timeout-minutes: 150
 
     steps:
       - name: Checkout code

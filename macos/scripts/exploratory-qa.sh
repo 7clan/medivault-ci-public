@@ -1055,6 +1055,20 @@ v_click_edit_pencil() { # <patient-full-name> <stem> [yband-adj]
   # anchor itself still verifies the right patient's detail is open.
   local band_cy x0 band_src
   band_src="$(printf '%s\n' "$OCR_TEXT" | awk -F'|' '$1=="LINE" {y=$4+0; x=$3+0; if (y>=140 && y<=400 && x>=200 && (best=="" || y<best)) best=y} END {print (best=="" ? "" : best)}')"
+  # (run 35041063210, class D — pe7): an Arabic banner's text does not OCR,
+  # so the 'topmost content line' can pick a LOWER section line (observed
+  # 229) and drift the band 30pt below the icon row (the pe7 fallbacks at
+  # y=214 all missed; the row sits at ~180-199 like every patient). The
+  # banner's name row is ALWAYS within y 150..210 (every OCR-able patient
+  # measured 195-199). If the topmost line falls outside that window,
+  # assume the modal banner row (195).
+  case "$band_src" in
+    ''|*[!0-9]*) band_src="" ;;
+  esac
+  if [ -n "$band_src" ] && { [ "$band_src" -lt 150 ] || [ "$band_src" -gt 210 ]; }; then
+    probe "vclick-pencil[$stem]: topmost line y=$band_src is outside the banner row window (150..210) — assuming the modal banner row 195"
+    band_src=195
+  fi
   if [ -n "$band_src" ]; then
     band_cy=$(( band_src - 13 ))
     probe "vclick-pencil[$stem]: icon band from the topmost banner row y=$band_src → band center y=$band_cy"
