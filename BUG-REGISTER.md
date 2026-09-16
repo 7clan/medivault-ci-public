@@ -704,3 +704,41 @@ all fixed harness-side; the only product fixes of the whole campaign
 remain the P1 session-refresh and the P2 dialog-state-reset (both
 frozen GREEN); BUG-A1 (P3 password-policy mismatch) remains the only
 open product finding. PATIENTS = FROZEN GREEN.
+
+### BUG-PD17 [D] WAVE_FIRST_RUN_ANCHORING_FAMILY — runs 35157789388 + 35159006355 (the wave's first-reds, all harness-class)
+
+- **Class**: D — the four new batteries' first macOS run + the settings
+  focus's first dispatch; five distinct anchoring/idiom defects, zero
+  product defects (full evidence in the wave logs; artifacts preserved).
+- **(a) settings g2 SETTINGS_DISPLAYNAME**: settings-view's Display Name
+  label has NO htmlFor — the label click left the body focused, the
+  keystrokes went to the page, and the two spaces in the typed probe
+  scrolled the Settings page two viewport-heights down (the verify then
+  read scrolled-away captures). Fixed via the app's own focus path (the
+  Edit Profile button → profile-name-input focus) + a verify-scroll
+  guard before the grep.
+- **(b) documents DB0**: the 'Scan Document' fallback matched the
+  welcome-banner TIP-2 title (a longer containing line) instead of the
+  toolbar button. Fixed with the BUG-PD14 label/short-line mode + the
+  toolbar-reveal scroll + scan-view-unique verification markers.
+- **(c) clinical CC0–CC2**: the battery never restored the detail top
+  between section walks — after landing mid-page, every section search
+  scrolled further down (Visit History is ABOVE). Fixed with 29
+  detail_scroll_top restores at every step boundary.
+- **(d) dataio DD1**: the toolbar row sits ABOVE the GETTING STARTED
+  banner that v_scroll_top stops at — 'Import CSV' was out of OCR view
+  at click time. Fixed with dio_toolbar_click (scroll until the toolbar
+  row is visible → wait → label-mode click), applied to every toolbar
+  call site.
+- **(e) desktop fx1-pat1**: the fixture used create_patient_full whose
+  email typing-verify hard-P1s on the @-mangle OCR family (the '2
+  optional filled' counter proves the typing worked). Fixed by creating
+  both fixtures via create_patient_deep (the patients battery's proven
+  soft-verify idiom).
+- **Also (orchestration, run 35157098933)**: sequential focuses on one
+  VM failed the harness's own FRESH_STATE gateway → shard A split into
+  three clean-VM jobs; first-red evidence was not preserved as artifacts
+  (rename-on-success only) → the battery step now preserves every
+  focus's evidence red-or-green.
+- **Regression rerun**: shards="settings,B,C,D,E" (search + persistence
+  GREEN at 140d3a89 stay frozen per the cross-shard fix discipline).

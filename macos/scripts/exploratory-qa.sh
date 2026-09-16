@@ -5622,15 +5622,54 @@ focus_settings() {
   surface_section "Settings behavior probes"
 
   # g2: Display Name change (UI-level)
-  v_type_into "Display Name" "QA Settings Probe" "g12-displayname" || bug P1 SETTINGS_DISPLAYNAME "could not type into Display Name"
-  v_click "Save" "g12-displayname-save" "QA Settings Probe" || bug P1 SETTINGS_DISPLAYNAME "the Save click produced no visible change"
+  # (run 35159006355 first-red, class D — an UNBOUND label + the verify-scroll
+  # family): the patient dialogs' labels carry htmlFor (their label clicks
+  # forward focus to the input — g10 typed fine), but the Settings 'Display
+  # Name' <Label> has NO htmlFor, so vtype's label click left the page body
+  # focused: the keystrokes went to the body, the two spaces in the typed
+  # text acted as page-downs, and the verify greped a capture the typing had
+  # scrolled away (the BUG-PD8 family — the deeper-offset retry then reused
+  # stale pre-scroll coords and scrolled on to About). The app's OWN focus
+  # path is the 'Edit Profile' button (its onClick focuses this very input):
+  # click it like a real user, type with the input already focused (no label
+  # re-click can blur it), and verify only after a top restore + a fresh
+  # capture (the BUG-PD12 rule: scroll, re-capture, then grep).
+  G12_TYPED=0
   ocr_capture || true
-  snap "g12-displayname-saved" || true
-  if ocr_grep "QA Settings Probe"; then
-    qa_cap SETTINGS_DISPLAYNAME "GREEN (the display name changed in the UI)"
-    surface_row "Display Name change (UI)" "Settings → Doctor Profile" "'Display Name' + 'Save'" "the display name updates" "typed + saved" "GREEN (UI)" "g12-displayname-*" "OK"
+  snap_file "$MV_SHOT" "g12-displayname-before" || true
+  if ocr_lookup "Edit Profile" first label; then
+    probe "vtype[g12-displayname]: 'Edit Profile' at ($OCR_HIT_X,$OCR_HIT_Y) → the app's own focus() path for the Display Name input"
+    "$MV_MOUSE" "$OCR_HIT_X" $(( OCR_HIT_Y + 6 )) 2>>"$LOG" || true
+    sleep 1
+    if osa 'tell application "System Events" to tell (first process whose name contains "edivault") to keystroke "QA Settings Probe"' 15; then
+      sleep 1
+      # the verify-scroll guard: restore the settings top FIRST (a no-op when
+      # already visible), then grep only the fresh post-restore capture
+      v_scroll_find "Doctor Profile" 8 no up || true
+      ocr_capture || true
+      snap_file "$MV_SHOT" "g12-displayname-after" || true
+      if ocr_grep "QA Settings Probe"; then
+        G12_TYPED=1
+        probe "vtype[g12-displayname]: typed text is now VISIBLE on screen (verified)"
+      fi
+    else
+      probe "vtype[g12-displayname]: keystroke FAILED (kept, not discarded): $OSA_ERR"
+    fi
   else
-    bug P3 SETTINGS_DISPLAYNAME_NOVIS "the new display name is not OCR-visible after Save (recorded honestly)"
+    probe "vtype[g12-displayname]: 'Edit Profile' NOT FOUND on screen — no click attempted (never a guessed coordinate)"
+  fi
+  if [ "$G12_TYPED" = "1" ]; then
+    v_click "Save" "g12-displayname-save" "QA Settings Probe" || bug P1 SETTINGS_DISPLAYNAME "the Save click produced no visible change"
+    ocr_capture || true
+    snap "g12-displayname-saved" || true
+    if ocr_grep "QA Settings Probe"; then
+      qa_cap SETTINGS_DISPLAYNAME "GREEN (the display name changed in the UI)"
+      surface_row "Display Name change (UI)" "Settings → Doctor Profile" "'Display Name' + 'Save'" "the display name updates" "typed + saved" "GREEN (UI)" "g12-displayname-*" "OK"
+    else
+      bug P3 SETTINGS_DISPLAYNAME_NOVIS "the new display name is not OCR-visible after Save (recorded honestly)"
+    fi
+  else
+    bug P1 SETTINGS_DISPLAYNAME "could not type into Display Name"
   fi
 
   # g3: Appearance toggle
@@ -6431,6 +6470,44 @@ docb_goto_dashboard() { # <stem> — ensure the dashboard is current (the scan-u
   return 1
 }
 
+docb_enter_scan_view() { # <stem> — dashboard → the scan view (no pre-target)
+  # (wave2 run 105001382113 first-red, class D — the DB0 scan entry): the plain
+  # 'any'-mode lookup matched the WELCOME-BANNER tip-2 title 'Scan Documents
+  # with Camera' — a LONGER line that CONTAINS the needle and renders mid-page
+  # — so the click landed on the banner (screen point (224,616)), the scan
+  # view never opened, and v_click's hash-diff verify passed on the banner
+  # carousel's own animation (a false positive the DB0 'Select Patient' check
+  # then caught as a P1). Fix, in the BUG-PD14 idiom: (1) scroll up until the
+  # TOOLBAR ROW itself is visible ('Import CSV'/'Export CSV' are toolbar-unique;
+  # v_scroll_top alone can stop at the tip banner with the toolbar still above
+  # the fold); (2) click the LABEL-mode short-line 'last' hit — the toolbar
+  # button's OCR line ('= Scan Document', y≈173, 15 chars) sorts AFTER the
+  # 26-char banner title in the OCR output on every observed ordering, so
+  # 'last' picks the button, never the banner; (3) verify the view by its OWN
+  # unique markers — a banner-animation hash-diff is not accepted as proof. A
+  # failed anchor or a failed verify = the caller's honest D/P1 record (never
+  # a guessed coordinate).
+  docb_goto_dashboard "$1-pre" || return 1
+  v_scroll_find "Import CSV" 12 no up || v_scroll_find "Export CSV" 12 no up || v_scroll_top 8 || true
+  local attempt i
+  for attempt in 1 2; do
+    if v_click "Scan Document" "$1-open$attempt" "Scan & Upload" last 0 label; then
+      for i in 1 2 3; do
+        ocr_capture || true
+        if ocr_grep "Scan & Upload" || ocr_grep "Camera Capture" || ocr_grep "Drop files here"; then
+          probe "enter-scan[$1]: the scan view is open (a view-unique marker is visible)"
+          return 0
+        fi
+        sleep 2
+      done
+      probe "enter-scan[$1]: attempt $attempt did not verify the scan view — one fresh-OCR retry"
+    fi
+    sleep 1
+  done
+  probe "enter-scan[$1]: the scan view did NOT open (no 'Scan & Upload'/'Camera Capture'/'Drop files here' visible)"
+  return 1
+}
+
 docb_scan_upload_one() { # <abs-file> <stem> <timeout-s> <patient-full> [category] — one full chooser→upload trip
   # Sets DOCB_UP_RC (0 = uploaded & returned; 1 = harness failure; 2 = not
   # staged — client filter refusal; 3 = picker refusal; 4 = upload clicked,
@@ -6439,7 +6516,11 @@ docb_scan_upload_one() { # <abs-file> <stem> <timeout-s> <patient-full> [categor
   local file="$1" stem="$2" tmo="$3" patient="$4" category="${5:-}"
   DOCB_UP_RC=1; DOCB_UP_POSTS=0
   docb_goto_dashboard "${stem}-pre" || return 1
-  if ! v_click "Scan Document" "su-${stem}-open" "Scan & Upload"; then return 1; fi
+  # (wave2 run 105001382113 first-red) the bare v_click shared the DB0
+  # banner-collision failure mode — the entry now goes through the fixed
+  # docb_enter_scan_view (the label-mode toolbar click + the view-unique
+  # verify), never a duplicated unverified click
+  if ! docb_enter_scan_view "su-${stem}"; then return 1; fi
   sleep 2
   local rc=0
   docb_stage_file "$file" "${stem}-stage" "" || rc=$?
@@ -6805,11 +6886,6 @@ docb_reopen_app() { # <label> — the quit/reopen (+ relogin when required) idio
   bug P1 DOC_PERSISTENCE "after the reopen the screen is neither the dashboard nor the Sign In screen"
 }
 
-docb_enter_scan_view() { # <stem> — dashboard → the scan view (no pre-target)
-  docb_goto_dashboard "$1-pre"
-  v_click "Scan Document" "$1-open" "Scan & Upload"
-}
-
 # =============================================================================
 # FOCUS: documents — the document lifecycle battery DB0..DB17
 # (scan view entry → chooser staging → metadata → upload → per-format matrix →
@@ -6868,7 +6944,20 @@ focus_documents() {
     ocr_capture || true
     snap "db0-scan-view" || true
     record_inventory "Scan & Upload view (dashboard entry — no pre-target)"
-    if ocr_grep "Select Patient" && ocr_grep "Choose a patient"; then
+    # (wave2 first-red fix b) the dropdown assertion gets a bounded fresh-capture
+    # retry — the entry itself is already verified by a view-unique marker above,
+    # but the gray placeholder text ('Choose a patient...') is an OCR-flake
+    # family; a 3-shot miss is the honest P1
+    local db0_dd="no" db0_i
+    for db0_i in 1 2 3; do
+      if ocr_grep "Select Patient" && ocr_grep "Choose a patient"; then
+        db0_dd="yes"
+        break
+      fi
+      sleep 2
+      ocr_capture || true
+    done
+    if [ "$db0_dd" = "yes" ]; then
       qa_cap DOC_SCAN_ENTRY "GREEN (the dashboard 'Scan Document' button opened the Scan & Upload view with the patient-select dropdown visible and NO pre-selected patient)"
       surface_row "Scan view entry (no pre-target)" "dashboard → 'Scan Document'" "'Scan & Upload' title; 'Select Patient *' dropdown (placeholder 'Choose a patient...'); back arrow" "the scan view opens un-targeted (the patient is chosen inside)" "opened via the real button; the patient-select dropdown is visible" "GREEN" "db0-scan-view" "OK"
     else
@@ -8625,6 +8714,17 @@ focus_clinical() {
   local CC0_OK="0"
   if open_patient_by_phone_token "1201" "$CLC_P1_FULL" "cc0-open" "$CLC_P1_PHONE"; then
     record_inventory "patient detail — clinical sections (fresh patient)"
+    # (wave2 run 105001382085 first-red — the CC0 cascade): the search-row open
+    # lands the detail MID-PAGE (the BUG-PD5 behavior), and the section walk
+    # below ran DOWN-ONLY from there — 'Visit History' (ABOVE the landing) was
+    # never reachable, the 8 down bursts walked to the BOTTOM ('No documents
+    # yet / Upload Your First Document'), and every later sub-check started
+    # from that poisoned position (4 false Ds + the CC1/CC2 P1). Fix (the
+    # BUG-PD5/PD12 idiom): every clc_ step that looks for a section/button
+    # starts from a KNOWN position — detail_scroll_top restores the banner top
+    # AND refreshes OCR_TEXT before each search; a failed find then stays an
+    # honest D, never a scroll-direction artifact.
+    detail_scroll_top "cc0-top" || true
     if v_scroll_find "Visit History" 8; then
       ocr_capture || true
       snap "cc0-visit-history" || true
@@ -8637,6 +8737,9 @@ focus_clinical() {
       bug D CLINICAL_CC0 "the Visit History section was not reachable on the detail page"
     fi
     # the Timeline toggle + count badge
+    # (wave2 CC0 fix d) known position first — the toggle sits below Visit
+    # History, but the previous sub-check's walk may have left the page low
+    detail_scroll_top "cc0-tl-top" || true
     if v_scroll_find "Timeline" 6; then
       ocr_capture || true
       snap "cc0-timeline-closed" || true
@@ -8663,6 +8766,8 @@ focus_clinical() {
     else
       bug D CLINICAL_CC0_TIMELINE "the Timeline toggle was not reachable on the detail page"
     fi
+    # (wave2 CC0 fix d) known position before the Prescriptions sub-check
+    detail_scroll_top "cc0-rx-top" || true
     if v_scroll_find "No prescriptions yet" 8; then
       ocr_capture || true
       snap "cc0-prescriptions" || true
@@ -8671,6 +8776,8 @@ focus_clinical() {
     else
       bug D CLINICAL_CC0 "the Prescriptions section (empty state) was not reachable on the detail page"
     fi
+    # (wave2 CC0 fix d) known position before the Clinical Notes sub-check
+    detail_scroll_top "cc0-notes-top" || true
     if v_scroll_find "No clinical notes yet" 8 || v_scroll_find "Clinical Notes" 8; then
       ocr_capture || true
       snap "cc0-clinical-notes" || true
@@ -8691,6 +8798,10 @@ focus_clinical() {
   # ------------------------------------------------------------------
   note "=== clinical CC1: the Schedule Visit dialog (open + cancel) ==="
   local CC1_RC="0"
+  # (wave2 CC1 fix) known position first — the 'Schedule Visit' button sits in
+  # the Visit History header BELOW the banner; after CC0's walk the page can
+  # be anywhere, and a down-only find from the bottom was the first-red
+  detail_scroll_top "cc1-top" || true
   v_scroll_find "Visit History" 6 || v_scroll_find "Schedule Visit" 6 || true
   clc_api_mark "cc1-before"
   if v_click "Schedule Visit" "cc1-open" "Chief Complaint"; then
@@ -8734,6 +8845,9 @@ focus_clinical() {
   # ------------------------------------------------------------------
   note "=== clinical CC2: create the sentinel visit ==="
   local CC2_RC="0"
+  # (wave2 CC2 fix) known position first — the mid-page 'Schedule Visit'
+  # button is unreachable from a bottom-of-page start (the CC1/CC2 P1)
+  detail_scroll_top "cc2-top" || true
   v_scroll_find "Visit History" 6 || true
   if v_click "Schedule Visit" "cc2-open" "Chief Complaint"; then
     # (a) the date control: the source-verified default is TODAY — verify the
@@ -8856,12 +8970,17 @@ focus_clinical() {
     if open_patient_by_phone_token "1201" "$CLC_P1_FULL" "cc2-reopen" "$CLC_P1_PHONE"; then
       clc_api_collect "cc2-reopen"
       clc_api_count GET "/visits" "cc2-reopen-get"
+      # (wave2 fix) the reopened detail lands mid-page — restore the top first
+      detail_scroll_top "cc2-reopen-top" || true
       if v_scroll_find "$CLC_VISIT" 8; then
         ocr_capture || true
         snap "cc2-reopen-verified" || true
         qa_cap CLINICAL_CC2_PERSIST "GREEN (the visit survived the navigate-away/reopen: the sentinel card is visible again and the reopen refetched the visits (GET ×$CLC_API_HITS in the API log))"
         # the Timeline count badge now that a clinical event exists (CC0's
         # fresh-patient render has none — the badge renders only at count > 0)
+        # (wave2 fix) the toggle sits ABOVE Visit History — restore the top
+        # first, then the down-find reaches it
+        detail_scroll_top "cc2-badge-top" || true
         v_scroll_find "Timeline" 6 || true
         ocr_capture || true
         snap "cc2-timeline-badge" || true
@@ -8883,6 +9002,9 @@ focus_clinical() {
   # ------------------------------------------------------------------
   note "=== clinical CC3: edit the sentinel visit ==="
   local CC3_RC="0"
+  # (wave2 fix) known position first — the pencil band anchors on the card's
+  # own OCR line, so the card must be found from a deterministic start
+  detail_scroll_top "cc3-top" || true
   v_scroll_find "$CLC_VISIT" 8 || true
   # the visit-card icon geometry, derived from the source layout: the icon
   # cluster is items-START on the card's top row (28px ghost buttons, center
@@ -8960,6 +9082,8 @@ focus_clinical() {
   bug EXPECTED CLINICAL_STATUS_TOASTS "the visit status toasts ('Visit Completed'/'Visit Cancelled') never render — the shadcn Toaster is not mounted (the known source fact in the harness header); no toast text is used as an OCR needle. The API-log PUT + the card's status badge change are the proofs."
   # CC4a — expand the edited visit → Mark Complete
   local CC4A_RC="0"
+  # (wave2 fix) known position first (the step-start restore idiom)
+  detail_scroll_top "cc4a-top" || true
   v_scroll_find "$CLC_VISIT_EDIT" 8 || true
   if clc_icon_click "$CLC_VISIT_EDIT" "-40" "906 912@-34 900@-46 918@-28 894@-22" "Mark Complete" "cc4a-expand"; then
     sleep 1
@@ -8996,6 +9120,9 @@ focus_clinical() {
   fi
   # CC4b — a SECOND scheduled visit → Cancel Visit
   local CC4B_RC="0"
+  # (wave2 fix) known position first — the 'Schedule Visit' button is in the
+  # Visit History header; a down-only find from a low page position misses it
+  detail_scroll_top "cc4b-top" || true
   v_scroll_find "Visit History" 6 || true
   if v_click "Schedule Visit" "cc4b-open" "Chief Complaint"; then
     if ! v_type_into "Chief Complaint" "$CLC_VISIT2" "cc4b-complaint"; then
@@ -9048,6 +9175,8 @@ focus_clinical() {
   fi
   # CC4c — the scheduler's STATUS PILLS (edit mode only): exercise one
   if [ "$CC4B_RC" = "0" ]; then
+    # (wave2 fix) known position first (the step-start restore idiom)
+    detail_scroll_top "cc4c-top" || true
     v_scroll_find "$CLC_VISIT2" 8 || true
     if clc_icon_click "$CLC_VISIT2" "-40" "937 943@-34 931@-46 949@-28 925@-22" "Save Changes" "cc4c-edit-open"; then
       ocr_capture || true
@@ -9093,6 +9222,8 @@ focus_clinical() {
   # ------------------------------------------------------------------
   note "=== clinical CC5: delete the second visit ==="
   if [ "$CC4B_RC" = "0" ]; then
+    # (wave2 fix) known position first (the step-start restore idiom)
+    detail_scroll_top "cc5-top" || true
     v_scroll_find "$CLC_VISIT2" 8 || true
     if clc_icon_click "$CLC_VISIT2" "-40" "969 975@-34 963@-46 981@-28 957@-22" "Delete Visit" "cc5-dialog"; then
       ocr_capture || true
@@ -9160,6 +9291,8 @@ focus_clinical() {
   # ------------------------------------------------------------------
   note "=== clinical CC6: schedule the follow-up from the completed visit ==="
   if [ "$CC4A_RC" = "0" ]; then
+    # (wave2 fix) known position first (the step-start restore idiom)
+    detail_scroll_top "cc6-top" || true
     v_scroll_find "$CLC_VISIT_EDIT" 8 || true
     if clc_icon_click "$CLC_VISIT_EDIT" "-40" "906 912@-34 900@-46 918@-28 894@-22" "Schedule Follow-up" "cc6-expand"; then
       clc_api_mark "cc6-open"
@@ -9241,6 +9374,9 @@ focus_clinical() {
   note "=== clinical CC8: create the clinical note ==="
   surface_section "Clinical notes (CC8-CC12)"
   if open_patient_by_phone_token "1201" "$CLC_P1_FULL" "cc8-open" "$CLC_P1_PHONE"; then
+    # (wave2 fix) the opened detail lands mid-page — restore the top before
+    # the Clinical Notes walk (the same discipline as CC0)
+    detail_scroll_top "cc8-top" || true
     v_scroll_find "Clinical Notes" 8 || v_scroll_find "Add Note" 8 || true
     if v_click "Add Note" "cc8-open" "New Clinical Note"; then
       sleep 1
@@ -9306,6 +9442,8 @@ focus_clinical() {
   # ordered isPinned DESC, createdAt DESC → the newer anchor note renders
   # ABOVE the main note until the main note is pinned)
   local CC9_RC="0"
+  # (wave2 fix) known position first (the step-start restore idiom)
+  detail_scroll_top "cc9-top" || true
   v_scroll_find "Clinical Notes" 8 || v_scroll_find "Add Note" 8 || true
   if v_click "Add Note" "cc9-anchor-open" "New Clinical Note"; then
     if ! v_type_into "Note title" "$CLC_NOTE_ANCHOR" "cc9-anchor-title"; then
@@ -9399,6 +9537,8 @@ focus_clinical() {
   # ------------------------------------------------------------------
   note "=== clinical CC10: note edit ==="
   local CC10_RC="0"
+  # (wave2 fix) known position first (the step-start restore idiom)
+  detail_scroll_top "cc10-top" || true
   v_scroll_find "$CLC_NOTE" 8 || true
   if clc_icon_click "$CLC_NOTE" "0" "938 944 932 950 926" "Save" "cc10-edit-open"; then
     ocr_capture || true
@@ -9503,6 +9643,8 @@ focus_clinical() {
   # CC11 — note delete (confirm dialog → Delete → gone)
   # ------------------------------------------------------------------
   note "=== clinical CC11: note delete ==="
+  # (wave2 fix) known position first (the step-start restore idiom)
+  detail_scroll_top "cc11-top" || true
   if v_scroll_find "$CLC_NOTE_ANCHOR" 8; then
     if clc_icon_click "$CLC_NOTE_ANCHOR" "0" "970 976 964 982 958" "Delete Clinical Note" "cc11-dialog"; then
       ocr_capture || true
@@ -9597,6 +9739,8 @@ focus_clinical() {
   if open_patient_by_phone_token "1201" "$CLC_P1_FULL" "cc12-reopen" "$CLC_P1_PHONE"; then
     clc_api_collect "cc12-reopen"
     clc_api_count GET "/api/notes" "cc12-reopen-get"
+    # (wave2 fix) the reopened detail lands mid-page — restore the top first
+    detail_scroll_top "cc12-reopen-top" || true
     if v_scroll_find "$CLC_NOTE_EDIT" 8 || wait_for_ocr "$CLC_NOTE_EDIT" 15 "cc12-note-survived"; then
       ocr_capture || true
       snap "cc12-note-survived" || true
@@ -9614,6 +9758,9 @@ focus_clinical() {
   # ------------------------------------------------------------------
   note "=== clinical CC13: the prescription generator (template battery) ==="
   surface_section "Prescriptions (CC13-CC18)"
+  # (wave2 fix) known position first — the Prescriptions section sits below
+  # Visit History; after CC12's walks the page can be anywhere
+  detail_scroll_top "cc13-top" || true
   v_scroll_find "Prescriptions" 8 || v_scroll_find "New Prescription" 8 || true
   clc_api_mark "cc13-before"
   if v_click "New Prescription" "cc13-open" "Quick Templates"; then
@@ -9737,6 +9884,8 @@ focus_clinical() {
   # ------------------------------------------------------------------
   note "=== clinical CC14: the manual medication row ==="
   local CC14_RC="0"
+  # (wave2 fix) known position first (the step-start restore idiom)
+  detail_scroll_top "cc14-top" || true
   v_scroll_find "New Prescription" 8 || true
   if v_click "New Prescription" "cc14-open" "Quick Templates"; then
     # collapse the templates strip so the select triggers are the ONLY
@@ -9876,6 +10025,8 @@ focus_clinical() {
             if open_patient_by_phone_token "1201" "$CLC_P1_FULL" "cc15-reopen" "$CLC_P1_PHONE"; then
               clc_api_collect "cc15-reopen"
               clc_api_count GET "/api/prescriptions" "cc15-reopen-get"
+              # (wave2 fix) the reopened detail lands mid-page — restore first
+              detail_scroll_top "cc15-reopen-top" || true
               if v_scroll_find "$CLC_RX" 8; then
                 ocr_capture || true
                 snap "cc15-reopen-verified" || true
@@ -9916,6 +10067,9 @@ focus_clinical() {
     for aux in "Metformin:cc15b-rx2" "Ibuprofen:cc15c-rx3"; do
       aux_tpl="${aux%%:*}"
       aux_stem="${aux##*:}"
+      # (wave2 fix) known position first — each aux generator open starts
+      # from the restored top (the step-start restore idiom)
+      detail_scroll_top "${aux_stem}-top" || true
       v_scroll_find "New Prescription" 8 || true
       if v_click "New Prescription" "${aux_stem}-open" "Quick Templates"; then
         if v_click "$aux_tpl" "${aux_stem}-tpl" "" first 0 label; then
@@ -9966,6 +10120,9 @@ focus_clinical() {
   # instructions sentinel. The 5-icon cluster (chevron ≈ x841 / printer ≈ x873 /
   # complete ≈ x905 / discontinue ≈ x937 / trash ≈ x969) sits ≈40pt ABOVE the
   # card's 3rd row (the med-preview anchor line).
+  # (wave2 fix) known position first — the icon bands anchor on the card's
+  # own OCR line; each card battery step starts from the restored top
+  detail_scroll_top "cc16-top" || true
   v_scroll_find "$CLC_RX" 8 || true
   if clc_icon_click "$CLC_RX" "-40" "841 835@-34 847@-46 829@-28 853@-22" "$CLC_RX_INSTR" "cc16-expand"; then
     ocr_capture || true
@@ -9984,6 +10141,8 @@ focus_clinical() {
   fi
   # (b) Mark Complete on Rx-2 (the Metformin card — API-confirmed click; the
   # candidate band stays LEFT of the adjacent discontinue icon)
+  # (wave2 fix) known position first (the step-start restore idiom)
+  detail_scroll_top "cc16-rx2-top" || true
   v_scroll_find "Metformin" 8 || true
   if clc_icon_click_api "Metformin" "-40" "905 899@-34 911@-46 893@-28 917@-22" PUT "/api/prescriptions" "cc16-complete"; then
     sleep 1
@@ -10007,6 +10166,8 @@ focus_clinical() {
   fi
   # (c) Discontinue on Rx-3 (the Ibuprofen card; the candidate band stays
   # RIGHT of the complete icon and LEFT of the trash)
+  # (wave2 fix) known position first (the step-start restore idiom)
+  detail_scroll_top "cc16-rx3-top" || true
   v_scroll_find "Ibuprofen" 8 || true
   if clc_icon_click_api "Ibuprofen" "-40" "937 931@-34 943@-46 925@-28 949@-22" PUT "/api/prescriptions" "cc16-discontinue"; then
     sleep 1
@@ -10039,6 +10200,8 @@ focus_clinical() {
   fi
   # (d) Delete on Rx-3 (the discontinued Ibuprofen card) — NO confirmation
   # dialog (the source fact) → the EXPECTED record + the API DELETE proof
+  # (wave2 fix) known position first (the step-start restore idiom)
+  detail_scroll_top "cc16-rx3-del-top" || true
   if v_scroll_find "Ibuprofen" 6; then
     bug EXPECTED CLINICAL_CC16_DELETE_NO_CONFIRM "the prescription Delete has NO confirmation dialog (prescription-card.tsx handleDelete calls DELETE /api/prescriptions immediately) — the delete is instant on the icon click. Documented behavior; the API-log DELETE + the card-gone verify are the proofs."
     if clc_icon_click_api "Ibuprofen" "-40" "969 963@-34 975@-46 957@-28 981@-22" DELETE "/api/prescriptions" "cc16-delete"; then
@@ -10094,6 +10257,8 @@ focus_clinical() {
   # ------------------------------------------------------------------
   note "=== clinical CC18: the prescription print preview ==="
   if open_patient_by_phone_token "1201" "$CLC_P1_FULL" "cc18-open" "$CLC_P1_PHONE"; then
+    # (wave2 fix) the reopened detail lands mid-page — restore the top first
+    detail_scroll_top "cc18-top" || true
     v_scroll_find "$CLC_RX" 8 || true
     if clc_icon_click "$CLC_RX" "-40" "873 867@-34 879@-46 861@-28 885@-22" "Print Prescription" "cc18-open"; then
       sleep 1
@@ -10343,6 +10508,9 @@ focus_clinical() {
   snap "cc15b-reopen-dashboard" || true
   if open_patient_by_phone_token "1201" "$CLC_P1_FULL" "cc15b-reopen" "$CLC_P1_PHONE"; then
     local CC15B_V="no" CC15B_N="no" CC15B_RX="no"
+    # (wave2 fix) the reopened detail lands mid-page — restore the top first,
+    # then the four sentinel finds walk down the page in order
+    detail_scroll_top "cc15b-top" || true
     v_scroll_find "$CLC_VISIT_EDIT" 8 || true
     ocr_grep "$CLC_VISIT_EDIT" && CC15B_V="yes"
     v_scroll_find "Follow-up for" 8 || true
@@ -10590,8 +10758,29 @@ dio_native_panel_open() { # <path> <stem> — drive the REAL NSOpenPanel (WKWebV
   return 0
 }
 
+dio_toolbar_click() { # <button-label> <stem> <expect-text> — a dashboard TOOLBAR button click (Import CSV / Export CSV / Analytics / Calendar)
+  # (wave2 run 105001382107 first-red — DD1): the toolbar row ([Analytics v]
+  # [Calendar v] [Import CSV] [Export CSV]) sits at the VERY top of the
+  # dashboard, ABOVE the GETTING STARTED tip banner that v_scroll_top uses
+  # as its top marker — after DD0's down-scroll to 'Recent Patients' the old
+  # top-restore stopped at the TIP banner with the toolbar still above the
+  # fold, and every 'Import CSV' lookup missed (NOT FOUND ×3 → the false DD1
+  # P1). 'Import CSV'/'Export CSV' are toolbar-unique needles: scroll up
+  # until the TOOLBAR ROW itself is visible, wait for the button, then click
+  # it in the LABEL/short-line mode (the BUG-PD14 merged-line trap — a
+  # merged toolbar row's bbox would center on the WRONG button).
+  local btn="$1" stem="$2" expect="$3"
+  v_scroll_find "Import CSV" 12 no up || v_scroll_find "Export CSV" 12 no up || v_scroll_top 10 || true
+  wait_for_ocr "$btn" 15 "toolbar-$stem" || probe "dio-toolbar-click[$stem]: '$btn' still not visible after the wait (the LABEL-mode lookup below is the last OCR chance)"
+  v_click "$btn" "$stem" "$expect" first 0 label
+}
+
 dio_import_open() { # open the Import Patients dialog from the dashboard toolbar (verified)
-  v_click "Import CSV" "dio-import-open" "Import Patients" || {
+  # (wave2 run 105001382107 first-red — DD1): the toolbar restore now runs
+  # BEFORE the click (the old flow clicked blind from whatever scroll DD0
+  # left and restored only on the retry — too late); the v_scroll_top +
+  # try-hits chain stays as the OCR-variance fallback.
+  dio_toolbar_click "Import CSV" "dio-import-open" "Import Patients" || {
     v_scroll_top 10 || true
     sleep 2
     v_click_try_hits "Import CSV" "dio-import-open-retry" "Import Patients" || return 1
@@ -11483,7 +11672,7 @@ focus_dataio() {
   read_patient_count
   local dd5_patients="${PATIENTS_COUNT:-unreadable}"
   dio_api_mark
-  if v_click "Export CSV" "dd5-export" ""; then
+  if dio_toolbar_click "Export CSV" "dd5-export" ""; then
     sleep 2
   else
     probe "dd5: the Export CSV click produced no verified visible change (window.location.href — the ~/Downloads + API-log checks decide)"
@@ -11653,8 +11842,7 @@ PY
 
   # ------------------------- DD7: analytics -------------------------
   note "--- DD7: the analytics panel (periods + the 4-file export) ---"
-  v_scroll_top 10 || true
-  if v_click "Analytics" "dd7-on" "Patient Growth"; then
+  if dio_toolbar_click "Analytics" "dd7-on" "Patient Growth"; then
     sleep 2
     ocr_capture || true
     snap "dd7-open" || true
@@ -11665,7 +11853,11 @@ PY
         dd7_chart_ok="no (missing: $needle)"
       fi
     done
-    v_scroll_top 8 || true
+    # (wave2 D audit) the period pills + the analytics 'Export CSV' sit in the
+    # panel HEADER, ABOVE the GETTING STARTED banner v_scroll_top anchors on —
+    # restore on the pills row itself so the period clicks below (and the
+    # dd7-export 'last' hit) have their targets on screen
+    v_scroll_find "Last 12 Months" 8 no up || v_scroll_top 8 || true
     # period ×3 — the API-log cross-check is the primary proof (GET /api/stats?period=…)
     local dd7_period dd7_periods_ok="yes"
     for dd7_period in "Last 12 Months:12months" "Last 6 Months:6months" "Last 30 Days:30days"; do
@@ -11719,7 +11911,7 @@ PY
       surface_row "DD7 analytics (periods + export)" "dashboard → 'Analytics'; period pills; 'Export CSV'" "GET /api/stats?period=…; 4 client blob CSVs" "3 periods switch, charts render, 4 CSVs appear" "charts=$dd7_chart_ok; periods=$dd7_periods_ok; files:$dd7_all" "PARTIAL (recorded honestly)" "dd7-*" "OK"
     fi
     surface_row "DD7 analytics export = client CSVs (not an API file)" "the 'Export CSV' inside analytics" "4 client-side Blob downloads (patients/documents-by-month, documents-by-category, storage-by-month)" "client-side exports, no server round-trip" "observed: no /api export call for these (unlike the DD5 server route)" "EXPECTED (4 client CSVs)" "dd7-*" "EXPECTED"
-    v_click "Analytics" "dd7-off" "" || probe "dd7: the analytics collapse click was not verified (recorded honestly)"
+    dio_toolbar_click "Analytics" "dd7-off" "" || probe "dd7: the analytics collapse click was not verified (recorded honestly)"
   else
     bug P1 DATAIO_DD7_OPEN "the 'Analytics' toggle did not open the analytics panel"
   fi
@@ -11727,8 +11919,7 @@ PY
 
   # ------------------------- DD8: calendar -------------------------
   note "--- DD8: the appointment calendar ---"
-  v_scroll_top 10 || true
-  if v_click "Calendar" "dd8-on" "Appointment Calendar"; then
+  if dio_toolbar_click "Calendar" "dd8-on" "Appointment Calendar"; then
     sleep 2
     ocr_capture || true
     snap "dd8-open" || true
@@ -11853,7 +12044,7 @@ PY
     fi
     qa_cap DATAIO_DD8_CALENDAR "RECORDED (mode toggle + prev/next/Today navigation: $dd8_nav_ok; the visit-fixture state above)"
     surface_row "DD8 calendar navigation" "the calendar's '<' 'Today' '>' controls (anchored on Today — the arrows are icon-only)" "prev/next/Today" "the date label navigates and Today returns" "labels: start='$dd8_label_a' after-prev/next/Today='$(dio_calendar_label)'" "$dd8_nav_ok" "dd8-nav-result" "OK"
-    v_click "Calendar" "dd8-off" "" || probe "dd8: the calendar collapse click was not verified (recorded honestly)"
+    dio_toolbar_click "Calendar" "dd8-off" "" || probe "dd8: the calendar collapse click was not verified (recorded honestly)"
   else
     bug P1 DATAIO_DD8_OPEN "the 'Calendar' toggle did not open the Appointment Calendar panel"
   fi
@@ -13058,6 +13249,29 @@ dsk_docs_ready() { # <check-name> → 0 when the fixture documents uploaded; rec
   return 1
 }
 
+dsk_fx_create() { # <first> <last> <phone> <email> <note> <stem> — the fixture create via the PROVEN patients-lane idiom (create_patient_deep)
+  # (wave2 run 105001382058 first-red — fx1-pat1): the old create_patient_full
+  # call hard-P1'd the FIRST v_type_into visual miss — but the just-typed
+  # email text is OCR-flaky inside the dialog (this run's own 'N optional
+  # filled' badge counter proves the email WAS typed while the full-address
+  # grep could not see it — the '@'-mangle family; the D shard saw the same
+  # miss on one of its three fixtures). create_patient_deep — the patients
+  # battery's proven create (John Test et al.) — treats a typing-verify miss
+  # as a SOFT nfail: the dialog-close + the row visibility + the count badge
+  # are the functional proof, and the full email is verified where it OCRs
+  # reliably (the detail page — verify_detail_authoritative). Harness-only
+  # fix: no guessed coordinates, every step stays OCR-verified.
+  local rc=0
+  create_patient_deep "$1" "$2" "$3" "$4" "" "$5" "$6"
+  rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    2) bug P1 DESKTOP_FIXTURE "the $1 $2 create was REJECTED by the form (validation unexpected — the fixture cannot be built)" ;;
+    *) bug P1 DESKTOP_FIXTURE "the $1 $2 create failed at the harness level (dialog/submit)" ;;
+  esac
+  return "$rc"
+}
+
 # =============================================================================
 # FOCUS: desktop
 # =============================================================================
@@ -13099,12 +13313,12 @@ focus_desktop() {
   # FX — FIXTURES (patients, documents via the real upload, prescription)
   # ------------------------------------------------------------------
   note "=== desktop FX: fixtures ==="
-  create_patient_full "$PAT1_FIRST" "$PAT1_LAST" "$PAT1_PHONE" "$PAT1_EMAIL" "$PAT1_NOTE" "fx1-pat1"
+  dsk_fx_create "$PAT1_FIRST" "$PAT1_LAST" "$PAT1_PHONE" "$PAT1_EMAIL" "$PAT1_NOTE" "fx1-pat1"
   sleep 4
   v_scroll_find "$PAT1_FULL" 10 || bug P1 DESKTOP_FIXTURE "patient $PAT1_FULL is not visible after creation"
   qa_cap DESKTOP_FX_PATIENT1 "GREEN ($PAT1_FULL created through the real dialog)"
   v_scroll_top 10 || true
-  create_patient_full "$PAT2_FIRST" "$PAT2_LAST" "$PAT2_PHONE" "$PAT2_EMAIL" "$PAT2_NOTE" "fx2-pat2"
+  dsk_fx_create "$PAT2_FIRST" "$PAT2_LAST" "$PAT2_PHONE" "$PAT2_EMAIL" "$PAT2_NOTE" "fx2-pat2"
   sleep 4
   v_scroll_find "$PAT2_FULL" 10 || bug P1 DESKTOP_FIXTURE "patient $PAT2_FULL is not visible after creation"
   qa_cap DESKTOP_FX_PATIENT2 "GREEN ($PAT2_FULL created — the foreign-sentinel patient)"
@@ -13514,7 +13728,7 @@ focus_desktop() {
   # 6a) patients CSV export (window.location.href navigation — capture what really happens)
   dsk_dl_mark
   dsk_api_mark
-  if v_click "Export CSV" "de6-export-csv" ""; then
+  if dio_toolbar_click "Export CSV" "de6-export-csv" ""; then
     sleep 6
     ocr_capture || true
     snap "de6-after-export-csv" || true
@@ -13546,7 +13760,7 @@ focus_desktop() {
 
   # 6b) CSV template (blob download via the Import dialog)
   dsk_dl_mark
-  if v_click "Import CSV" "de6-import-open" "Import Patients"; then
+  if dio_toolbar_click "Import CSV" "de6-import-open" "Import Patients"; then
     if v_click "Download CSV template" "de6-template-dl" ""; then
       sleep 5
       ocr_capture || true
@@ -13719,7 +13933,7 @@ focus_desktop() {
   v_click "Dashboard" "de8b-home" "Add Patient" || true
   v_scroll_top 10 || true
   dsk_dl_mark
-  if v_click "Import CSV" "de8b-import-open" "Import Patients"; then
+  if dio_toolbar_click "Import CSV" "de8b-import-open" "Import Patients"; then
     ocr_capture || true
     if ocr_lookup "Download CSV template" "first" "any"; then
       "$MV_MOUSE" "$OCR_HIT_X" "$OCR_HIT_Y" double 2>>"$LOG" || true

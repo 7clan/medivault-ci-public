@@ -141,7 +141,14 @@ jobs:
               {"shard": "E", "label": "macOS save/print + error/recovery",
                "focus_list": "desktop", "artifact": "desktop-print"},
           ]
-          include = [e for e in ALL if e["shard"] in filt]
+          # a filter token matches a job by SHARD LETTER ("A") or by exact
+          # label ("settings") — so "settings,B,C,D,E" reruns only the
+          # affected jobs, keeping already-green focuses frozen
+          def matches(entry, tokens):
+              if entry["shard"] in tokens:
+                  return True
+              return any(t.lower() == entry["label"].lower() for t in tokens)
+          include = [e for e in ALL if matches(e, filt)]
           print(json.dumps(include))
           PYEOF
           )"
@@ -209,20 +216,19 @@ jobs:
               echo "focus ${focus}: exited ${rc} (first-red or recorded stop)"
               # first-red discipline: one shard red does not kill the others
               rc_all="$rc"
-              break
             fi
-            # preserve each focus's evidence under its own name
+            # preserve EVERY focus's evidence under its own name — red or green
+            # (the run-35157789388 lesson: first-red evidence must reach the
+            # artifact, or the disposition has nothing to analyze)
             if [ -d gui-evidence ]; then
-              mv gui-evidence "gui-evidence-${focus}"
+              if [ -d "gui-evidence-${focus}" ]; then
+                cp -R gui-evidence/. "gui-evidence-${focus}/" || true
+                rm -rf gui-evidence
+              else
+                mv gui-evidence "gui-evidence-${focus}"
+              fi
             fi
-          done
-          # reunify for the standard summary steps
-          mkdir -p gui-evidence
-          for d in gui-evidence-*; do
-            [ -d "$d" ] || continue
-            sub="${d#gui-evidence-}"
-            mkdir -p "gui-evidence/${sub}"
-            cp -R "$d/." "gui-evidence/${sub}/" || true
+            [ "$rc_all" -ne 0 ] && break
           done
           exit "$rc_all"
 
@@ -230,14 +236,10 @@ jobs:
         if: always()
         shell: bash
         run: |
-          if [ -f gui-evidence/qa-capability-report.md ]; then
-            { echo "## Shard ${SHARD} — capability report"; echo '```'; cat gui-evidence/qa-capability-report.md; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-          else
-            for d in gui-evidence/*/; do
-              [ -f "$d/qa-capability-report.md" ] || continue
-              { echo "## Shard ${SHARD} / ${d} — capability report"; echo '```'; cat "$d/qa-capability-report.md"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-            done
-          fi
+          for d in gui-evidence gui-evidence-*/; do
+            [ -f "$d/qa-capability-report.md" ] || continue
+            { echo "## Shard ${SHARD} (${d}) — capability report"; echo '```'; cat "$d/qa-capability-report.md"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          done
 
       - name: Job summary — bug register
         if: always()
@@ -255,18 +257,21 @@ jobs:
           ART: ${{ matrix.artifact }}
         run: |
           set -uo pipefail
-          # the battery step renames gui-evidence -> gui-evidence-<focus> per invocation
-          src=""
-          for d in gui-evidence-*/; do
-            [ -d "$d" ] || continue
-            if [ -z "$src" ]; then src="$d"; else src=""; break; fi   # ambiguity guard: exactly one focus dir expected
-          done
-          if [ -z "$src" ]; then
+          # the battery step renames gui-evidence -> gui-evidence-<focus> per
+          # invocation (red or green); zip ALL focus dirs present into the
+          # single §9 artifact for this job
+          if ! ls -d gui-evidence-* >/dev/null 2>&1; then
             echo "(no focus evidence dir found — harness may have stopped before evidence; listing cwd)"
             ls -1 || true
           else
-            (cd "$src" && zip -qr "$OLDPWD/qa-evidence-${ART}.zip" . ) || true
-            echo "zipped ${src} -> qa-evidence-${ART}.zip"
+            for d in gui-evidence-*/; do
+              [ -d "$d" ] || continue
+              sub="${d#gui-evidence-}"; sub="${sub%/}"
+              mkdir -p "staging/${sub}"
+              cp -R "$d/." "staging/${sub}/" || true
+            done
+            (cd staging && zip -qr "$OLDPWD/qa-evidence-${ART}.zip" . ) || true
+            echo "zipped $(ls -1 staging 2>/dev/null | tr '\n' ' ') -> qa-evidence-${ART}.zip"
           fi
           ls -1 qa-evidence-*.zip 2>/dev/null || echo "(no evidence zip this job)"
 
