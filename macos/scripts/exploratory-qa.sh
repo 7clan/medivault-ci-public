@@ -1539,7 +1539,7 @@ open_patient_detail() { # <full-name> <stem> [row-needle] — the optional 3rd a
 }
 create_patient() { # <first> <last> <note> <stem> <arabic yes|no>
   local first="$1" last="$2" notetxt="$3" stem="$4" arabic="${5:-no}"
-  if ! v_click "Add Patient" "${stem}-open" "First Name"; then
+  if ! v_click "Add Patient" "${stem}-open" "First Name" first 0 label; then
     if ! v_click_try_hits "Add Patient" "${stem}-open" "First Name"; then
       snap "${stem}-open-failed" || true
       product_red "PATIENT_${stem}" "the Add Patient dialog ('First Name' field) never opened"
@@ -2353,7 +2353,7 @@ scroll_through_view() { # <stem-prefix> <max-screens> — record every unique sc
 
 create_patient_full() { # <first> <last> <phone> <email> <note> <stem> — richer create (search focus data)
   local first="$1" last="$2" phone="$3" email="$4" notetxt="$5" stem="$6"
-  if ! v_click "Add Patient" "${stem}-open" "First Name"; then
+  if ! v_click "Add Patient" "${stem}-open" "First Name" first 0 label; then
     if ! v_click_try_hits "Add Patient" "${stem}-open" "First Name"; then
       snap "${stem}-open-failed" || true
       bug P1 "PATIENT_${stem}" "the Add Patient dialog ('First Name' field) never opened"
@@ -2601,7 +2601,7 @@ focus_surface() {
 
   # --- S6: Add Patient dialog (open → inventory → empty-required probe → cancel → escape path) ---
   v_scroll_top 10 || true
-  if v_click "Add Patient" "s16-dialog-open" "Add New Patient" || v_click "Add Patient" "s16-dialog-open" "First Name"; then
+  if v_click "Add Patient" "s16-dialog-open" "Add New Patient" first 0 label || v_click "Add Patient" "s16-dialog-open" "First Name" first 0 label; then
     sleep 2
     ocr_capture || true
     snap "s16-add-patient-dialog" || true
@@ -2641,7 +2641,7 @@ focus_surface() {
       fi
     fi
     # escape path (reopen → Escape)
-    if v_click "Add Patient" "s16-dialog-reopen" "First Name"; then
+    if v_click "Add Patient" "s16-dialog-reopen" "First Name" first 0 label; then
       press_escape
       ocr_capture || true
       if ! ocr_grep "Add New Patient"; then
@@ -3470,7 +3470,7 @@ create_patient_deep() { # <first> <last> <phone> <email> <address> <notes> <stem
   # empty-optional probe depends on this).
   local first="$1" last="$2" phone="$3" email="$4" address="$5" notes="$6" stem="$7"
   local arabic="${8:-no}" dob="${9:-}"
-  if ! v_click "Add Patient" "${stem}-open" "First Name"; then
+  if ! v_click "Add Patient" "${stem}-open" "First Name" first 0 label; then
     if ! v_click_try_hits "Add Patient" "${stem}-open" "First Name"; then
       snap "${stem}-open-failed" || true
       return 1
@@ -3842,7 +3842,7 @@ focus_patients() {
   # down at the patients list — scroll the header 'Add Patient' button back
   # into view before the single-attempt dialog-open click.
   v_scroll_top 10 || true
-  if v_click "Add Patient" "pc0-open" "First Name"; then
+  if v_click "Add Patient" "pc0-open" "First Name" first 0 label; then
     v_type_into "First Name" "Scratch Pad" "pc0-first" || true
     snap "pc0-form-half-filled" || true
     if v_click "Cancel" "pc0-cancel" ""; then
@@ -3870,7 +3870,7 @@ focus_patients() {
     # VLM-proven via pc1b-lastonly-form-filled.png + the Patients stat card).
     # Product fix: add-patient-dialog resets its fields on open (useEffect).
     v_scroll_top 10 || true
-    if v_click "Add Patient" "pc0-reopen" "First Name"; then
+    if v_click "Add Patient" "pc0-reopen" "First Name" first 0 label; then
       sleep 1
       ocr_capture || true
       if ocr_grep "Scratch Pad"; then
@@ -4198,7 +4198,7 @@ focus_patients() {
   # D-fix (the PC8a class, applied preemptively): the PC8 verification
   # loop can leave the view scrolled — restore the header button first.
   v_scroll_top 10 || true
-  if v_click "Add Patient" "pc10-open" "First Name"; then
+  if v_click "Add Patient" "pc10-open" "First Name" first 0 label; then
     v_type_into "First Name" "$PAT_ZED_FIRST" "pc10-first" || true
     v_type_into "Last Name" "$PAT_ZED_LAST" "pc10-last" || true
     v_type_into "Phone" "$PAT_ZED_PHONE" "pc10-phone" || true

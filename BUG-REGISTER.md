@@ -625,3 +625,29 @@ for the rerun.
   check is an absence check on the search page.
 - **Evidence**: the 0777 row-retry click, the mid-page post-open OCRs,
   bug-04, artifact (546 files).
+
+### BUG-PD14 [D] ADD_PATIENT_LINE_MERGE_TRAP — run 35098545148 (patients focus, run 21)
+
+- **Class**: D — an OCR line-merge misfire (the run's stopping P1 — FALSE;
+  the product never received a create request: zero POST /api/patients)
+- **The reported red**: `[bug-P1] PATIENT_CREATE: the John Test create
+  did not complete (rc=1)` at PC2 — only ~28 min into the run (this
+  runner ALSO showed a transient onboarding error state at boot — a
+  degraded-render session).
+- **What actually happened (VLM-proven)**: PC1b's dialog-open click
+  was OCR-located on a MERGED line — the nav row ("Dashboard Settings
+  … Add Patient") merged into one long line whose bounding box covers
+  the Settings tab; the click landed on the SETTINGS NAV and navigated
+  away. PC1b then ran vacuously on Settings (typing into the Display
+  Name field; its "rejected" verdict unearned), and PC2's open honestly
+  failed (no 'Add Patient' on Settings) → the P1.
+- **Fix (applied, harness-only)**: every 'Add Patient' dialog-open
+  click (the shared create functions, PC0, PC10, and the s16 surface
+  probe) uses the LABEL lookup mode — the fallback match is restricted
+  to SHORT lines (≤ needle+14), so a merged nav line can never win; the
+  toolbar button ('2+ Add Patient') still matches. The try_hits
+  fallbacks were already self-correcting (each hit is verified by
+  'First Name' appearing).
+- **Evidence**: pc1b-open-before (Dashboard) → pc1b-open-after
+  (Settings), the Settings-page form-filled/submit-failed snaps, the
+  zero create POSTs, bug-01, artifact (546+ files).
