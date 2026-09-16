@@ -490,3 +490,25 @@ secret/PHI clean).
 Run-14 evidence preserved: artifact (330 files). Targeted ARM64 rerun
 dispatched — continuing from the exact stopping point (pe3-pe7 edits →
 PV×8 → PDEL → PNAV → PP → the final report).
+
+## Patients focus — RUN 15 (35034199641 @ 8714282, 2026-09-15 23:07–00:35)
+
+The pencil fix proven: **PE3 Single-field edit GREEN** (Élodie's phone
+→ +33 1 555 0304) and PE4's two consecutive edit rounds BOTH SAVED —
+the API log shows both PUTs returning 200 (round1 00:29:35, round2
+00:32:39). The run then stopped at the final verify: the reopened
+detail landed scrolled past the banner (the known search-row open
+behavior) and the down-only scroll-find moved away from the note — a
+FALSE "not visible" P1 (BUG-PD8; reclassified D). The product's
+consecutive-edit behavior is correct at the API level; the rerun's
+fixed verify will confirm it visually.
+
+Fix shipped (harness-only, +48/−18): the `detail_scroll_top` restore
+(pe5's existing idiom, extracted into a helper) before the pe2/pe3/
+pe4/pe6/pe7 post-save verifies. Static validation all GREEN (bash -n,
+no bash-4 constructs, def-before-use 69 fns, surface_row 165×8, frozen
+lanes, secret/PHI clean).
+
+Run-15 evidence preserved: artifact (362 files). Targeted ARM64 rerun
+dispatched — continuing from the exact stopping point (pe4's visual
+confirm → pe5/pe6/pe7 → PV×8 → PDEL → PNAV → PP → the final report).

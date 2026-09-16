@@ -467,3 +467,33 @@ for the rerun.
 - **Evidence**: pe3/pe4 pencil probes (the (701,297) cluster = the
   action icons; the y=317 fallbacks), pe1/pe2 GREENs, bug-03/04,
   artifact (run 14, 330 files).
+
+### BUG-PD8 [D] POST_SAVE_VERIFY_SCROLL_DIRECTION — run 35034199641 (patients focus, run 15)
+
+- **Class**: D — harness verification defect (the run's stopping P1)
+- **The reported red**: `[bug-P1] PATIENT_EDIT_CONSECUTIVE: the
+  consecutive edits saved but the final value (round2) is not visible`
+  (00:35:21Z).
+- **What actually happened (the proof chain)**:
+  1. The run-14 pencil-band fix WORKED: pe3 (single-field Élodie)
+     GREEN, and pe4's two rounds both SAVED — the API log shows BOTH
+     PUTs to O'Connor's record (00:29:35 round1 → 200, 00:32:39 round2
+     → 200). The product behaved correctly.
+  2. The final verify reopened O'Connor's detail — which landed with
+     the banner SCROLLED OFF-SCREEN (the post-open OCR shows only the
+     mid-page sections: 'No prescriptions yet'/'Clinical Notes'/'No
+     documents yet') — and `v_scroll_find 'round2'` scrolls DOWN ONLY,
+     moving AWAY from the banner where the note renders. The saved
+     value was never going to be seen from there.
+- **Root cause (harness, class D)**: the PE post-save verifies assumed
+  the detail opens at the top; the search-row open can land mid-page.
+  pe5's verify already had the 8-up-burst top-restore — the others
+  didn't.
+- **Fix (applied, harness-only, +48/−18)**: NEW `detail_scroll_top`
+  helper (the pe5 idiom extracted); called before the pe2/pe3/pe4/pe6/
+  pe7 verifies (pe5 already had it inline). The pe3/pe6 blocks also
+  gained the proper save-failed P1 branches (the restructure made the
+  save-completion vs visible-save distinction explicit).
+- **Evidence**: the two 200 PUTs, the reopened detail's mid-page OCRs,
+  the 'NOT visible after 8 down scroll bursts' probe, bug-03, artifact
+  (run 15, 362 files).

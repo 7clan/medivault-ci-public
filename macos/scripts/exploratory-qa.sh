@@ -3660,6 +3660,23 @@ verify_detail_authoritative() { # <full-name> <phone> <email> <note> <stem> [for
   probe "verify-detail[$stem]: name=$VDA_NAME phone=$VDA_PHONE email=$VDA_EMAIL note=$VDA_NOTE skeleton-empty-state=$VDA_SKELETON foreign=$VDA_FOREIGN_SEEN$VDA_FOREIGN_WHICH"
 }
 
+detail_scroll_top() { # <stem> — the detail-page top restore (the banner): the idiom pe5's verify and scan_detail_multi already use
+  # (run 35034199641, class D — the pe4 verify): a detail reopened from a
+  # search-row click lands with the banner SCROLLED OFF-SCREEN (the
+  # post-open OCR shows the mid-page sections only) — a DOWN-only
+  # scroll-find then moves AWAY from the banner where the edited
+  # values render. The API log proved both consecutive edits SAVED
+  # (PUT 200 ×2) while the verify P1'd on the invisible-but-saved note.
+  # Bounded 8 up bursts (a no-op when already at the top).
+  local stem="$1" up=0
+  while [ "$up" -lt 8 ]; do
+    scroll_burst up
+    sleep 1
+    up=$((up + 1))
+  done
+  probe "detail-top[$stem]: scrolled to the top of the detail view (the banner) before the verify"
+}
+
 detail_open_proof() { # <stem> — the real detail-open gate: the LIST always shows its search bar
   # ('Search patients by name, phone, or email...'), the DETAIL page never
   # does; and the detail always carries one of its section markers within
@@ -4361,6 +4378,7 @@ focus_patients() {
       fi
       sleep 2
       if [ "$PE2_RC" = "0" ]; then
+        detail_scroll_top "pe2-verify" || true
         if v_scroll_find "$JOHN_NEW_PHONE" 8; then
           ocr_capture || true
           if ocr_grep "$PAT_A_PHONE"; then
@@ -4407,12 +4425,17 @@ focus_patients() {
       sleep 2
       ocr_capture || true
       if edit_patient_dialog_visible; then PE3_RC=1; press_escape; sleep 1; fi
-      if [ "$PE3_RC" = "0" ] && v_scroll_find "0304" 6; then
-        qa_cap PATIENT_EDIT_SINGLE_FIELD "GREEN (Élodie's single-field phone edit saved — the new +33 number visible)"
-        surface_row "Single-field edit" "Edit Patient dialog → one field → Save" "—" "only the edited field changes" "edited Élodie's phone only; verified" "GREEN" "pe3-*" "OK"
-        snap "pe3-saved" || true
+      if [ "$PE3_RC" = "0" ]; then
+        detail_scroll_top "pe3-verify" || true
+        if v_scroll_find "0304" 6; then
+          qa_cap PATIENT_EDIT_SINGLE_FIELD "GREEN (Élodie's single-field phone edit saved — the new +33 number visible)"
+          surface_row "Single-field edit" "Edit Patient dialog → one field → Save" "—" "only the edited field changes" "edited Élodie's phone only; verified" "GREEN" "pe3-*" "OK"
+          snap "pe3-saved" || true
+        else
+          bug P1 PATIENT_EDIT_SINGLE_FIELD "Élodie's single-field edit did not visibly save"
+        fi
       else
-        bug P1 PATIENT_EDIT_SINGLE_FIELD "Élodie's single-field edit did not visibly save"
+        bug P1 PATIENT_EDIT_SINGLE_FIELD "Élodie's single-field edit save did not complete"
       fi
     else
       bug D PATIENTS_EDIT_PENCIL "the edit pencil could not be activated for Élodie (phone-anchored attempts recorded)"
@@ -4457,12 +4480,15 @@ focus_patients() {
         break
       fi
     done
-    if [ "$PE4_RC" = "0" ] && v_scroll_find "round2" 8; then
-      qa_cap PATIENT_EDIT_CONSECUTIVE "GREEN (two consecutive edits both saved — the final note reads round2)"
-      surface_row "Consecutive edits" "two edit-save cycles back to back" "—" "each edit persists; the last one stands" "O'Connor's note edited twice; 'round2' visible" "GREEN" "pe4-*" "OK"
-      snap "pe4-saved-final" || true
-    elif [ "$PE4_RC" = "0" ]; then
-      bug P1 PATIENT_EDIT_CONSECUTIVE "the consecutive edits saved but the final value (round2) is not visible"
+    if [ "$PE4_RC" = "0" ]; then
+      detail_scroll_top "pe4-verify" || true
+      if v_scroll_find "round2" 8; then
+        qa_cap PATIENT_EDIT_CONSECUTIVE "GREEN (two consecutive edits both saved — the final note reads round2)"
+        surface_row "Consecutive edits" "two edit-save cycles back to back" "—" "each edit persists; the last one stands" "O'Connor's note edited twice; 'round2' visible" "GREEN" "pe4-*" "OK"
+        snap "pe4-saved-final" || true
+      else
+        bug P1 PATIENT_EDIT_CONSECUTIVE "the consecutive edits saved but the final value (round2) is not visible"
+      fi
     else
       bug P1 PATIENT_EDIT_CONSECUTIVE "a consecutive-edit round failed (see the pe4 evidence)"
     fi
@@ -4495,13 +4521,16 @@ focus_patients() {
       sleep 2
       ocr_capture || true
       if edit_patient_dialog_visible; then PE6_RC=1; press_escape; sleep 1; fi
-      if [ "$PE6_RC" = "0" ] && v_scroll_find "République" 8; then
-        qa_cap PATIENT_EDIT_UNICODE "GREEN (the accented address edit (22 Avenue de la République) saved and is visible)"
-        surface_row "Unicode edit" "Edit Patient dialog → accented address → Save" "—" "accented values edit and persist" "edited the address; 'République' visible" "GREEN" "pe6-*" "OK"
-        snap "pe6-saved" || true
-      elif [ "$PE6_RC" = "0" ]; then
-        probe "pe6: the accented address could not be OCR-verified on the detail (Vision accent-dropping — the save itself may have succeeded; honest record)"
-        bug D PATIENT_EDIT_UNICODE_VERIFY "the accented-address edit verification needle ('République') was not OCR-locatable after the save (accent rendering/OCR limit — honest)"
+      if [ "$PE6_RC" = "0" ]; then
+        detail_scroll_top "pe6-verify" || true
+        if v_scroll_find "République" 8; then
+          qa_cap PATIENT_EDIT_UNICODE "GREEN (the accented address edit (22 Avenue de la République) saved and is visible)"
+          surface_row "Unicode edit" "Edit Patient dialog → accented address → Save" "—" "accented values edit and persist" "edited the address; 'République' visible" "GREEN" "pe6-*" "OK"
+          snap "pe6-saved" || true
+        else
+          probe "pe6: the accented address could not be OCR-verified on the detail (Vision accent-dropping — the save itself may have succeeded; honest record)"
+          bug D PATIENT_EDIT_UNICODE_VERIFY "the accented-address edit verification needle ('République') was not OCR-locatable after the save (accent rendering/OCR limit — honest)"
+        fi
       else
         bug P1 PATIENT_EDIT_UNICODE "the accented address edit did not visibly save"
       fi
@@ -4603,6 +4632,7 @@ focus_patients() {
       ocr_capture || true
       if edit_patient_dialog_visible; then PE7_RC=1; press_escape; sleep 1; fi
       if [ "$PE7_RC" = "0" ]; then
+        detail_scroll_top "pe7-verify" || true
         if v_scroll_find "ONLY-MOHAMMAD-CHARLIE" 8; then
           qa_cap PATIENT_EDIT_ARABIC "GREEN (the Arabic-mixed note edit saved — the sentinel persists on the detail)"
           surface_row "Arabic edit" "Edit Patient dialog → mixed Arabic/Latin note → Save" "—" "Arabic values edit and persist" "edited Muhammad's note (sentinel + تحديث); sentinel visible" "GREEN" "pe7-*" "OK"
