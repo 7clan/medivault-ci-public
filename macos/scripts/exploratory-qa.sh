@@ -3701,13 +3701,18 @@ detail_scroll_top() { # <stem> — the detail-page top restore (the banner): the
   # values render. The API log proved both consecutive edits SAVED
   # (PUT 200 ×2) while the verify P1'd on the invisible-but-saved note.
   # Bounded 8 up bursts (a no-op when already at the top).
+  # (run 35068548928, class D): the restore now ends with a FRESH
+  # ocr_capture — the callers' ocr_grep reads the global OCR_TEXT, which
+  # otherwise still holds the STALE pre-scroll capture (the mid-page
+  # sections, no sentinel) and the verify fails on a correct record.
   local stem="$1" up=0
   while [ "$up" -lt 8 ]; do
     scroll_burst up
     sleep 1
     up=$((up + 1))
   done
-  probe "detail-top[$stem]: scrolled to the top of the detail view (the banner) before the verify"
+  ocr_capture || true
+  probe "detail-top[$stem]: scrolled to the top of the detail view (the banner) — OCR refreshed"
 }
 
 detail_banner_row() { # echoes the detail banner's name/avatar row y (the icon row sits at row-13/-15); empty when no content line is found

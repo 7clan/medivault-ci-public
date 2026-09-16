@@ -586,3 +586,23 @@ for the rerun.
   GREEN/clean), nv2 edit-navigate-away GREEN.
 - **Evidence**: the "No patients found" OCRs at 07:21, the hop1/hop2
   sentinel passes, bug-05, artifact (536 files).
+
+### BUG-PD12 [D] DETAIL_TOP_STALE_OCR — run 35068548928 (patients focus, run 19)
+
+- **Class**: D — harness defect (the run's stopping P1 — a FALSE
+  positive; all three rapid-switch hops opened the CORRECT records)
+- **The reported red**: `[bug-P1] NAV_RAPID_SWITCHING: a rapid-switch hop
+  landed on the wrong record (a sentinel mismatched)` (10:06:19Z).
+- **What actually happened**: all 3 hops searched their tokens, clicked
+  their rows, and passed detail_open_proof (the OCR evidence shows each
+  detail's sections). The run-19 nv3 fix added `detail_scroll_top`
+  before each sentinel grep — but the restore SCROLLED without
+  refreshing the global OCR_TEXT: the subsequent `ocr_grep` read the
+  STALE pre-scroll capture (the mid-page sections — no sentinel banner)
+  and recorded the mismatch. No wrong record was ever rendered.
+- **Fix (applied, one line + the comment)**: `detail_scroll_top` ends
+  with a fresh `ocr_capture` — every caller's ocr_grep now reads the
+  post-restore state. (The PE verifies were unaffected: their
+  v_scroll_find re-captures internally.)
+- **Evidence**: the three hop rows' correct clicks + detail-proofs, the
+  stale-OCR greps, bug-04, artifact (531 files).
