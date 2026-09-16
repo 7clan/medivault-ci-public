@@ -1,0 +1,315 @@
+name: Exploratory QA Parallel Wave
+
+# The PARALLEL COMPLETION WAVE (directive 2026-09-16): after the patients
+# focus reached definitive GREEN, ONE frozen GREEN product DMG is shared
+# across all remaining shards. Each shard = clean macOS VM + clean app state
+# + own synthetic DB + the SAME DMG (SHA-256 proven in every shard).
+#
+#   SHARD A  search + settings + persistence  (the three already-proven
+#            harness focuses, one VM, sequential invocations with the
+#            FRESH_STATE gateway between them)
+#   SHARD B  documents + scan + file management   (new focus: documents)
+#   SHARD C  clinical: visits + notes + prescriptions + reports (clinical)
+#   SHARD D  data-io + backup + dashboard + analytics + notifications +
+#            calendar + global actions + keyboard (dataio)
+#   SHARD E  macOS save/print/desktop integration + error/recovery (desktop)
+#
+# fail-fast=false — every shard runs to its own honest first-red.
+# Discipline identical to exploratory-qa.yml (P0 stop / P1-P2 first-red /
+# P3 record / D harness / ENV / EXPECTED). The expensive product build
+# happens exactly ONCE (in the SOURCE run); this workflow never rebuilds.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: 'The completed GREEN patients run that owns the frozen DMG artifact'
+        required: true
+        type: string
+      source_sha:
+        description: 'The expected public head SHA of the source run (stale-head guard)'
+        required: true
+        type: string
+      arch:
+        description: 'arm64 only'
+        required: true
+        default: 'arm64'
+        type: choice
+        options:
+          - arm64
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  validate-source:
+    name: "Validate the frozen source run + DMG"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SOURCE_RUN_ID: ${{ github.event.inputs.source_run_id }}
+      SOURCE_SHA: ${{ github.event.inputs.source_sha }}
+    steps:
+      - name: The source run must be completed + success at the expected SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUN_JSON="$(curl -sf -H "Authorization: Bearer ${{ github.token }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}")"
+          STATUS="$(python3 -c "import json,sys; print(json.load(sys.stdin)['status'])" <<<"$RUN_JSON")"
+          CONCL="$(python3 -c "import json,sys; print(json.load(sys.stdin)['conclusion'])" <<<"$RUN_JSON")"
+          HEAD="$(python3 -c "import json,sys; print(json.load(sys.stdin)['head_sha'])" <<<"$RUN_JSON")"
+          echo "source run ${SOURCE_RUN_ID}: status=${STATUS} conclusion=${CONCL} head=${HEAD}"
+          [ "$STATUS" = "completed" ] || { echo "::error::source run not completed"; exit 1; }
+          [ "$CONCL" = "success" ] || { echo "::error::source run is not GREEN — patients must be definitively GREEN first"; exit 1; }
+          [ "$HEAD" = "${SOURCE_SHA}" ] || { echo "::error::source run head ${HEAD} != expected ${SOURCE_SHA} (stale-head guard)"; exit 1; }
+
+      - name: Download the frozen DMG from the source run
+        uses: actions/download-artifact@v4
+        with:
+          name: product-test-dmg-arm64
+          run-id: ${{ github.event.inputs.source_run_id }}
+          github-token: ${{ github.token }}
+          path: dmg
+
+      - name: Verify the DMG SHA-256 (the one frozen build for the whole wave)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dmg
+          ls -la
+          test -f MediVault-0.1.1-firstrun-arm64.dmg || { echo "::error::DMG missing"; exit 1; }
+          test -f MediVault-0.1.1-firstrun-arm64.dmg.sha256 || { echo "::error::DMG sha256 file missing"; exit 1; }
+          EXPECTED="$(awk '{print $1}' MediVault-0.1.1-firstrun-arm64.dmg.sha256)"
+          ACTUAL="$(shasum -a 256 MediVault-0.1.1-firstrun-arm64.dmg | awk '{print $1}')"
+          echo "expected=${EXPECTED}"
+          echo "actual  =${ACTUAL}"
+          [ "$EXPECTED" = "$ACTUAL" ] || { echo "::error::DMG hash mismatch"; exit 1; }
+          echo "FROZEN DMG VERIFIED: ${ACTUAL}" | tee frozen-dmg-sha256.txt
+
+      - name: Share the frozen DMG with all shards
+        uses: actions/upload-artifact@v4
+        with:
+          name: product-dmg-frozen
+          retention-days: 14
+          path: dmg/
+
+  shard:
+    name: "Shard ${{ matrix.shard }} — ${{ matrix.label }}"
+    needs: validate-source
+    runs-on: macos-26
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include:
+          - shard: A
+            label: "search + settings + persistence"
+            # sequential: 3 clean invocations of ALREADY-IMPLEMENTED focuses
+            focus_list: "search settings persistence"
+          - shard: B
+            label: "documents + scan + file management"
+            focus_list: "documents"
+          - shard: C
+            label: "clinical workflow (visits/notes/rx/reports)"
+            focus_list: "clinical"
+          - shard: D
+            label: "data-io + dashboard + analytics + notifications + global"
+            focus_list: "dataio"
+          - shard: E
+            label: "macOS save/print + error/recovery"
+            focus_list: "desktop"
+    env:
+      EXPECTED_ARCH: arm64
+      DMG_PATH: ${{ runner.temp }}/dmg/MediVault-0.1.1-firstrun-arm64.dmg
+      DMG_SHA256_FILE: ${{ runner.temp }}/dmg/MediVault-0.1.1-firstrun-arm64.dmg.sha256
+      SOURCE_RUN_ID: ${{ github.event.inputs.source_run_id }}
+      SHARD: ${{ matrix.shard }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download the frozen DMG (the shared source build)
+        uses: actions/download-artifact@v4
+        with:
+          name: product-dmg-frozen
+          path: ${{ runner.temp }}/dmg
+
+      - name: Prove the DMG SHA-256 in this shard too
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED="$(awk '{print $1}' "$DMG_SHA256_FILE")"
+          ACTUAL="$(shasum -a 256 "$DMG_PATH" | awk '{print $1}')"
+          [ "$EXPECTED" = "$ACTUAL" ] || { echo "::error::shard ${SHARD}: DMG hash mismatch"; exit 1; }
+          echo "shard ${SHARD} frozen DMG verified: ${ACTUAL}"
+
+      - name: Run the shard battery (each focus = full clean gateway + honest first-red)
+        shell: bash
+        run: |
+          set -euo pipefail
+          rc_all=0
+          for focus in ${{ matrix.focus_list }}; do
+            echo "=== SHARD ${SHARD}: focus ${focus} ==="
+            if QA_FOCUS="$focus" bash macos/scripts/exploratory-qa.sh; then
+              echo "focus ${focus}: completed"
+            else
+              rc=$?
+              echo "focus ${focus}: exited ${rc} (first-red or recorded stop)"
+              # first-red discipline: one shard red does not kill the others
+              rc_all="$rc"
+              break
+            fi
+            # preserve each focus's evidence under its own name
+            if [ -d gui-evidence ]; then
+              mv gui-evidence "gui-evidence-${focus}"
+            fi
+          done
+          # reunify for the standard summary steps
+          mkdir -p gui-evidence
+          for d in gui-evidence-*; do
+            [ -d "$d" ] || continue
+            sub="${d#gui-evidence-}"
+            mkdir -p "gui-evidence/${sub}"
+            cp -R "$d/." "gui-evidence/${sub}/" || true
+          done
+          exit "$rc_all"
+
+      - name: Job summary — capability report
+        if: always()
+        shell: bash
+        run: |
+          if [ -f gui-evidence/qa-capability-report.md ]; then
+            { echo "## Shard ${SHARD} — capability report"; echo '```'; cat gui-evidence/qa-capability-report.md; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          else
+            for d in gui-evidence/*/; do
+              [ -f "$d/qa-capability-report.md" ] || continue
+              { echo "## Shard ${SHARD} / ${d} — capability report"; echo '```'; cat "$d/qa-capability-report.md"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            done
+          fi
+
+      - name: Job summary — bug register
+        if: always()
+        shell: bash
+        run: |
+          for d in gui-evidence gui-evidence/*/; do
+            [ -f "$d/BUG-REGISTER.md" ] || continue
+            { echo "## Shard ${SHARD} — bug register (${d})"; echo '```'; cat "$d/BUG-REGISTER.md"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Upload shard evidence (always, directive §9 names)
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          case "$SHARD" in
+            A)
+              # search focus + the settings/persistence pair, per §9
+              if [ -d gui-evidence-search ]; then
+                (cd gui-evidence-search && zip -qr "$OLDPWD/qa-evidence-search.zip" . ) || true
+              fi
+              if [ -d gui-evidence-settings ] || [ -d gui-evidence-persistence ]; then
+                mkdir -p sp/settings sp/persistence || true
+                [ -d gui-evidence-settings ] && cp -R gui-evidence-settings/. sp/settings/ || true
+                [ -d gui-evidence-persistence ] && cp -R gui-evidence-persistence/. sp/persistence/ || true
+                (cd sp && zip -qr "$OLDPWD/qa-evidence-settings-persistence.zip" . ) || true
+              fi
+              ;;
+            B) (cd gui-evidence-documents 2>/dev/null && zip -qr "$OLDPWD/qa-evidence-documents-scan.zip" . ) || true ;;
+            C) (cd gui-evidence-clinical   2>/dev/null && zip -qr "$OLDPWD/qa-evidence-clinical.zip" . ) || true ;;
+            D) (cd gui-evidence-dataio      2>/dev/null && zip -qr "$OLDPWD/qa-evidence-data-io.zip" . ) || true ;;
+            E) (cd gui-evidence-desktop    2>/dev/null && zip -qr "$OLDPWD/qa-evidence-desktop-print.zip" . ) || true ;;
+          esac
+          echo "zips ready:"; ls -1 qa-evidence-*.zip 2>/dev/null || echo "(none — harness may have stopped before evidence)"
+        # (the actual upload uses the matrix artifact suffix below)
+
+      - name: Upload A — search
+        if: always() && matrix.shard == 'A'
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-evidence-search
+          retention-days: 14
+          path: qa-evidence-search.zip
+          if-no-files-found: warn
+
+      - name: Upload A — settings + persistence
+        if: always() && matrix.shard == 'A'
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-evidence-settings-persistence
+          retention-days: 14
+          path: qa-evidence-settings-persistence.zip
+          if-no-files-found: warn
+
+      - name: Upload B — documents + scan
+        if: always() && matrix.shard == 'B'
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-evidence-documents-scan
+          retention-days: 14
+          path: qa-evidence-documents-scan.zip
+          if-no-files-found: warn
+
+      - name: Upload C — clinical
+        if: always() && matrix.shard == 'C'
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-evidence-clinical
+          retention-days: 14
+          path: qa-evidence-clinical.zip
+          if-no-files-found: warn
+
+      - name: Upload D — data-io
+        if: always() && matrix.shard == 'D'
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-evidence-data-io
+          retention-days: 14
+          path: qa-evidence-data-io.zip
+          if-no-files-found: warn
+
+      - name: Upload E — desktop + print
+        if: always() && matrix.shard == 'E'
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-evidence-desktop-print
+          retention-days: 14
+          path: qa-evidence-desktop-print.zip
+          if-no-files-found: warn
+
+  combined-gallery:
+    name: "Combined post-run evidence gallery"
+    needs: [shard]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all shard evidence (directive §9 artifact names)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: qa-evidence-*
+          merge-multiple: false
+          path: shards
+
+      - name: Build the combined gallery (index.html + manifest + reports)
+        shell: bash
+        env:
+          SOURCE_RUN_ID: ${{ github.event.inputs.source_run_id }}
+          SOURCE_SHA: ${{ github.event.inputs.source_sha }}
+          PARALLEL_RUN_ID: ${{ github.run_id }}
+        run: bash macos/scripts/build-combined-gallery.sh
+
+      - name: Upload the combined gallery
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-full-remaining-combined-gallery
+          retention-days: 14
+          path: combined-gallery/
+          if-no-files-found: warn

@@ -586,3 +586,31 @@ sentinel-mismatch P1 split. Static validation all GREEN.
 Run-18 evidence preserved: artifact (536 files). Targeted ARM64 rerun
 dispatched — continuing from nv3 (the exact stopping point: the
 rapid-switch hops → nv6 → PP → the final report).
+
+## Run 23 (35121130113 @ 97f44a9) — the budget boundary, then the definitive GREEN (run 24)
+
+Run 23 was the deepest walk yet — the first with every prior fix in
+place and no early red: PC→PI→PE→PV→PDEL→nv1–nv6 ALL GREEN (~151
+minutes) — and the runner cancelled it at exactly the 150-minute GUI
+boundary with only nv7 + PP + the final report unstarted (BUG-PD16,
+infrastructure; the same class as run 16's 90-minute case). The fix
+was the campaign's own workflow budget: 150 → 210.
+
+Run 24 (35139685879 @ 517e37f, private 79f93ad) then completed the
+FULL walk in ~157 minutes of GUI time, ending
+`EXPLORATORY-QA-GREEN-patients`:
+
+- nv7 GREEN — logout from a patient detail → the clean login screen
+  (no patient data) → re-login → the same patient reopens intact.
+- PP GREEN — quit → relaunch (the restored path) → supervisor/API/PG
+  healthy → John's edited phone + note, Muhammad's Arabic-mixed note,
+  the isolation invariants, and Zed's deletion all survived.
+- 57 capability rows: 51 GREEN, 4 NOT EXERCISED (the stable
+  visit-scheduler select limitation), 2 recorded.
+- The three register entries in this run are exactly the three known
+  stable ones (visit-scheduler D, DOB ENV, PV3 chip D).
+
+**PATIENTS: DEFINITIVE GREEN — FROZEN.** The campaign now moves to the
+parallel completion wave (search/settings/persistence + the four new
+focuses: documents, clinical, dataio, desktop) against this exact
+frozen DMG, per the 2026-09-16 directive.

@@ -672,3 +672,35 @@ for the rerun.
 - **Also proven in run 22**: nv1-nv6 all GREEN (the first run through
   the ENTIRE navigation battery).
 - **Evidence**: bug-05, the artifact (run 22).
+
+### BUG-PD16 [D/INFRA] GUI_BUDGET_150_OUTGROWN — run 35121130113 (patients focus, run 23)
+
+- **Class**: INFRASTRUCTURE (the same class as BUG-PD9's 90-min case) —
+  the FIRST full-GREEN-path walk legitimately outgrew the 150-minute
+  GUI budget.
+- **What actually happened**: run 23 walked PC0–PC10 + all isolation
+  scans + the ENTIRE edit battery + PV1/2/4/5 + PDEL + nv1–nv6 ALL GREEN
+  (~151 min) — with no first-red and no harness stop — and the runner
+  cancelled at exactly the 150-min boundary with only nv7 + PP + the
+  final report unstarted.
+- **Fix (applied, workflow-only, +7/−2)**: the exploratory-qa.yml GUI
+  job `timeout-minutes` 150 → 210 (the campaign's own workflow — no
+  product code, no frozen lane, no harness change).
+- **Regression proof**: run 24 (35139685879) completed the FULL walk
+  in ~157 min of GUI time — nv7 GREEN (the logout-from-detail cycle)
+  and PP GREEN (the quit/reopen persistence: John's edited values,
+  Muhammad's Arabic note, isolation intact, Zed still deleted) —
+  ending `EXPLORATORY-QA-GREEN-patients`.
+- **Evidence**: the run-23 artifact (10463734605, 536+ screenshots)
+  and the run-24 artifact (10471500388, 590 files).
+
+### Patients campaign — FINAL STATE (run 24 GREEN, 2026-09-16)
+
+The definitive patients run (35139685879 @ 517e37f, private 79f93ad)
+completed end-to-end: 57 capability rows — 51 GREEN, 4 NOT EXERCISED
+(the stable shadcn-select visit-scheduler limitation + its PV6–8
+dependents), 2 recorded. The register's standing entries: BUG-PD1…PD16
+all fixed harness-side; the only product fixes of the whole campaign
+remain the P1 session-refresh and the P2 dialog-state-reset (both
+frozen GREEN); BUG-A1 (P3 password-policy mismatch) remains the only
+open product finding. PATIENTS = FROZEN GREEN.
