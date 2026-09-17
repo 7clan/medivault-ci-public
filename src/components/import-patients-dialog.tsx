@@ -126,7 +126,11 @@ export function ImportPatientsDialog({
 
       const validationError = validateFile(droppedFile)
       if (validationError) {
+        // BUG-PD19 (wave round-4 DD3b): setError alone never rendered the
+        // validation banner (it is gated on phase === 'error') — the rejected
+        // file was silently dropped. Set the phase so the user SEES it.
         setError(validationError)
+        setPhase('error')
         return
       }
 
@@ -145,7 +149,10 @@ export function ImportPatientsDialog({
 
       const validationError = validateFile(selectedFile)
       if (validationError) {
+        // BUG-PD19 (wave round-4 DD3b): the same silent-rejection hole on the
+        // file-picker path — the banner needs phase === 'error' to render.
         setError(validationError)
+        setPhase('error')
         return
       }
 

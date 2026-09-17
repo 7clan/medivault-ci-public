@@ -6472,6 +6472,104 @@ docb_set_category() { # <current-label> <target-category> <stem> — the Categor
   return 1
 }
 
+docb_type_input() { # <label-needle> <field-line-needle> <text> <stem> [xmin] — click the FIELD's own OCR line, then select-all + type
+  # (round-4 run 105028918417 first-red — DB2): the scan view's 'Title'/'Notes'
+  # <Label>s carry NO htmlFor (scan-capture.tsx:367/:369; the edit dialog's
+  # too, edit-document-dialog.tsx:79/:104 — the same class as the settings
+  # Display Name, BUG-PD18a): v_type_into's LABEL click left the page body
+  # focused and the clear's BACKSPACE (key code 51) navigated the WKWebView
+  # BACK to the tauri:// first-run page (BUG-PD10) — the round-4 battery died
+  # against the onboarding. Fix: click the FIELD ITSELF — its own OCR line
+  # (the auto-filled input value below the label, or the placeholder rendered
+  # INSIDE the textarea) IS the field — then Cmd+A + type (select-all
+  # REPLACE, and NO Backspace is ever sent, so the back-navigation cannot
+  # fire even if the click missed). The optional xmin restricts BOTH
+  # lookups to the dialog card's x-range (the v_type_into edit-dialog
+  # idiom). rc 0 = typed + OCR-verified; 1 = miss (honest); 2 = the
+  # first-run page is on screen — the caller records the honest D +
+  # recovery, never a cascade.
+  local label="$1" line="$2" text="$3" stem="$4" xmin="${5:-}"
+  local lx ly fx fy saved_ocr
+  ocr_capture || return 1
+  snap_file "$MV_SHOT" "${stem}-before" || true
+  saved_ocr="$OCR_TEXT"
+  if [ -n "$xmin" ]; then
+    OCR_TEXT="$(printf '%s\n' "$OCR_TEXT" | awk -F'|' -v m="$xmin" -v s="${MV_SCALE:-1}" '($3+0)/s >= m')"
+    [ -n "$OCR_TEXT" ] || OCR_TEXT="$saved_ocr"
+  fi
+  if ! ocr_lookup "$label" "first" "label"; then
+    OCR_TEXT="$saved_ocr"
+    probe "vfield[$stem]: label '$label' NOT FOUND on screen — no click attempted"
+    return 1
+  fi
+  lx="$OCR_HIT_X"; ly="$OCR_HIT_Y"
+  fx=""; fy=""
+  if ocr_lookup "$line" "first" "exact"; then
+    fx="$OCR_HIT_X"; fy="$OCR_HIT_Y"
+    probe "vfield[$stem]: clicking the field's own line ('$line' at ($fx,$fy)) — never the htmlFor-less label"
+  fi
+  OCR_TEXT="$saved_ocr"
+  if [ -z "$fx" ]; then
+    # the field's own line did not OCR (e.g. an empty textarea whose
+    # placeholder clipped) — the field sits directly below its floating
+    # label; label-y + 30 lands inside it
+    fx="$lx"; fy=$(( ly + 30 ))
+    probe "vfield[$stem]: the field's line ('$line') did not OCR — clicking label-y+30 (inside the field)"
+  fi
+  if ! "$MV_MOUSE" "$fx" $(( fy + 6 )) 2>>"$LOG"; then
+    probe "vfield[$stem]: mv-mouse FAILED"
+    return 1
+  fi
+  sleep 1
+  # the BUG-PD10 belt-and-braces: if the webview ALREADY sits on the
+  # first-run page, stop BEFORE any keystroke
+  ocr_capture || true
+  if ocr_grep "first-run setup" || ocr_grep "Open MediVault"; then
+    snap "${stem}-firstrun-trap" || true
+    probe "vfield[$stem]: the WKWebView BACK-NAVIGATION trap is on screen (the tauri:// first-run page) — no keystroke sent"
+    return 2
+  fi
+  osa 'tell application "System Events" to tell (first process whose name contains "edivault") to keystroke "a" using command down' 10 || true
+  sleep 1
+  if osa "tell application \"System Events\" to tell (first process whose name contains \"edivault\") to keystroke \"$text\"" 15; then
+    sleep 1
+    ocr_capture || return 1
+    snap_file "$MV_SHOT" "${stem}-after" || true
+    if ocr_grep "first-run setup" || ocr_grep "Open MediVault"; then
+      probe "vfield[$stem]: the first-run page appeared DURING the typing (the BUG-PD10 trap) — the honest stop"
+      return 2
+    fi
+    if ocr_grep "$text"; then
+      probe "vfield[$stem]: typed text is now VISIBLE on screen (verified)"
+      return 0
+    fi
+    probe "vfield[$stem]: typing could NOT be verified visually — recorded honestly"
+    return 1
+  fi
+  probe "vfield[$stem]: keystroke FAILED (kept, not discarded): $OSA_ERR"
+  return 1
+}
+
+docb_firstrun_recover() { # <stem> — the first-run page's OWN 'Open MediVault' button; 0 = the dashboard returned
+  # the defensive recovery for the BUG-PD10 WKWebView back-navigation trap:
+  # the tauri:// first-run page (round-4: 'Local service ready' + 'Open
+  # MediVault' + 'Opening MediVault...') carries the app's own forward
+  # affordance. One bounded click + wait; an honest probe either way — the
+  # caller records the D (and stops the battery) when this does not yield.
+  if ! ocr_grep "Open MediVault"; then
+    probe "firstrun-recover[$1]: the 'Open MediVault' button is not on screen"
+    return 1
+  fi
+  if v_click "Open MediVault" "$1-openmv" ""; then
+    if wait_for_ocr "Add Patient" 30 "$1-recovered"; then
+      probe "firstrun-recover[$1]: the dashboard returned after the Open MediVault click — the battery continues"
+      return 0
+    fi
+  fi
+  probe "firstrun-recover[$1]: the first-run page did not yield to the Open MediVault click"
+  return 1
+}
+
 docb_scan_select_patient() { # <full-name> <stem> — the scan view's patient dropdown (no pre-target)
   local full="$1" stem="$2"
   if v_click "Choose a patient" "${stem}-open" "$full"; then
@@ -7102,26 +7200,57 @@ focus_documents() {
       if [ "$DB2_RC" = "0" ]; then
         # reveal the Document Details card (below the File Upload card)
         v_scroll_find "Document Details" 6 || true
-        # the single-file staging auto-filled the Title ('basic-clinic-note') — clear + type
-        if v_type_into "Title" "$DOCB_T_ALPHA" "db2-title" no no yes; then
-          probe "db2: the Title field now holds '$DOCB_T_ALPHA'"
+        # the single-file staging auto-filled the Title ('basic-clinic-note')
+        # — click the INPUT's own OCR line + select-all + type (the round-4
+        # fix: the 'Title' <Label> has NO htmlFor, so v_type_into's label
+        # click left the body focused and the clear's Backspace navigated the
+        # WKWebView BACK to the first-run page — BUG-PD10/PD18a)
+        local db2_trap=0 db2_trc
+        docb_type_input "Title" "basic-clinic-note" "$DOCB_T_ALPHA" "db2-title"
+        db2_trc=$?
+        case "$db2_trc" in
+          0) probe "db2: the Title field now holds '$DOCB_T_ALPHA'" ;;
+          2) db2_trap=1
+             bug D DOC_METADATA "the WKWebView back-navigation trap fired while entering the Title (the tauri:// first-run page appeared mid-battery — the known BUG-PD10 WKWebView failure mode); the metadata sub-battery stops here honestly" ;;
+          *) bug P1 DOC_METADATA "could not type the document Title in the scan view" ;;
+        esac
+        if [ "$db2_trap" = "1" ]; then
+          # defensive recovery: the first-run page's own Open MediVault
+          # button, one bounded attempt — else an honest stop (no cascade of
+          # misleading Ds from the sections that cannot run against the
+          # onboarding page)
+          if docb_firstrun_recover "db2"; then
+            probe "db2: the scan view state was lost to the navigation — the metadata is incomplete, DB3 skips (its staged file is gone)"
+          else
+            bug D DOC_BATTERY_STOP "the first-run page did not yield to the Open MediVault recovery — the remaining document sections are not exercisable this run (honest stop)"
+            return 0
+          fi
         else
-          bug P1 DOC_METADATA "could not type the document Title in the scan view"
+          # the Category trigger is a real BUTTON (its value text) — no
+          # htmlFor-less-label exposure (the audit stands)
+          if docb_set_category "General" "Lab Results" "db2-cat"; then
+            probe "db2: the Category select holds 'Lab Results'"
+          else
+            bug P1 DOC_METADATA "the Category select did not settle on 'Lab Results'"
+          fi
+          # the 'Notes' <Label> is htmlFor-less too — the placeholder line
+          # rendered INSIDE the textarea is the field's own line
+          if docb_type_input "Notes" "Any additional notes about this document..." "$DOCB_NOTE_SENT" "db2-notes"; then
+            probe "db2: the Notes textarea holds the unique sentinel '$DOCB_NOTE_SENT' (rendered on a document surface only inside the Edit Document dialog — verified at DB9)"
+          else
+            bug P1 DOC_METADATA "could not type the document Notes in the scan view"
+          fi
         fi
-        if docb_set_category "General" "Lab Results" "db2-cat"; then
-          probe "db2: the Category select holds 'Lab Results'"
+        if [ "$db2_trap" = "0" ]; then
+          ocr_capture || true
+          snap "db2-metadata-set" || true
+          qa_cap DOC_METADATA "GREEN (Title='$DOCB_T_ALPHA', Category='Lab Results', Notes sentinel '$DOCB_NOTE_SENT' — all typed into the REAL fields; the notes value's only rendered surface is the Edit Document dialog, verified at DB9)"
+          surface_row "Upload metadata" "scan view Document Details card" "Title input; Category select; Notes textarea" "the metadata accompanies the upload" "typed all three; category list closed on 'Lab Results'" "GREEN" "db2-*" "OK"
         else
-          bug P1 DOC_METADATA "the Category select did not settle on 'Lab Results'"
+          # the trap D — the staged file + typed title were lost to the
+          # navigation; DB3 must skip (its row assertion greps the typed title)
+          DB2_RC=1
         fi
-        if v_type_into "Notes" "$DOCB_NOTE_SENT" "db2-notes"; then
-          probe "db2: the Notes textarea holds the unique sentinel '$DOCB_NOTE_SENT' (rendered on a document surface only inside the Edit Document dialog — verified at DB9)"
-        else
-          bug P1 DOC_METADATA "could not type the document Notes in the scan view"
-        fi
-        ocr_capture || true
-        snap "db2-metadata-set" || true
-        qa_cap DOC_METADATA "GREEN (Title='$DOCB_T_ALPHA', Category='Lab Results', Notes sentinel '$DOCB_NOTE_SENT' — all typed into the REAL fields; the notes value's only rendered surface is the Edit Document dialog, verified at DB9)"
-        surface_row "Upload metadata" "scan view Document Details card" "Title input; Category select; Notes textarea" "the metadata accompanies the upload" "typed all three; category list closed on 'Lab Results'" "GREEN" "db2-*" "OK"
       else
         bug D DOC_METADATA "the metadata battery could not stage its file (see db2-stage)"
       fi
@@ -7177,7 +7306,7 @@ focus_documents() {
       bug P1 DOC_UPLOAD_SUCCESS "the patient could not be selected in the scan view (the dropdown never settled on John Docs)"
     fi
   else
-    bug D DOC_UPLOAD_SUCCESS "the upload success path was skipped (no staged file — the chooser staging failed above)"
+    bug D DOC_UPLOAD_SUCCESS "the upload success path was skipped (DB2 did not complete — the staging or the metadata step failed above; see the DOC_METADATA record)"
   fi
 
   # ------------------------------------------------------------------
@@ -7672,14 +7801,18 @@ focus_documents() {
       # the real save: title + category + notes with new sentinels
       docb_row_action "$DOCB_T_ALPHA" edit "db9-pencil2" 870 890 850 910 830 || db9_rc=$?
       if [ "$db9_rc" = "0" ]; then
-        if v_type_into "Title" "$DOCB_T_ALPHA_V2" "db9-title" no no yes; then :; else bug P1 DOC_EDIT_SAVE "could not type the edited title"; fi
+        # the dialog's 'Title'/'Notes' <Label>s are htmlFor-less (the same
+        # BUG-PD18a/PD10 class as the scan view) — click each FIELD's own
+        # line (the input's prefilled value) + select-all + type, restricted
+        # to the dialog card's x-range (the v_type_into xmin idiom)
+        if docb_type_input "Title" "$DOCB_T_ALPHA" "$DOCB_T_ALPHA_V2" "db9-title" 250; then :; else bug P1 DOC_EDIT_SAVE "could not type the edited title"; fi
         # the dialog's category select shows the current value ('Lab Results')
         if docb_set_category "Lab Results" "Insurance" "db9-cat"; then
           probe "db9: the dialog's Category select now holds 'Insurance'"
         else
           bug P1 DOC_EDIT_SAVE "the dialog's category did not settle on 'Insurance'"
         fi
-        v_type_into "Notes" "$DOCB_NOTE_SENT_V2" "db9-notes" no no yes 250 || true
+        docb_type_input "Notes" "$DOCB_NOTE_SENT" "$DOCB_NOTE_SENT_V2" "db9-notes" 250 || true
         snap "db9-edited-form" || true
         docb_api_mark "db9-save-pre"
         if v_click_near_anchor_y "Save Changes" "Cancel" "db9-save" 40; then
@@ -9777,7 +9910,14 @@ focus_clinical() {
   # (wave2 fix) known position first (the step-start restore idiom)
   detail_scroll_top "cc11-top" || true
   if v_scroll_find "$CLC_NOTE_ANCHOR" 8; then
-    if clc_icon_click "$CLC_NOTE_ANCHOR" "0" "970 976 964 982 958" "Delete Clinical Note" "cc11-dialog"; then
+    # (round-5 fix) the round-4 trash candidates (958-982) all missed — while
+    # the CC10 pencil probing in the SAME run proved the real band by
+    # accident: every click at x 926-950 on a note-card title line opened
+    # the 'Delete Clinical Note' confirm (5/5 dialog opens, round-4 log).
+    # Source: clinical-notes.tsx renders the card's right cluster
+    # [chevron|pencil|trash] as ALWAYS-ON ghost buttons (no hover-reveal,
+    # :526-553), the trash rightmost — the proven band, verbatim.
+    if clc_icon_click "$CLC_NOTE_ANCHOR" "0" "938 944 932 950 926" "Delete Clinical Note" "cc11-dialog"; then
       ocr_capture || true
       snap "cc11-dialog" || true
       record_inventory "Delete Clinical Note dialog (the destructive confirm)"
@@ -9880,13 +10020,24 @@ focus_clinical() {
     # title the battery last verified)
     if [ "$CLC_NOTE_MADE" != "yes" ]; then
       bug D CLINICAL_NOTE_PERSISTENCE "skipped — the clinical note was not PROVEN created this run (the CC8 D above); the persistence of an uncreated record cannot be verified (honest)"
-    elif v_scroll_find "$CLC_NOTE_EDIT" 8 || v_scroll_find "$CLC_NOTE" 8 || wait_for_ocr "$CLC_NOTE_EDIT" 15 "cc12-note-survived" || wait_for_ocr "$CLC_NOTE" 5 "cc12-note-survived2"; then
-      ocr_capture || true
-      snap "cc12-note-survived" || true
-      qa_cap CLINICAL_CC12_NOTE_PERSISTENCE "GREEN (the clinical note survived the quit/reopen: the sentinel title is visible after the restart; the reopen refetched the notes (GET /api/notes ×$CLC_API_HITS in the API log))"
-      surface_row "Note persistence (quit/reopen)" "quit → relaunch → the patient detail" "—" "the note survives the restart" "the sentinel title visible after the reopen" "GREEN" "cc12-*" "OK"
+    elif v_scroll_find "Clinical Notes" 8; then
+      # (round-5 fix — the BUG-PD5/PD8 verify-position family, the CC12
+      # first-red): the round-4 verify scrolled DOWN for the EDIT title
+      # (which a D'd CC10 edit never renders), ran PAST the notes section
+      # to the documents BOTTOM, and every later find/grep then scrolled
+      # DOWN from there — the Clinical Notes section is ABOVE the
+      # documents. The section header is the anchor: DOWN from the TOP to
+      # the notes section, THEN grep the sentinel in the notes card list.
+      if ocr_grep "$CLC_NOTE_EDIT" || ocr_grep "$CLC_NOTE" || { scroll_burst down; sleep 1; ocr_capture || true; ocr_grep "$CLC_NOTE_EDIT" || ocr_grep "$CLC_NOTE"; }; then
+        ocr_capture || true
+        snap "cc12-note-survived" || true
+        qa_cap CLINICAL_CC12_NOTE_PERSISTENCE "GREEN (the clinical note survived the quit/reopen: the sentinel title is visible after the restart; the reopen refetched the notes (GET /api/notes ×$CLC_API_HITS in the API log))"
+        surface_row "Note persistence (quit/reopen)" "quit → relaunch → the patient detail" "—" "the note survives the restart" "the sentinel title visible after the reopen" "GREEN" "cc12-*" "OK"
+      else
+        bug P1 CLINICAL_NOTE_PERSISTENCE "the clinical note did not survive the quit/reopen (the Clinical Notes section is visible on the reopened detail but neither the edited nor the created sentinel title is)"
+      fi
     else
-      bug P1 CLINICAL_NOTE_PERSISTENCE "the clinical note did not survive the quit/reopen (neither the edited nor the created sentinel title is visible)"
+      bug P1 CLINICAL_NOTE_PERSISTENCE "the Clinical Notes section itself was not found on the reopened detail after the top-anchored 8-burst scan (the section header never OCR'd — see the bug evidence capture)"
     fi
   else
     bug D CLINICAL_NOTE_PERSISTENCE "could not reopen the primary patient's detail after the restart (honest)"
@@ -10666,22 +10817,38 @@ focus_clinical() {
     # edit succeeded, else the create sentinel (the edit's own D record stays
     # the honest verdict for the edit — the restart persistence is proven by
     # whichever sentinel the battery last verified)
+    # (round-5 audit — the CC12 first-red family): every class search now
+    # STARTS FROM THE TOP. The round-4 shape chained the finds: a failed
+    # EDIT-only find (a D'd edit renders only the base title) pinned the page
+    # at the documents bottom and every LATER down-only find missed its
+    # section ABOVE it — the Rx find in particular started where the note
+    # block left the page, one section BELOW Prescriptions, and could never
+    # scroll back up to it.
     detail_scroll_top "cc15b-top" || true
     if [ "$CLC_VISIT_EDITED" = "yes" ] || [ "$CLC_VISIT_MADE" = "yes" ]; then
-      if v_scroll_find "$CLC_VISIT_EDIT" 8 || v_scroll_find "$CLC_VISIT" 8; then
+      if v_scroll_find "$CLC_VISIT_EDIT" 8 || { detail_scroll_top "cc15b-visit-top2" || true; v_scroll_find "$CLC_VISIT" 8; }; then
         if ocr_grep "$CLC_VISIT_EDIT" || ocr_grep "$CLC_VISIT"; then CC15B_V="yes"; fi
       fi
     fi
     if [ "$CLC_FOLLOWUP_MADE" = "yes" ]; then
+      # the follow-up card renders in Visit History, ABOVE wherever the
+      # visit block left the page — always from the top
+      detail_scroll_top "cc15b-followup-top" || true
       v_scroll_find "Follow-up for" 8 || true
       ocr_grep "Follow-up for" && CC15B_V="yes"
     fi
     if [ "$CLC_NOTE_MADE" = "yes" ]; then
-      if v_scroll_find "$CLC_NOTE_EDIT" 8 || v_scroll_find "$CLC_NOTE" 8; then
-        if ocr_grep "$CLC_NOTE_EDIT" || ocr_grep "$CLC_NOTE"; then CC15B_N="yes"; fi
+      # (the CC12 fix idiom): the section header first, then the sentinel
+      # grep in the notes card list
+      detail_scroll_top "cc15b-note-top" || true
+      if v_scroll_find "Clinical Notes" 8; then
+        if ocr_grep "$CLC_NOTE_EDIT" || ocr_grep "$CLC_NOTE" || { scroll_burst down; sleep 1; ocr_capture || true; ocr_grep "$CLC_NOTE_EDIT" || ocr_grep "$CLC_NOTE"; }; then CC15B_N="yes"; fi
       fi
     fi
     if [ "$CLC_RX_MADE" = "yes" ]; then
+      # Prescriptions sits ABOVE Clinical Notes — the Rx find must start
+      # from the top or it scrolls AWAY from the section
+      detail_scroll_top "cc15b-rx-top" || true
       v_scroll_find "$CLC_RX" 8 || true
       ocr_grep "$CLC_RX" && CC15B_RX="yes"
     fi
@@ -11584,6 +11751,15 @@ focus_dataio() {
   # DD3b: empty file → client rejection (no POST). NOTE rc=4 is the EXPECTED
   # shape here: the panel selection happens, the client rejects, the dropzone
   # never shows the name — the error text is the verdict.
+  # (round-5 verdict — SOURCE-PROVEN, a REAL product defect, not an OCR miss):
+  # validateFile returns 'The selected file is empty.' for a 0-byte .csv
+  # (import-patients-dialog.tsx:106-107) and handleFileSelect setError()s it
+  # (:148) but NEVER setPhase('error') — and the red banner renders ONLY
+  # under `error && phase === 'error'` (:589). The phase stays 'idle', so
+  # the banner CANNOT render: no error text, no staged file, no toast (the
+  # toast exists only in the upload-error path :215). The user gets NO
+  # feedback at all. The greps stay (they go GREEN the day the product fix
+  # lands); the P2 below records the silent rejection with the source lines.
   dio_import_open || true
   dd3b_select_rc=0
   dio_import_select "$DIO_DIR/empty.csv" "dd3b-select"
@@ -11602,7 +11778,13 @@ focus_dataio() {
         bug P1 DATAIO_DD3B_EMPTY "the empty file was uploaded DESPITE the client rejection (POST /api/patients/import present in the API log)"
       fi
     else
-      bug P2 DATAIO_DD3B_EMPTY "the empty-file selection produced no visible 'The selected file is empty.' error (recorded honestly; the panel selected the file)"
+      sleep 2
+      if dio_api_saw POST "/api/patients/import"; then
+        bug P1 DATAIO_DD3B_EMPTY "the empty file was uploaded DESPITE the client rejection (POST /api/patients/import present in the API log)"
+      else
+        bug P2 DATAIO_DD3B_EMPTY "GENUINE PRODUCT DEFECT (silent rejection, source-proven): selecting an empty (0-byte) .csv gives the user NO feedback. validateFile returns 'The selected file is empty.' (src/components/import-patients-dialog.tsx:106-107) and handleFileSelect setError()s it (:148) but never sets phase='error' (:141-158), while the red error banner renders ONLY when error is set AND phase==='error' (:589-599) — the dialog stays in the idle phase, so the banner can never show. The file is silently not staged (the dropzone never showed the name; the select probe saw rc=$dd3b_select_rc) and NO POST fired (the API log window is clean). The drag-drop path has the same hole (handleDrop :127-131 — setError without setPhase)."
+        surface_row "DD3b empty file" "import empty.csv (0 bytes)" "client validateFile size==0" "a visible client-side rejection, no server round-trip" "SILENT: no error banner (the phase-gated render at :589 vs the phase-less setError at :148), no staged file, no toast, no POST" "P2 (REAL DEFECT — the rejection is invisible)" "dd3b-result" "P2"
+      fi
     fi
   else
     bug D DATAIO_DD3B_SELECT "the empty CSV could not be selected (harness-level rc=$dd3b_select_rc)"
@@ -13358,51 +13540,62 @@ dsk_click_rx_print_icon() { # <stem> — the prescription card's icon-only Print
 }
 
 # --------------------------- dsk: upload via the real file chooser -----------
-dsk_upload_fixtures() { # <fixdir> <stem> — Upload Files → NSOpenPanel → Cmd+Shift+G → both fixtures
-  # sets DSK_UP_OK: yes | goto-failed | panel-not-ocr | click-failed
-  local fixdir="$1" stem="$2"
+dsk_upload_fixtures() { # <fixdir> <stem> — Upload Files (patient-detail: the upload fires ON SELECTION)
+  # (round-4 run 105028918459 first-red — fx3): the old drive typed the
+  # DIRECTORY into the Go-to-Folder sheet, Cmd+A'd the panel's file list and
+  # Return'd — the panel closed with ZERO upload POSTs and 'Documents (0)'
+  # never changed. Root cause (source-proven, patient-detail.tsx:446-482
+  # handleUploadDocument): this path has NO 'Upload N Document(s)' button
+  # (that submit exists ONLY in the scan-capture view, handled there by
+  # docb_click_upload) — the hidden input uploads each selected file
+  # IMMEDIATELY on its onchange, so a selection the drive never actually
+  # delivered can never upload. Fix: the PROVEN documents-battery drive
+  # (docb_drive_file_chooser — the FULL FILE PATH typed into the sheet,
+  # Return resolves the sheet ONTO the file, the second Return confirms
+  # Open; that drive staged every documents-battery file all round-4), ONE
+  # file per trip, then a bounded WAIT for that file's upload POST in the
+  # API log — never a wait for a button on this path.
+  # sets DSK_UP_OK: yes | goto-failed | click-failed | no-post
+  local fixdir="$1" stem="$2" f row t0 want=0
   dsk_api_mark
   dsk_dl_mark
   DSK_UP_OK="click-failed"
-  if ! v_click "Upload Files" "${stem}-open" ""; then
-    v_click "Upload Your First Document" "${stem}-open2" "" || return 1
-  fi
-  sleep 2
-  ocr_capture || true
-  snap "${stem}-panel" || true
-  if ! { ocr_grep "Favorites" || ocr_grep "AirDrop" || ocr_grep "Recents" || { ocr_grep "Open" && ocr_grep "Cancel"; }; }; then
-    DSK_UP_OK="panel-not-ocr"
-    probe "dsk-upload[$stem]: the native open panel is not OCR-verifiable (no Favorites/AirDrop/Recents/Open needles)"
-    press_escape
-    sleep 1
-    return 1
-  fi
-  record_inventory "macOS open panel (Upload Files)"
-  probe "dsk-upload[$stem]: the native open panel appeared — Go to Folder (Cmd+Shift+G)"
-  if ! osa 'tell application "System Events" to tell (first process whose name contains "edivault") to keystroke "g" using {command down, shift down}' 10; then
-    DSK_UP_OK="goto-failed"
-    press_escape
-    return 1
-  fi
-  sleep 2
-  ocr_capture || true
-  snap "${stem}-goto" || true
-  if ! { ocr_grep "Go to the Folder" || ocr_grep "Go to Folder"; }; then
-    DSK_UP_OK="goto-failed"
-    probe "dsk-upload[$stem]: the Go-to-Folder sheet did not appear (OCR)"
-    press_escape
-    return 1
-  fi
-  osa "tell application \"System Events\" to tell (first process whose name contains \"edivault\") to keystroke \"$fixdir\"" 15 || true
-  sleep 1
-  osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10 || true   # Go
-  sleep 2
-  osa 'tell application "System Events" to tell (first process whose name contains "edivault") to keystroke "a" using command down' 10 || true   # select BOTH fixtures
-  sleep 1
-  osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10 || true   # Open
-  sleep 8
-  ocr_capture || true
-  snap "${stem}-after-open" || true
+  # the two fixtures dsk_make_fixtures builds (their row titles = the
+  # file names minus extension — patient-detail.tsx:463)
+  for f in "$fixdir/dsk-fixture-doc.pdf" "$fixdir/dsk-fixture-image.png"; do
+    [ -f "$f" ] || continue
+    want=$(( want + 1 ))
+    DSK_UP_OK="click-failed"
+    # reveal the 'Upload Files' button (the Documents section header; the
+    # empty-state 'Upload Your First Document' disappears once rows exist)
+    v_scroll_find "Upload Files" 6 || true
+    if ! v_click "Upload Files" "${stem}-open$want" ""; then
+      if ! v_click "Upload Your First Document" "${stem}-open2" ""; then
+        return 1
+      fi
+    fi
+    if ! docb_drive_file_chooser "$f" "${stem}-drive$want"; then
+      DSK_UP_OK="goto-failed"
+      return 1
+    fi
+    # the patient-detail path: the onchange uploads the selected file
+    # IMMEDIATELY — wait for ITS POST (bounded), never an Upload button
+    t0="$(date +%s)"
+    while [ $(( $(date +%s) - t0 )) -le 20 ]; do
+      dsk_api_count '"method":"POST","url":"/api/patients/[^"]*/documents"'
+      if [ "${DSK_API_COUNT:-0}" -ge "$want" ]; then break; fi
+      sleep 2
+    done
+    row="$(basename "$f")"; row="${row%.*}"
+    probe "dsk-upload[$stem]: '$row' trip $want — POST window ${DSK_API_COUNT:-?}/$want"
+    if [ "${DSK_API_COUNT:-0}" -lt "$want" ]; then
+      DSK_UP_OK="no-post"
+      return 1
+    fi
+    # the row (the section re-renders after the per-file loadDocuments())
+    v_scroll_find "$row" 6 || true
+    wait_for_ocr "$row" 10 "${stem}-row$want" || true
+  done
   DSK_UP_OK="yes"
   return 0
 }
@@ -13553,10 +13746,14 @@ focus_desktop() {
       local up_posts="$DSK_API_COUNT"
       if v_scroll_find "$PDF_TITLE" 8 && v_scroll_find "$PNG_TITLE" 6; then
         qa_cap DESKTOP_FX_UPLOAD "GREEN (both fixtures uploaded through the real file chooser; API POSTs=$up_posts; both doc rows OCR-visible)"
-        surface_row "Upload Files (real file chooser)" "patient detail → Upload Files" "'Upload Files' + native NSOpenPanel" "the chosen files upload and appear as documents" "driven via Cmd+Shift+G + Cmd+A + Open; 2 rows visible" "GREEN" "fx3-upload-*" "OK"
+        surface_row "Upload Files (real file chooser)" "patient detail → Upload Files" "'Upload Files' + native NSOpenPanel" "the chosen files upload and appear as documents" "driven one file per trip via the full-path Go-to-Folder idiom (the selection IS the upload on this path); 2 rows visible" "GREEN" "fx3-upload-*" "OK"
       else
         bug P1 DESKTOP_FX_UPLOAD "the upload POSTs fired ($up_posts) but the document rows are not visible (OCR)"
       fi
+    elif [ "$DSK_UP_OK" = "no-post" ]; then
+      # the panel closed on the driven file but the patient-detail onchange
+      # never uploaded it — the real user's Upload Files path failed to act
+      bug P1 DESKTOP_FX_UPLOAD "the chooser selection completed (the panel closed on the driven full path) but NO upload POST ever fired — the patient-detail 'Upload Files' path uploads each selected file IMMEDIATELY on the hidden input's onchange (patient-detail.tsx handleUploadDocument) and it never acted; see the fx3-upload-* evidence"
     else
       bug ENV DESKTOP_UPLOAD_CHOOSER_AUTOMATION "the native open panel could not be driven this run (status=$DSK_UP_OK): the Upload Files click opened a panel whose state was not OCR-drivable (attempt evidence: fx3-upload-*). The document-dependent checks below degrade honestly to NOT-EXERCISED."
       qa_cap DESKTOP_FX_UPLOAD "ENV (open-panel automation status: $DSK_UP_OK — see fx3-upload-* captures)"

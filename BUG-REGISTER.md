@@ -772,3 +772,34 @@ open product finding. PATIENTS = FROZEN GREEN.
   set -u killed the focus mid-verify. All 8 '$var→' adjacencies in the
   file converted to ASCII '->' (zero remain); DD2's badge corroboration
   now actually computes (before-badge + IMPORTED, SKIPPED never added).
+
+### BUG-PD19 [P2 PRODUCT, FIXED] IMPORT_SILENT_REJECTION — wave round-4 (run 35166559598, DD3b)
+
+- **Class**: P2 — a genuine product defect (the first real product finding of
+  the parallel wave).
+- **The finding**: selecting an EMPTY .csv in the Import Patients dialog (via
+  the file picker OR drag-drop) silently rejects it: no error banner, no
+  staged file, no toast. The user has no idea why nothing happened.
+- **Root cause** (source-proven): `handleFileSelect` and `handleDrop` in
+  `src/components/import-patients-dialog.tsx` call `setError(msg)` on a
+  validation failure but never `setPhase('error')` — and the red validation
+  banner renders only under `{error && phase === 'error'}` (line ~589), so it
+  is unreachable for selection-phase rejections. `validateFile` (:101-113)
+  correctly returns 'The selected file is empty.' etc. — the message just
+  could never render.
+- **The minimal product fix (applied)**: both handlers now set
+  `setPhase('error')` alongside `setError` (2 sites, +6 lines with comments).
+  The dropzone remains visible in the error phase (the render tree already
+  supports idle|error) and both paths accept a new selection afterward.
+- **The regression tripwire**: the DD3b check now expects the banner text
+  ('The selected file is empty.') to be OCR-visible after the empty-file
+  selection; it flips to GREEN when this fix ships in the build, and stays a
+  hard P2 if it ever regresses.
+- **Round-5 harness fixes alongside** (BUG-PD18 continuation): the documents
+  scan-view Title/Notes typing (htmlFor-less labels — the same class as the
+  settings g2) now types into the field's own line with no Backspace
+  (structurally killing the WKWebView back-navigation trap) + a first-run
+  recovery; the desktop fixture uploads use the patient-detail path's
+  immediate-onchange contract; the clinical CC12/CC15b reopen-verifies find
+  the section header from the top (three latent false-P1s also fixed); the
+  CC11 trash anchor uses the CC10-proven band.
