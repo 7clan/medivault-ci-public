@@ -910,8 +910,8 @@ scroll_burst() { # <down|up> [x] [y] [lines]
   fi
 }
 
-v_scroll_find() { # <needle> <max-bursts> [arabic yes|no] [dir down|up]
-  local needle="$1" max="${2:-10}" arabic="${3:-no}" dir="${4:-down}"
+v_scroll_find() { # <needle> <max-bursts> [arabic yes|no] [dir down|up] [burst-lines]
+  local needle="$1" max="${2:-10}" arabic="${3:-no}" dir="${4:-down}" lines="${5:-12}"
   local i=0
   while [ "$i" -lt "$max" ]; do
     if [ "$arabic" = "yes" ] && [ -x "$MV_OCR_AR" ]; then
@@ -927,8 +927,18 @@ v_scroll_find() { # <needle> <max-bursts> [arabic yes|no] [dir down|up]
       probe "scroll-find: '$needle' is visible after $i scroll burst(s) ($dir)"
       return 0
     fi
-    scroll_burst "$dir"
-    if [ $(( (i + 1) % 3 )) -eq 0 ]; then
+    scroll_burst "$dir" "$SCROLL_X" "$SCROLL_Y" "$lines"
+    # BUG-PD21 (D, run 35252868562 shard E fx4): the keyboard assist is a
+    # FULL-PAGE jump (Page Down/Home ≈ the whole 768px viewport) — it can
+    # leap entirely OVER a short collapsed section (the Prescriptions
+    # section on the patient detail: the captures read Visit History →
+    # Clinical Notes with the section never in any viewport, though it
+    # rendered — proven by the fx3-open captures minutes earlier and the
+    # section's OCR visibility at 17:38). A FINE sweep (<12 lines/step)
+    # must never use the assist: the ~150px steps keep any short section
+    # inside consecutive overlapping captures. Default behavior (>=12)
+    # is byte-identical to the historical assist cadence.
+    if [ "$lines" -ge 12 ] && [ $(( (i + 1) % 3 )) -eq 0 ]; then
       # keyboard assist (Page Down 121 / Home 115) — needs key focus in the page
       if [ "$dir" = "up" ]; then
         osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 115' 10 >/dev/null 2>&1 || true
@@ -13830,7 +13840,9 @@ focus_desktop() {
   # prescription via the UI generator (template card → Create Prescription)
   if open_patient_by_phone_token "0456" "$PAT1_FULL" "fx4-detail" "$PAT1_PHONE"; then
     detail_scroll_top "fx4-top" || true
-    if v_scroll_find "New Prescription" 8; then
+    # BUG-PD21: fine sweep (4-line steps, no full-page assist) — the coarse
+    # sweep's Page-Down assist leapt over the collapsed Prescriptions section
+    if v_scroll_find "New Prescription" 16 no down 4; then
       dsk_api_mark
       if v_click "New Prescription" "fx4-rx-open" "New Prescription"; then
         if v_click "$RX_MED" "fx4-rx-template" "$RX_MED"; then
@@ -13846,7 +13858,8 @@ focus_desktop() {
         bug P1 DESKTOP_FX_RX "the New Prescription dialog never opened"
       fi
       dsk_api_count '"method":"POST","url":"/api/prescriptions"'
-      if [ "$DSK_API_COUNT" -ge 1 ] && v_scroll_find "medication" 8; then
+      # BUG-PD21: fine sweep — the short prescription card can be leapt over
+      if [ "$DSK_API_COUNT" -ge 1 ] && v_scroll_find "medication" 16 no down 4; then
         qa_cap DESKTOP_FX_RX "GREEN ($PAT1_FULL has a $RX_MED prescription — POST observed + the card renders)"
         surface_row "New Prescription (template fill)" "patient detail → Prescriptions → New Prescription" "'New Prescription'; Quick Templates; 'Create Prescription'" "a template-based prescription is created" "Amoxicillin card click → Create; POST observed; card renders" "GREEN" "fx4-rx-*" "OK"
       else
@@ -14086,7 +14099,8 @@ focus_desktop() {
   note "=== desktop DE4: prescription print ==="
   dsk_dl_manifest "DE4-before"
   if open_patient_by_phone_token "0456" "$PAT1_FULL" "de4-detail" "$PAT1_PHONE"; then
-    if v_scroll_find "medication" 8; then
+    # BUG-PD21: fine sweep — short-section needle
+    if v_scroll_find "medication" 16 no down 4; then
       if dsk_click_rx_print_icon "de4-rxicon"; then
         wait_for_ocr "Print Prescription" 20 "de4-preview" || true
         ocr_capture || true
@@ -14263,7 +14277,8 @@ focus_desktop() {
   dsk_dl_mark
   if v_click "Settings" "de6-settings" "Doctor Profile"; then
     wait_for_ocr "Doctor Profile" 30 "de6-settings-open" || true
-    if v_scroll_find "Backup & Export" 8; then
+    # BUG-PD21: fine sweep — short-section needle on the settings page
+    if v_scroll_find "Backup & Export" 16 no down 4; then
       snap "de6-backup-section" || true
       if v_click "Download Complete Backup (ZIP)" "de6-backup-dl" ""; then
         sleep 8
@@ -14433,7 +14448,8 @@ focus_desktop() {
 
   # 8c) the clinical analog (PC10 family): rx generator rapid open/cancel ×3
   if open_patient_by_phone_token "0456" "$PAT1_FULL" "de8c-detail" "$PAT1_PHONE"; then
-    if v_scroll_find "New Prescription" 8; then
+    # BUG-PD21: fine sweep — the collapsed Prescriptions section
+    if v_scroll_find "New Prescription" 16 no down 4; then
       dsk_api_mark
       local de8c_i=0 de8c_opens=0
       while [ "$de8c_i" -lt 3 ]; do
@@ -14463,7 +14479,8 @@ focus_desktop() {
   # ------------------------------------------------------------------
   note "=== desktop DE9: prescription generator mid-flow cancel ==="
   if open_patient_by_phone_token "0456" "$PAT1_FULL" "de9-detail" "$PAT1_PHONE"; then
-    if v_scroll_find "New Prescription" 8; then
+    # BUG-PD21: fine sweep — the collapsed Prescriptions section
+    if v_scroll_find "New Prescription" 16 no down 4; then
       dsk_api_mark
       if v_click "New Prescription" "de9-rx-open" "New Prescription"; then
         if v_click "$RX_MED" "de9-rx-template" "$RX_MED"; then
@@ -14508,7 +14525,8 @@ focus_desktop() {
   # ------------------------------------------------------------------
   note "=== desktop DE10: navigate away with an unsaved clinical note ==="
   if open_patient_by_phone_token "0456" "$PAT1_FULL" "de10-detail" "$PAT1_PHONE"; then
-    if v_scroll_find "Clinical Notes" 8; then
+    # BUG-PD21: fine sweep — short-section needle
+    if v_scroll_find "Clinical Notes" 16 no down 4; then
       if v_click "Add Note" "de10-addnote" "Note title" || v_click_try_hits "Add Note" "de10-addnote" "Note title"; then
         if v_type_into "Note title" "DE10-unsaved-note-title" "de10-title"; then
           snap "de10-typed" || true
@@ -14522,7 +14540,8 @@ focus_desktop() {
           if [ "$DSK_API_COUNT" = "0" ]; then
             # go back and confirm the note was never created
             if open_patient_by_phone_token "0456" "$PAT1_FULL" "de10-return" "$PAT1_PHONE"; then
-              if v_scroll_find "Clinical Notes" 8; then
+              # BUG-PD21: fine sweep — short-section needle
+              if v_scroll_find "Clinical Notes" 16 no down 4; then
                 if ocr_grep "DE10-unsaved-note-title"; then
                   bug P1 DESKTOP_DE10 "the unsaved note text is VISIBLE after navigating away and returning (was it persisted? POST count was 0 — client-only residue; capture below)"
                   snap "de10-note-residue" || true
@@ -14636,7 +14655,8 @@ focus_desktop() {
     if v_scroll_find "$PDF_TITLE" 8; then
       ocr_grep "$PDF_TITLE" && de12_doc=1
     fi
-    if v_scroll_find "medication" 8; then
+    # BUG-PD21: fine sweep — the short prescription card
+    if v_scroll_find "medication" 16 no down 4; then
       ocr_grep "$RX_MED" && de12_rx=1
     fi
     snap "de12-verify" || true

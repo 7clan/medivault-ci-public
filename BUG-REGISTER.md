@@ -830,3 +830,33 @@ open product finding. PATIENTS = FROZEN GREEN.
   sweep does per-row section-top restores + 12-burst finds with the
   verdict split (row missing + POST on record = honest D; no POST = the
   genuine P1).
+
+### BUG-PD21 [D HARNESS, FIXED] FX_RX_SCROLL_OVERSHOOT — wave round-8 (run 35252868562, shard E, DESKTOP_FX_RX)
+
+- **Class**: D — harness-only (zero product change).
+- **The finding**: shard E's fx4 step red'd [bug-P1]
+  DESKTOP_FX_RX "the Prescriptions section was not reachable" — the
+  down-sweep's captures showed Visit History (17:40:40) then Clinical
+  Notes/Documents (17:40:44) with the Prescriptions section never inside
+  any capture, though the section demonstrably rendered: the fx3-open
+  captures minutes earlier (17:38:04/06) showed "Prescriptions / New
+  Prescription / No prescriptions yet / Create first prescription", and
+  the same page's data was intact.
+- **Root cause** (log-proven): `v_scroll_find`'s keyboard assist — every
+  3rd burst it presses Page Down (key code 121), a FULL-VIEWPORT (~768px)
+  jump. A 12-line scroll step (~450px) can never fully skip a section
+  (≥318px viewport overlap), but the assist's full-page jump leapt the
+  collapsed ~150px Prescriptions section from below-the-fold to
+  above-the-fold between two captures.
+- **The fix (harness-only, +33/−13)**: `v_scroll_find` gains an optional
+  5th parameter `burst-lines` (default 12 = byte-identical historical
+  behavior for every existing call site); a FINE sweep (<12 lines/step)
+  never uses the keyboard assist. The desktop battery's 9 short-section
+  finds (fx4 New Prescription; fx4/de4/de12 medication; de6 Backup &
+  Export; de8c/de9 New Prescription; de10 Clinical Notes ×2) now use
+  `16 no down 4` — ~150px steps, no full-page jumps.
+- **The verdict stands**: the product itself was never red — the E shard
+  stops were the harness skipping sections. (Also note for the record:
+  run 35252868562's shard E fx3 uploads SUCCEEDED on the fixed build —
+  POSTs fired through the real patient-detail chooser — the first live
+  BUG-PD20 regression proof.)
