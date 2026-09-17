@@ -448,34 +448,48 @@ export function PatientDetail({ patient }: PatientDetailProps) {
     input.type = 'file'
     input.accept = '.pdf,.jpg,.jpeg,.png,.webp,.heic,.heif,.bmp,.tiff,.tif'
     input.multiple = true
+    input.style.display = 'none'
+    // BUG-PD20 (wave rounds 4+6, shard E): a DETACHED file input opens the
+    // picker but WKWebView never delivers the selection to its onchange in
+    // the Tauri build — the panel closed with the file chosen and ZERO
+    // upload POSTs fired (two independent rounds), while the identical
+    // automation on the scan view's ATTACHED #file-upload input worked
+    // flawlessly. Attach the input before clicking (the proven pattern),
+    // then clean it up.
+    document.body.appendChild(input)
+    const cleanup = () => { input.remove() }
     input.onchange = async () => {
-      const files = input.files
-      if (!files) return
-      let uploaded = 0
-      for (const file of files) {
-        if (file.size > 50 * 1024 * 1024) {
-          toast({ title: 'File Too Large', description: `${file.name} exceeds the 50 MiB upload limit.`, variant: 'destructive' })
-          continue
-        }
-        const formData = new FormData()
-        formData.append('file', file)
-        formData.append('category', 'General')
-        formData.append('title', file.name.replace(/\.[^/.]+$/, ''))
-
-        try {
-          const res = await fetch(`/api/patients/${patient.id}/documents`,  { credentials: 'include',
-            method: 'POST',
-            body: formData,
-          })
-          if (res.ok) uploaded++
-          else if (res.status === 413) {
+      try {
+        const files = input.files
+        if (!files) return
+        let uploaded = 0
+        for (const file of files) {
+          if (file.size > 50 * 1024 * 1024) {
             toast({ title: 'File Too Large', description: `${file.name} exceeds the 50 MiB upload limit.`, variant: 'destructive' })
+            continue
           }
-        } catch { /* skip */ }
-      }
-      loadDocuments()
-      if (uploaded > 0) {
-        toast({ title: `${uploaded} file${uploaded > 1 ? 's' : ''} uploaded successfully.` })
+          const formData = new FormData()
+          formData.append('file', file)
+          formData.append('category', 'General')
+          formData.append('title', file.name.replace(/\.[^/.]+$/, ''))
+
+          try {
+            const res = await fetch(`/api/patients/${patient.id}/documents`,  { credentials: 'include',
+              method: 'POST',
+              body: formData,
+            })
+            if (res.ok) uploaded++
+            else if (res.status === 413) {
+              toast({ title: 'File Too Large', description: `${file.name} exceeds the 50 MiB upload limit.`, variant: 'destructive' })
+            }
+          } catch { /* skip */ }
+        }
+        loadDocuments()
+        if (uploaded > 0) {
+          toast({ title: `${uploaded} file${uploaded > 1 ? 's' : ''} uploaded successfully.` })
+        }
+      } finally {
+        cleanup()
       }
     }
     input.click()

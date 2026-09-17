@@ -803,3 +803,30 @@ open product finding. PATIENTS = FROZEN GREEN.
   immediate-onchange contract; the clinical CC12/CC15b reopen-verifies find
   the section header from the top (three latent false-P1s also fixed); the
   CC11 trash anchor uses the CC10-proven band.
+
+### BUG-PD20 [P1 PRODUCT, FIXED] DETACHED_UPLOAD_INPUT — wave rounds 4+6 (shard E, DESKTOP_FX_UPLOAD)
+
+- **Class**: P1 — the primary document-upload path was DEAD in the Tauri build.
+- **The finding**: patient-detail's 'Upload Files' opened the macOS file
+  chooser; the automation drove a real selection (the panel closed on the
+  driven full path) — but ZERO upload POSTs ever fired, across two
+  independent rounds. The identical chooser drive on the scan view's
+  ATTACHED #file-upload input worked flawlessly in the same builds.
+- **Root cause** (source-proven): patient-detail.tsx's handleUploadDocument
+  created the file input via document.createElement and clicked it WITHOUT
+  ever appending it to the DOM — WKWebView opens the picker for the
+  detached node but never delivers the FileList to its onchange, so the
+  selection was silently dropped (no POST, no toast, no row).
+- **The minimal product fix (applied)**: appendChild the input to
+  document.body before .click() (display:none) + remove it in the
+  onchange's finally — the exact pattern the scan view already uses.
+- **Regression proof plan**: shard B's DB12 (Jane's patient-detail upload)
+  runs against the OLD build first (expect the same 0-POST behavior =
+  independent confirmation), then shard E's fixture upload + the §15
+  doctor workflow run against the FIXED build must show the POSTs fire.
+- **Round-7 harness fixes alongside**: DB3's gate is now position-tolerant
+  (the false 'DB2 did not complete' skip — DB2 was actually GREEN; the
+  gate's 'Scan & Upload' grep read a scrolled-away capture) and the DB4
+  sweep does per-row section-top restores + 12-burst finds with the
+  verdict split (row missing + POST on record = honest D; no POST = the
+  genuine P1).

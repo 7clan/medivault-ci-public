@@ -7265,7 +7265,17 @@ focus_documents() {
   # DB3 — upload success path (John) + the API-log POST
   # ------------------------------------------------------------------
   note "=== documents DB3: the upload success path ==="
-  if [ "${DB2_RC:-1}" = "0" ] && ocr_grep "Scan & Upload"; then
+  # (round-6 first-red) DB2 GREEN leaves the scan view scrolled at the
+  # Document Details card — the 'Scan & Upload' header sits ABOVE the
+  # fold, so the old raw ocr_grep gate FALSELY skipped DB3 with a
+  # dangling reference to a DOC_METADATA record that never fired (DB2
+  # was GREEN). The gate now scrolls up for the view marker first; a
+  # genuine view loss records its OWN D — never a silent skip.
+  local db3_view=1
+  if [ "${DB2_RC:-1}" = "0" ]; then
+    v_scroll_find "Scan & Upload" 6 no up || ocr_grep "Scan & Upload" || db3_view=0
+  fi
+  if [ "${DB2_RC:-1}" = "0" ] && [ "$db3_view" = "1" ]; then
     # the patient select sits at the TOP of the scan view — scroll up to it
     v_scroll_find "Select Patient" 4 no up || v_scroll_find "Scan & Upload" 4 no up || true
     if docb_scan_select_patient "$DOCB_JOHN_FULL" "db3-sel"; then
@@ -7287,9 +7297,22 @@ focus_documents() {
           if docb_open_patient_docs "0310" "$DOCB_JOHN_FULL" "$DOCB_JOHN_PHONE" "db3-john"; then
             ocr_capture || true
             snap "db3-john-docs" || true
-            if ocr_grep "$DOCB_T_ALPHA" && ocr_grep "Lab Results" && [ "$(docb_doc_count)" = "1" ]; then
-              qa_cap DOC_UPLOAD_SUCCESS "GREEN (the file uploaded to John Docs through the real chooser; the API log shows the POST ($p3); the detail shows the '$DOCB_T_ALPHA' row with the Lab Results category (Documents (1)))"
-              surface_row "Upload success path" "scan view → patient selected → 'Upload 1 Document'" "the upload submit; the patient-detail documents list" "the document lands on the selected patient with title + category" "uploaded; API POSTs=$p3; John's detail shows the row + 'Documents (1)'" "GREEN" "db3-*" "OK"
+            if ocr_grep "$DOCB_T_ALPHA" && ocr_grep "Lab Results"; then
+              local n3c
+              n3c="$(docb_doc_count)"
+              if [ "$n3c" = "1" ]; then
+                qa_cap DOC_UPLOAD_SUCCESS "GREEN (the file uploaded to John Docs through the real chooser; the API log shows the POST ($p3); the detail shows the '$DOCB_T_ALPHA' row with the Lab Results category (Documents (1)))"
+                surface_row "Upload success path" "scan view → patient selected → 'Upload 1 Document'" "the upload submit; the patient-detail documents list" "the document lands on the selected patient with title + category" "uploaded; API POSTs=$p3; John's detail shows the row + 'Documents (1)'" "GREEN" "db3-*" "OK"
+              elif [ -z "$n3c" ]; then
+                # (round-7 hardening, the DB4 count lesson) the heading's
+                # digits did not OCR — the row + category + the POST are the
+                # proof; the count check is recorded as not-run (honest),
+                # never a false P1
+                qa_cap DOC_UPLOAD_SUCCESS "GREEN (the file uploaded to John Docs through the real chooser; the API log shows the POST ($p3); the detail shows the '$DOCB_T_ALPHA' row with the Lab Results category — the 'Documents (N)' heading did not OCR, the count check could not run)"
+                surface_row "Upload success path" "scan view → patient selected → 'Upload 1 Document'" "the upload submit; the patient-detail documents list" "the document lands on the selected patient with title + category" "uploaded; API POSTs=$p3; John's detail shows the row (count heading not OCR-readable)" "GREEN" "db3-*" "OK"
+              else
+                bug P1 DOC_UPLOAD_SUCCESS "the upload landed but John's documents count reads $n3c (expected 1 — the matrix has not run yet; see db3-john-docs)"
+              fi
             else
               bug P1 DOC_UPLOAD_SUCCESS "the upload returned to the dashboard (API POSTs=$p3) but John's detail does not show the expected '$DOCB_T_ALPHA' row with the Lab Results category"
             fi
@@ -7305,6 +7328,11 @@ focus_documents() {
     else
       bug P1 DOC_UPLOAD_SUCCESS "the patient could not be selected in the scan view (the dropdown never settled on John Docs)"
     fi
+  elif [ "${DB2_RC:-1}" = "0" ]; then
+    # DB2 itself was GREEN — the view, not the metadata, was lost: its
+    # OWN bug record (never a dangling reference to a DOC_METADATA
+    # record that does not exist on the GREEN path)
+    bug D DOC_UPLOAD_SUCCESS "DB2 completed (GREEN) but the scan view could not be re-confirmed on screen for the upload submit (6 up-scroll bursts found no view marker — the staged file was lost with the view); see the db2 evidence"
   else
     bug D DOC_UPLOAD_SUCCESS "the upload success path was skipped (DB2 did not complete — the staging or the metadata step failed above; see the DOC_METADATA record)"
   fi
@@ -7314,7 +7342,10 @@ focus_documents() {
   # ------------------------------------------------------------------
   note "=== documents DB4: the per-format upload matrix ==="
   local m_stem m_file m_needle m_lbl m_rc m_cat
-  local JPG_UPLOADED=0 LONG_UPLOADED=0
+  # per-file POST evidence for the DB4 sweep verdict (the round-6 lesson:
+  # the per-file API POST record is the deciding evidence — an OCR miss
+  # with the POST on record is a harness D, never a false P1)
+  local SWEEP_P_png="" SWEEP_P_jpg="" SWEEP_P_spaces="" SWEEP_P_apostrophe="" SWEEP_P_long="" SWEEP_P_justunder=""
   for m_stem in db4-png db4-jpg db4-unicode db4-spaces db4-apostrophe db4-long; do
     m_file=""; m_needle=""; m_lbl=""; m_cat=""
     case "$m_stem" in
@@ -7328,9 +7359,13 @@ focus_documents() {
     if [ -f "$DOCB_FIX_DIR/$m_file" ]; then
       docb_scan_upload_one "$DOCB_FIX_DIR/$m_file" "$m_stem" 45 "$DOCB_JOHN_FULL" "$m_cat"
       m_rc="$DOCB_UP_RC"
-      if [ "$m_rc" = "0" ]; then
-        case "$m_stem" in db4-jpg) JPG_UPLOADED=1 ;; db4-long) LONG_UPLOADED=1 ;; esac
-      fi
+      case "$m_stem" in
+        db4-png)        SWEEP_P_png="${DOCB_UP_POSTS:-0}" ;;
+        db4-jpg)        SWEEP_P_jpg="${DOCB_UP_POSTS:-0}" ;;
+        db4-spaces)     SWEEP_P_spaces="${DOCB_UP_POSTS:-0}" ;;
+        db4-apostrophe) SWEEP_P_apostrophe="${DOCB_UP_POSTS:-0}" ;;
+        db4-long)       SWEEP_P_long="${DOCB_UP_POSTS:-0}" ;;
+      esac
       case "$m_rc" in
         0)
           if [ "${DOCB_UP_POSTS:-0}" -ge 1 ] 2>/dev/null; then
@@ -7353,10 +7388,9 @@ focus_documents() {
   done
 
   # the just-under-50MiB boundary file (49MiB < the 50MiB client cap)
-  local JU_UPLOADED=0
   if [ -f "$DOCB_FIX_DIR/just-under-50mib-zeros.pdf" ]; then
     docb_scan_upload_one "$DOCB_FIX_DIR/just-under-50mib-zeros.pdf" "db4-justunder" 300 "$DOCB_JOHN_FULL"
-    [ "$DOCB_UP_RC" = "0" ] && JU_UPLOADED=1
+    SWEEP_P_justunder="${DOCB_UP_POSTS:-0}"
     case "$DOCB_UP_RC" in
       0) qa_cap DOC_FORMAT_MATRIX_JUST_UNDER_50MIB "UPLOAD SUPPORTED (the 49MiB file passed the client cap; POSTs=${DOCB_UP_POSTS:-?}; the row is verified in the sweep)" ;;
       2) qa_cap DOC_FORMAT_MATRIX_JUST_UNDER_50MIB "REJECTED (the client cap fired at 49MiB — BELOW the advertised 50MiB; P3 candidate)" ;;
@@ -7413,30 +7447,61 @@ focus_documents() {
   if docb_open_patient_docs "0310" "$DOCB_JOHN_FULL" "$DOCB_JOHN_PHONE" "db4-sweep"; then
     ocr_capture || true
     snap "db4-sweep-rows" || true
-    local sweep_ok=1 sweep_n t skip
+    local sweep_n t p_t sweep_miss="" sweep_ocr=""
     for t in "panel-image" "panel-photo" "name with spaces" "brien" "very-long-filename" "just-under-50mib-zeros"; do
-      skip=0
+      # the file's OWN API POST record (stashed at its matrix trip above) —
+      # the deciding evidence: an OCR miss with the POST on record is a
+      # harness D, a row whose trip fired NO POST is the genuine P1, and an
+      # unset stash means the trip was never exercised (honest skip)
+      p_t=""
       case "$t" in
-        "panel-photo")           [ "$JPG_UPLOADED" = "1" ] || skip=1 ;;
-        "very-long-filename")    [ "$LONG_UPLOADED" = "1" ] || skip=1 ;;
-        "just-under-50mib-zeros") [ "$JU_UPLOADED" = "1" ] || skip=1 ;;
+        "panel-image")            p_t="${SWEEP_P_png:-}" ;;
+        "panel-photo")            p_t="${SWEEP_P_jpg:-}" ;;
+        "name with spaces")       p_t="${SWEEP_P_spaces:-}" ;;
+        "brien")                  p_t="${SWEEP_P_apostrophe:-}" ;;
+        "very-long-filename")     p_t="${SWEEP_P_long:-}" ;;
+        "just-under-50mib-zeros") p_t="${SWEEP_P_justunder:-}" ;;
       esac
-      if [ "$skip" = "0" ]; then
-        if ! v_scroll_find "$t" 6; then
-          probe "db4-sweep: the row for '$t' was NOT found in John's documents (the API POST record above is the deciding evidence)"
-          sweep_ok=0
-        fi
+      if [ -z "$p_t" ]; then
+        probe "db4-sweep: the '$t' row is skipped (its upload trip was NOT EXERCISED this run — honest)"
+        continue
+      fi
+      # (round-6 first-red) the per-row searches used to CHAIN: the
+      # panel-image/panel-photo finds left the list at its BOTTOM and the
+      # later DOWN-only finds could never reach the newer rows above (the
+      # round-5 CC12 chained-find lesson) — with 15 documents staged the
+      # 6 bursts were also too few. Every row now restores the section
+      # top first and walks down with enough bursts for the long list.
+      v_scroll_find "Upload Files" 12 no up || v_scroll_find "Documents (" 12 no up || true
+      if v_scroll_find "$t" 12; then
+        probe "db4-sweep: the row for '$t' is visible in John's documents"
+      elif [ "$p_t" -ge 1 ] 2>/dev/null; then
+        probe "db4-sweep: the row for '$t' was not OCR-visible though its API POST record exists ($p_t POST(s) — the POST is the deciding evidence; honest OCR-miss)"
+        sweep_ocr="$sweep_ocr $t"
       else
-        probe "db4-sweep: the '$t' row is skipped (its upload was NOT EXERCISED this run — honest)"
+        probe "db4-sweep: the row for '$t' is MISSING and its upload trip fired NO API POST (genuinely missing — see the matrix record)"
+        sweep_miss="$sweep_miss $t"
       fi
     done
+    # the count heading sits at the SECTION TOP — restore before reading
+    # (round-6 read it from the list bottom: the heading was off-screen
+    # and the probe printed an empty 'Documents ()'; an unreadable
+    # heading is tolerated honestly — the row-level evidence stands)
+    v_scroll_find "Upload Files" 12 no up || v_scroll_find "Documents (" 12 no up || true
+    ocr_capture || true
     sweep_n="$(docb_doc_count)"
-    probe "db4-sweep: John's 'Documents ($sweep_n)' heading after the matrix"
-    if [ "$sweep_ok" = "1" ]; then
-      qa_cap DOC_FORMAT_MATRIX_ROWS "GREEN (every ASCII-named matrix upload is visible as a row in John's documents (Documents ($sweep_n)); the Arabic-named row is verified by the count only — its title does not OCR)"
-      surface_row "Format matrix row sweep" "John Docs → the documents list" "the per-format rows" "each supported format shows its row (name truncation OK)" "scrolled the list; every ASCII needle found; count=$sweep_n" "GREEN" "db4-sweep-*" "OK"
+    if [ -n "$sweep_n" ]; then
+      probe "db4-sweep: John's 'Documents ($sweep_n)' heading after the matrix"
     else
-      bug P1 DOC_FORMAT_MATRIX_ROWS "one or more supported-format rows are missing from John's documents list after the matrix (see the db4-sweep probes)"
+      probe "db4-sweep: John's 'Documents (N)' heading did not OCR after the matrix (honest OCR limit — the row-level evidence above stands)"
+    fi
+    if [ -n "$sweep_miss" ]; then
+      bug P1 DOC_FORMAT_MATRIX_ROWS "one or more supported-format rows are missing from John's documents list after the matrix AND their upload trips fired no API POST (genuinely missing:$sweep_miss)"
+    elif [ -n "$sweep_ocr" ]; then
+      bug D DOC_FORMAT_MATRIX_ROWS "one or more matrix rows were not OCR-visible in John's documents list though their API POST records exist (the POST record is the deciding evidence; OCR-miss:$sweep_ocr) — honest harness limit"
+    else
+      qa_cap DOC_FORMAT_MATRIX_ROWS "GREEN (every ASCII-named matrix upload is visible as a row in John's documents${sweep_n:+ (Documents ($sweep_n))}; the Arabic-named row is verified by the count only — its title does not OCR)"
+      surface_row "Format matrix row sweep" "John Docs → the documents list" "the per-format rows" "each supported format shows its row (name truncation OK)" "every row searched from the restored section top; every ASCII needle found${sweep_n:+; count=$sweep_n}" "GREEN" "db4-sweep-*" "OK"
     fi
   else
     bug D DOC_FORMAT_MATRIX_ROWS "could not open John's detail for the matrix row sweep"
