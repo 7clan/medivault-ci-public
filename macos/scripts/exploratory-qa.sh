@@ -13879,6 +13879,12 @@ focus_desktop() {
   if ! dsk_docs_ready "DE1"; then
     qa_cap DESKTOP_DE1 "NOT-EXERCISED-ENV (the fixture documents are unavailable — see the FX upload record)"
   elif open_patient_by_phone_token "0456" "$PAT1_FULL" "de1-detail" "$PAT1_PHONE"; then
+    # BUG-PD22 (D, run 35256165070 DE1): the detail opens MID-PAGE (the
+    # BUG-PD5 behavior — the viewport lands at Visit History/Prescriptions)
+    # and the Documents section sits BELOW the fold; the row click needs the
+    # fine sweep into view first (the E-rerun's three NOT-FOUNDs: no scroll
+    # was ever attempted between the open and the click)
+    v_scroll_find "$PDF_TITLE" 16 no down 4 || true
     if v_click "$PDF_TITLE" "de1-doc-open" "" || v_click_try_hits "$PDF_TITLE" "de1-doc-open" ""; then
       sleep 3
       if wait_for_ocr "Loading document" 10 "de1-loading"; then
@@ -13957,6 +13963,8 @@ focus_desktop() {
   if ! dsk_docs_ready "DE2"; then
     qa_cap DESKTOP_DE2 "NOT-EXERCISED-ENV (the fixture documents are unavailable — see the FX upload record)"
   elif open_patient_by_phone_token "0456" "$PAT1_FULL" "de2-detail" "$PAT1_PHONE"; then
+    # BUG-PD22: fine sweep to the row before the click (the detail opens mid-page)
+    v_scroll_find "$PDF_TITLE" 16 no down 4 || true
     if v_click "$PDF_TITLE" "de2-doc-open" "" || v_click_try_hits "$PDF_TITLE" "de2-doc-open" ""; then
       sleep 3
       wait_text_gone "Loading document" 45 "de2-loaded" || true
@@ -14325,6 +14333,8 @@ focus_desktop() {
   if ! dsk_docs_ready "DE6E"; then
     qa_cap DESKTOP_DOC_BLOB_DOWNLOAD "NOT-EXERCISED-ENV (the fixture documents are unavailable — see the FX upload record)"
   elif open_patient_by_phone_token "0456" "$PAT1_FULL" "de6e-detail" "$PAT1_PHONE"; then
+    # BUG-PD22: fine sweep to the row before the click (the detail opens mid-page)
+    v_scroll_find "$PDF_TITLE" 16 no down 4 || true
     if v_click "$PDF_TITLE" "de6e-doc-open" "" || v_click_try_hits "$PDF_TITLE" "de6e-doc-open" ""; then
       sleep 3
       wait_text_gone "Loading document" 45 "de6e-loaded" || true

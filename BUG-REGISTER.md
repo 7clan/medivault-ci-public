@@ -860,3 +860,25 @@ open product finding. PATIENTS = FROZEN GREEN.
   run 35252868562's shard E fx3 uploads SUCCEEDED on the fixed build —
   POSTs fired through the real patient-detail chooser — the first live
   BUG-PD20 regression proof.)
+
+### BUG-PD22 [D HARNESS, FIXED] DE_DOC_OPEN_NO_SCROLL — wave round-9 (run 35256165070, shard E, DESKTOP_DE1)
+
+- **Class**: D — harness-only (zero product change).
+- **The finding**: the E-rerun (post-PD21) advanced past fx4 to DE1 and red'd
+  [bug-P1] DESKTOP_DE1 "the PDF document row could not be opened into the
+  viewer" — three consecutive `v_click 'dsk-fixture-doc'` NOT-FOUNDs, with
+  no scroll ever attempted between the detail open and the click.
+- **Root cause** (log-proven): the detail opens MID-PAGE (the known BUG-PD5
+  behavior — the fresh viewport lands at Visit History/Prescriptions, as the
+  18:12:15/18 captures show) and the Documents section sits BELOW the fold;
+  DE1/DE2/DE6e clicked the document row immediately after the open with no
+  scroll-find into view. (Distinct from run-9's DB6 red: there the row WAS
+  scrolled to and clicked — the viewer itself failed to render; here the
+  click was never even attempted on a visible target.)
+- **The fix (harness-only, 3 sites)**: a fine sweep
+  `v_scroll_find "$PDF_TITLE" 16 no down 4 || true` precedes each of the
+  three document-row opens (de1/de2/de6e). The fine mode (BUG-PD21) keeps
+  the row inside consecutive captures.
+- **The verdict stands**: the product's document rows render (fx3 verified
+  both rows OCR-visible in the same battery); only the harness neglected to
+  bring the row into the viewport before clicking.
