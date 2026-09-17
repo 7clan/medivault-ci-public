@@ -742,3 +742,33 @@ open product finding. PATIENTS = FROZEN GREEN.
   focus's evidence red-or-green.
 - **Regression rerun**: shards="settings,B,C,D,E" (search + persistence
   GREEN at 140d3a89 stay frozen per the cross-shard fix discipline).
+
+### BUG-PD18 [D] WAVE_ROUND2_REDS — runs 35162802404 (the second wave round, five harness-class first-reds)
+
+- **(a) settings g4**: the check P2'd when 'Confirm Reset' produced no visible
+  change — but that IS the designed placeholder behavior (source: a 'Feature
+  Placeholder' toast; the Toaster is not mounted so nothing ever renders).
+  The verdict must come from the data-intact proof, not the visibility of
+  the click's effect. Fixed: the no-change outcome records a probe; the
+  STUB verdict is the patient-still-exists check.
+- **(b) clinical CC2 footer**: 'Schedule Visit' is textually ambiguous (the
+  dialog title + the dimmed page + the footer submit). The round-1 near-anchor
+  'Cancel' never OCR'd and the click never landed on the footer. Fixed with
+  clc_footer_click: the LAST OCR hit + a y-gate below the dialog's Chief
+  Complaint field (the same class that kept the patients PV6-8 NOT
+  EXERCISED — now solved for the clinical battery) + the cascade guard
+  (ledger flags: an uncreated record can never P1 as 'lost').
+- **(c) desktop fx3 row click**: open_patient_by_phone_token called without
+  the row-phone needle → the raw '0456' matched the search QUERY line. All
+  13 call sites now pass the formatted row needle (+1 555 0456).
+- **(d) documents fixtures**: the welcome banner's 6-second tip carousel
+  animation caused a hash-diff false-positive in create_patient_deep's
+  dialog-open verify (Jane's dialog never opened; the typing soft-failed
+  into the dashboard). Fixed with docb_fixture_create: an anchor-gate
+  before the create, dialog-close hygiene, ONE bounded rc=1 retry, and
+  API-log POST corroboration for the cohort.
+- **(e) dataio DD2 multibyte arrow**: '$dd2_before→$dd2_after' — bash ate
+  the arrow's lead byte INTO the variable name ('dd2_before<E2>') and
+  set -u killed the focus mid-verify. All 8 '$var→' adjacencies in the
+  file converted to ASCII '->' (zero remain); DD2's badge corroboration
+  now actually computes (before-badge + IMPORTED, SKIPPED never added).

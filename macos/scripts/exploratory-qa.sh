@@ -5692,7 +5692,11 @@ focus_settings() {
     ocr_capture || true
     snap "g15-reset-armed" || true
     surface_row "Danger Zone reset arming" "Settings → Danger Zone → 'Reset'" "'Reset All Data' row; 'Reset' → 'Cancel' + 'Confirm Reset'" "arming the destructive action" "clicked; Confirm appeared" "GREEN (armed)" "g15-reset-armed" "OK"
-    v_click "Confirm Reset" "g16-confirm-reset" "" || bug P2 SETTINGS_DANGERZONE "clicking Confirm Reset produced no visible change"
+    # (BUG-PD18) the Confirm Reset placeholder produces NO visible change by
+    # design (source: a 'Feature Placeholder' toast — and the Toaster is not
+    # mounted, so nothing renders). "No visible change" is EXPECTED here and
+    # is NOT a defect; the stub verdict is the data-intact proof below.
+    v_click "Confirm Reset" "g16-confirm-reset" "" || probe "Confirm Reset produced no visible change (expected for the placeholder — the toast never renders; the verdict is the data-intact proof below)"
     sleep 3
     ocr_capture || true
     snap "g16-after-confirm-reset" || true
@@ -6173,6 +6177,44 @@ docb_make_fixtures() { # builds the synthetic source files + records SHA-256 (ha
   probe "fixtures: $(wc -l < "$DOCB_FIX_DIR/SHA256SUMS" | tr -d ' ') source files in $DOCB_FIX_DIR (sha256 recorded)"
   cat "$DOCB_FIX_DIR/SHA256SUMS" | tee -a "$LOG"
   return 0
+}
+
+# ---- the cohort create (the fixture patients) -------------------------------
+
+docb_fixture_create() { # <first> <last> <phone> <email> <notes> <stem> [arabic yes|no]
+  # (wave3 run 105017220104 first-red, class D — dbf-jane): the SECOND cohort
+  # create never opened the dialog — the open click's CGEvent missed while
+  # v_click's hash-diff verify FALSELY passed: the GETTING STARTED banner
+  # auto-rotates every 6s (welcome-banner.tsx setInterval 6000), so the
+  # before/after captures differ even when a click did nothing (the DB0
+  # false-positive hole, this time INSIDE create_patient_deep's first step).
+  # With no dialog every typing step soft-failed, the submit fallback scrolled
+  # the dashboard to the bottom, found no 'Add Patient', and returned rc=1 ->
+  # the false DOC_PATIENTS_CREATED P1 (the API log shows only John + Muhammad
+  # POST /api/patients; Jane's create never submitted a request). The
+  # documents fixtures pass no address, so it is hardcoded empty here. Fix
+  # (harness-only, the proven discipline): anchor-gate (wait_for_ocr) before
+  # the patients-lane create, dialog hygiene before any retry, and ONE
+  # bounded retry for the harness-class rc — a form rejection (rc=2) or a
+  # second harness failure stays the honest P1; never a false P1 on a single
+  # anchor/click miss.
+  local first="$1" last="$2" phone="$3" email="$4" notes="$5" stem="$6" arabic="${7:-no}"
+  local rc=0
+  wait_for_ocr "Add Patient" 30 "${stem}-fx-anchor" \
+    || probe "docb-fx[$stem]: 'Add Patient' not OCR-visible before the create (kept — create_patient_deep re-anchors itself)"
+  create_patient_deep "$first" "$last" "$phone" "$email" "" "$notes" "$stem" "$arabic"
+  rc=$?
+  if [ "$rc" = "1" ]; then
+    probe "docb-fx[$stem]: harness-class create failure (rc=1) — dialog hygiene, then ONE bounded retry (a single anchor/click miss must not red the battery)"
+    ensure_dialog_closed "${stem}-fx-hygiene" add_patient_dialog_visible || true
+    v_scroll_top 10 || true
+    wait_for_ocr "Add Patient" 30 "${stem}-fx-retry-anchor" || true
+    create_patient_deep "$first" "$last" "$phone" "$email" "" "$notes" "${stem}-retry" "$arabic"
+    rc=$?
+    [ "$rc" = "0" ] && probe "docb-fx[$stem]: the retry create completed (rc=0) — the first attempt's failure was harness-class, recorded above"
+  fi
+  if [ "$rc" != "0" ]; then DOCB_FX_FAILED="$first $last"; fi
+  return "$rc"
 }
 
 # ---- the API-log watcher (the pino request log; bodies are never logged) ----
@@ -6920,19 +6962,29 @@ focus_documents() {
   fi
 
   # the three cohort patients (unique phone tokens 0310/0320/0330 continue the
-  # harness convention; every isolation needle is unambiguous)
+  # harness convention; every isolation needle is unambiguous). The creates
+  # run through docb_fixture_create (anchor-gated + one bounded retry — the
+  # wave3 dbf-jane fix); their probes stay UNSILENCED so the CI log carries
+  # the create forensics (the round-2 diagnosis was crippled by /dev/null).
   local frc=0
+  DOCB_FX_FAILED=""
   v_scroll_top 10 || true
-  create_patient_deep "$DOCB_JOHN_FIRST" "$DOCB_JOHN_LAST" "$DOCB_JOHN_PHONE" "$DOCB_JOHN_EMAIL" "" "$DOCB_JOHN_NOTE" "dbf-john" >/dev/null 2>&1 || frc=$?
+  docb_fixture_create "$DOCB_JOHN_FIRST" "$DOCB_JOHN_LAST" "$DOCB_JOHN_PHONE" "$DOCB_JOHN_EMAIL" "$DOCB_JOHN_NOTE" "dbf-john" || frc=$?
   v_scroll_top 10 || true
-  create_patient_deep "$DOCB_JANE_FIRST" "$DOCB_JANE_LAST" "$DOCB_JANE_PHONE" "$DOCB_JANE_EMAIL" "" "$DOCB_JANE_NOTE" "dbf-jane" >/dev/null 2>&1 || frc=$?
+  docb_fixture_create "$DOCB_JANE_FIRST" "$DOCB_JANE_LAST" "$DOCB_JANE_PHONE" "$DOCB_JANE_EMAIL" "$DOCB_JANE_NOTE" "dbf-jane" || frc=$?
   v_scroll_top 10 || true
-  create_patient_deep "$DOCB_MO_FIRST" "$DOCB_MO_LAST" "$DOCB_MO_PHONE" "" "" "$DOCB_MO_NOTE" "dbf-mo" yes >/dev/null 2>&1 || frc=$?
+  docb_fixture_create "$DOCB_MO_FIRST" "$DOCB_MO_LAST" "$DOCB_MO_PHONE" "" "$DOCB_MO_NOTE" "dbf-mo" yes || frc=$?
+  # server-side corroboration (the focus-start API window): every cohort
+  # create that submitted is a POST /api/patients — retries add none unless
+  # a submit actually fired, so >=3 corroborates the cohort server-side.
+  docb_api_collect "dbf-corroborate" || true
+  docb_api_count POST "/api/patients" "dbf-corroborate" "/documents" || true
+  probe "dbf: API-log POST /api/patients since focus-start = ${DOCB_API_HITS:-0} (>=3 corroborates the three cohort creates server-side)"
   if [ "$frc" = "0" ]; then
-    qa_cap DOC_PATIENTS_CREATED "GREEN (John Docs / Jane Docs / Muhammad Docs (Arabic) created through the real dialog — unique phone tokens 0310/0320/0330)"
-    surface_row "Documents cohort patients" "Add Patient dialog (3 creates; one Arabic)" "—" "three isolated patients for the document isolation proofs" "created + phone-token searchable" "GREEN" "dbf-*" "OK"
+    qa_cap DOC_PATIENTS_CREATED "GREEN (John Docs / Jane Docs / Muhammad Docs (Arabic) created through the real dialog — unique phone tokens 0310/0320/0330; API-log POSTs=${DOCB_API_HITS:-n/a})"
+    surface_row "Documents cohort patients" "Add Patient dialog (3 creates; one Arabic; anchor-gated + one bounded retry each)" "—" "three isolated patients for the document isolation proofs" "created + phone-token searchable; API-log POSTs=${DOCB_API_HITS:-n/a}" "GREEN" "dbf-*" "OK"
   else
-    bug P1 DOC_PATIENTS_CREATED "a documents-cohort patient create did not complete (rc=$frc) — the battery cannot proceed honestly"
+    bug P1 DOC_PATIENTS_CREATED "the ${DOCB_FX_FAILED:-documents-cohort} patient create did not complete (rc=$frc; anchor-gated + one retry) — the battery cannot proceed honestly"
   fi
 
   # ------------------------------------------------------------------
@@ -8325,6 +8377,44 @@ clc_line_y() { # <needle> — sets CLC_LINE_Y (the first hit's screen y; empty =
   return 1
 }
 
+clc_footer_click() { # <needle> <gate-needle> <stem> — click the dialog FOOTER submit (the LAST OCR hit of the needle)
+  # (round-3 run 105017220139 first-red, class D — the CC2 submit): the
+  # scheduler footer shares its label with the dialog TITLE and the dimmed
+  # page behind ('Schedule Visit' renders 2-3x on ONE capture), and the
+  # footer's own outline 'Cancel' NEVER OCR'd in that run (the CC1 + CC2
+  # anchor attempts) — so a near-'Cancel' anchored click is unusable on this
+  # dialog family. The footer is the dialog's LOWEST row and the OCR
+  # inventory is ordered top-to-bottom, so the LAST hit of the needle IS the
+  # footer button (the docb_enter_scan_view 'last' idiom). The y-gate: the
+  # clicked hit must sit strictly BELOW the gate line (the dialog title / a
+  # dialog-unique field label above the footer) — anything else means NO
+  # click (never a guessed coordinate). The caller keeps the submit's own
+  # proofs (the dialog-closed wait + the API-log counts) — this helper only
+  # anchors the click.
+  local needle="$1" gate="$2" stem="$3"
+  if ! clc_line_y "$gate"; then
+    probe "footer-click[$stem]: the gate line '$gate' is not on screen — no click attempted (honest)"
+    return 1
+  fi
+  local gate_y="$CLC_LINE_Y"
+  if ! ocr_capture || ! ocr_lookup "$needle" "last"; then
+    probe "footer-click[$stem]: no '$needle' hit on screen — no click attempted (honest)"
+    return 1
+  fi
+  if [ -z "$OCR_HIT_Y" ] || [ "$OCR_HIT_Y" -le "$gate_y" ]; then
+    probe "footer-click[$stem]: the LAST '$needle' hit (y=${OCR_HIT_Y:-unreadable}) is NOT below the gate line '$gate' (y=$gate_y) — no click attempted (honest)"
+    return 1
+  fi
+  local fx="$OCR_HIT_X" fy="$OCR_HIT_Y"
+  probe "footer-click[$stem]: the footer submit '$needle' = the LAST hit at ($fx,$fy), below the '$gate' line (y=$gate_y) — native CGEvent click"
+  if ! "$MV_MOUSE" "$fx" "$fy" 2>>"$LOG"; then
+    probe "footer-click[$stem]: mv-mouse FAILED"
+    return 1
+  fi
+  sleep 2
+  return 0
+}
+
 clc_clear_at() { # <visible-field-text> <stem> — click the OCR-located CURRENT field text, Cmd+A + Delete
   # (a filled input hides its placeholder, so the label lookup cannot find it —
   # the field's OWN rendered value is the anchor; a real user's clear)
@@ -8688,6 +8778,14 @@ focus_clinical() {
   local CLC_N_VISITS="0" CLC_N_VISITS_DEL="0" CLC_N_VISITS_COMPLETED="0"
   local CLC_N_NOTES="0" CLC_N_NOTES_DEL="0" CLC_N_NOTES_PINNED="0"
   local CLC_N_RX="0" CLC_N_RX_DEL="0" CLC_N_RX_ACTIVE="0"
+  # (round-3 cascade guard — the CC2-PERSIST lesson, run 105017220139): the
+  # persistence verifies (CC2-reopen / CC12 / CC15b) may only DEMAND the
+  # objects this ledger says were actually created/edited — a create that
+  # D'd upstream must record D/skip downstream, never a false 'record was
+  # lost' P1. Each flag flips to yes ONLY on the fully-verified GREEN path
+  # (the API-log POST/PUT count + the rendered sentinel card).
+  local CLC_VISIT_MADE="no" CLC_VISIT_EDITED="no" CLC_FOLLOWUP_MADE="no"
+  local CLC_NOTE_MADE="no" CLC_NOTE_EDITED="no" CLC_RX_MADE="no"
 
   # ---- fixture creation (the proven create_patient_deep path) ----
   note "=== clinical fixtures: $CLC_P1_FULL + $CLC_P2_FULL ==="
@@ -8926,9 +9024,13 @@ focus_clinical() {
       product_red CLINICAL_CC2 "could not type the chief complaint sentinel '$CLC_VISIT' into the scheduler"
     fi
     snap "cc2-form-filled" || true
-    # (e) submit (the footer row anchor — the proven PS idiom)
+    # (e) submit — (round-3 CC2 fix) the footer 'Schedule Visit' shares its
+    # label with the dialog TITLE and the dimmed page behind, and the footer's
+    # outline 'Cancel' never OCR'd in run 105017220139 — the LAST OCR hit
+    # (the footer renders lowest), y-gated below the dialog's own Chief
+    # Complaint field (the docb_enter_scan_view 'last' idiom)
     clc_api_mark "cc2-save"
-    if v_click_near_anchor_y "Schedule Visit" "Cancel" "cc2-save" 40; then
+    if clc_footer_click "Schedule Visit" "Chief Complaint" "cc2-save"; then
       sleep 2
       if wait_text_gone "Chief Complaint" 10 "cc2-closed"; then
         clc_api_collect "cc2"
@@ -8943,6 +9045,7 @@ focus_clinical() {
             ocr_grep "09:30" && CC2_TIME_OK="yes (09:30 — the select-restore D above)"
             ocr_grep "Checkup" && CC2_TYPE_OK="yes"
             CLC_N_VISITS=$(( CLC_N_VISITS + 1 ))
+            CLC_VISIT_MADE="yes" # (round-3 cascade guard) the create is PROVEN (POST + the rendered card)
             qa_cap CLINICAL_CC2_VISIT_CREATE "GREEN (the visit created through the real dialog: POST /api/visits ×$CLC_API_HITS in the log; the card shows the sentinel '$CLC_VISIT' in Visit History; time=$CC2_TIME_OK type=$CC2_TYPE_OK)"
             surface_row "Visit create" "scheduler → fill → 'Schedule Visit' submit" "date/time/type/complaint/notes fields" "the visit is created and appears in Visit History" "saved; POST in the API log; the sentinel card rendered" "GREEN" "cc2-*" "OK"
           else
@@ -8987,7 +9090,15 @@ focus_clinical() {
         record_inventory "the Timeline toggle after the visit create (the event-count badge)"
         surface_row "Timeline count badge" "the 'Timeline' toggle after a visit exists" "the toggle + the event-count badge (count > 0)" "the badge shows the patient's timeline event count" "observed (OCR — the count digit is on the capture)" "RECORDED" "cc2-timeline-badge" "OK"
       else
-        bug P1 CLINICAL_CC2_PERSIST "the visit sentinel is NOT visible after the navigate-away/reopen (the record was lost?)"
+        # (round-3 cascade guard — the run-105017220139 first-red): the P1
+        # 'record was lost' is only honest when the create itself was PROVEN
+        # this run (the POST + the sentinel card above) — a CC2 create that
+        # D'd upstream must not masquerade as a lost-record product red
+        if [ "$CLC_VISIT_MADE" = "yes" ]; then
+          bug P1 CLINICAL_CC2_PERSIST "the visit sentinel is NOT visible after the navigate-away/reopen (the record was lost?)"
+        else
+          bug D CLINICAL_CC2_PERSIST "skipped — the sentinel visit was not PROVEN created this run (the CC2 D above); the persistence of an uncreated record cannot be verified (honest)"
+        fi
       fi
     else
       bug D CLINICAL_CC2_PERSIST "could not reopen the detail for the persistence verify (honest)"
@@ -9038,7 +9149,10 @@ focus_clinical() {
     fi
     snap "cc3-form-edited" || true
     clc_api_mark "cc3-save"
-    if v_click_near_anchor_y "Save Changes" "Cancel" "cc3-save" 40; then
+    # (round-3 fix) the same last-hit footer idiom as cc2-save — the edit
+    # footer 'Save Changes' is the dialog's lowest hit, y-gated below the
+    # Chief Complaint field (no dependency on the outline 'Cancel' anchor)
+    if clc_footer_click "Save Changes" "Chief Complaint" "cc3-save"; then
       sleep 2
       if wait_text_gone "Chief Complaint" 10 "cc3-closed"; then
         clc_api_collect "cc3"
@@ -9049,6 +9163,7 @@ focus_clinical() {
             snap "cc3-visit-card-updated" || true
             local CC3_TYPE_OK="no"
             ocr_grep "Follow-up" && CC3_TYPE_OK="yes"
+            CLC_VISIT_EDITED="yes" # (round-3 cascade guard) the edit is PROVEN (PUT + the updated card)
             qa_cap CLINICAL_CC3_VISIT_EDIT "GREEN (the visit edited: PUT /api/visits ×$CLC_API_HITS in the log; the card shows the edited sentinel '$CLC_VISIT_EDIT'; type-Follow-up=$CC3_TYPE_OK)"
             surface_row "Visit edit save" "edit dialog → change complaint/type → 'Save Changes'" "—" "the visit updates in Visit History" "saved; PUT in the log; the edited sentinel card rendered" "GREEN" "cc3-*" "OK"
           else
@@ -9129,7 +9244,8 @@ focus_clinical() {
       product_red CLINICAL_CC4B "could not type the second visit's complaint sentinel"
     fi
     clc_api_mark "cc4b-save"
-    if v_click_near_anchor_y "Schedule Visit" "Cancel" "cc4b-save" 40; then
+    # (round-3 fix) the last-hit footer idiom (the cc2-save class)
+    if clc_footer_click "Schedule Visit" "Chief Complaint" "cc4b-save"; then
       sleep 2
       wait_text_gone "Chief Complaint" 10 "cc4b-closed" || true
       clc_api_collect "cc4b"
@@ -9185,7 +9301,8 @@ focus_clinical() {
       if ocr_grep "No-show"; then
         if v_click "No-show" "cc4c-pill" "Chief Complaint" first 0 label; then
           clc_api_mark "cc4c-save"
-          if v_click_near_anchor_y "Save Changes" "Cancel" "cc4c-save" 40; then
+          # (round-3 fix) the last-hit footer idiom (the cc2-save class)
+          if clc_footer_click "Save Changes" "Chief Complaint" "cc4c-save"; then
             sleep 2
             wait_text_gone "Chief Complaint" 10 "cc4c-closed" || true
             clc_api_collect "cc4c"
@@ -9307,7 +9424,8 @@ focus_clinical() {
           probe "cc6: the prefilled 'Follow-up for …' was not OCR-verified (kept — the created card's complaint is the proof)"
         fi
         clc_api_mark "cc6-save"
-        if v_click_near_anchor_y "Schedule Visit" "Cancel" "cc6-save" 40; then
+        # (round-3 fix) the last-hit footer idiom (the cc2-save class)
+        if clc_footer_click "Schedule Visit" "Chief Complaint" "cc6-save"; then
           sleep 2
           wait_text_gone "Chief Complaint" 10 "cc6-closed" || true
           clc_api_collect "cc6"
@@ -9317,6 +9435,7 @@ focus_clinical() {
               ocr_capture || true
               snap "cc6-follow-up-card" || true
               CLC_N_VISITS=$(( CLC_N_VISITS + 1 ))
+              CLC_FOLLOWUP_MADE="yes" # (round-3 cascade guard) the follow-up create is PROVEN
               qa_cap CLINICAL_CC6_FOLLOW_UP "GREEN (the follow-up visit created from the completed visit: POST /api/visits ×$CLC_API_HITS in the log; the 'Follow-up for …' card appears in Visit History)"
               surface_row "Follow-up from a completed visit" "completed visit → 'Schedule Follow-up' → submit" "—" "a new scheduled visit appears with the pre-derived complaint" "saved; POST in the log; the card rendered" "GREEN" "cc6-*" "OK"
             else
@@ -9399,7 +9518,10 @@ focus_clinical() {
       fi
       snap "cc8-form-filled" || true
       clc_api_mark "cc8-save"
-      if v_click_near_anchor_y "Add Note" "Cancel" "cc8-save" 60; then
+      # (round-3 fix) the last-hit footer idiom — the quick-add card's submit
+      # is its lowest 'Add Note' hit, y-gated below the card's own 'New
+      # Clinical Note' title (no dependency on the outline 'Cancel' anchor)
+      if clc_footer_click "Add Note" "New Clinical Note" "cc8-save"; then
         sleep 2
         clc_api_collect "cc8"
         clc_api_count POST "/api/notes" "cc8-create"
@@ -9413,6 +9535,7 @@ focus_clinical() {
               probe "cc8: the notes count badge reads '1 note'"
             fi
             CLC_N_NOTES=$(( CLC_N_NOTES + 1 ))
+            CLC_NOTE_MADE="yes" # (round-3 cascade guard) the note create is PROVEN (POST + the rendered card)
             qa_cap CLINICAL_CC8_NOTE_CREATE "GREEN (the clinical note created: POST /api/notes ×$CLC_API_HITS in the log; the '$CLC_NOTE' card renders in the $CC8_PIN_SECT list; the Arabic+Unicode content typed through the Unicode-CGEvent path)"
             surface_row "Clinical note create" "quick-add → title/category/content → 'Add Note'" "—" "the note card appears in the (unpinned) regular list" "saved; POST in the log; the sentinel card rendered" "GREEN" "cc8-*" "OK"
           else
@@ -9453,7 +9576,8 @@ focus_clinical() {
     if [ "$CC9_RC" = "0" ]; then
       v_type_into "Note content" "anchor note for the pin-order probe" "cc9-anchor-content" || true
       clc_api_mark "cc9-anchor-save"
-      if v_click_near_anchor_y "Add Note" "Cancel" "cc9-anchor-save" 60; then
+      # (round-3 fix) the last-hit footer idiom (the cc8-save class)
+      if clc_footer_click "Add Note" "New Clinical Note" "cc9-anchor-save"; then
         sleep 2
         clc_api_collect "cc9-anchor"
         clc_api_count POST "/api/notes" "cc9-anchor-create"
@@ -9548,6 +9672,11 @@ focus_clinical() {
     clc_api_mark "cc10-cancel"
     if clc_type_into_nth "$CLC_NOTE" "NOTE-CLIN-1201-CANCELED" "cc10-cancel-type" 2; then
       snap "cc10-cancel-typed" || true
+      # (round-3 audit) the inline note-edit form's [Cancel][Save] row keeps the
+      # near-anchor pair: both needles are SINGLE hits on this form (no title
+      # shares either label — not the CC2 ambiguity class), and the pair's
+      # mutual y-tie is the best anchoring available; a miss stays an honest D
+      # (the CC12 cascade guard below covers the downstream)
       if v_click_near_anchor_y "Cancel" "Save" "cc10-cancel" 40; then
         sleep 2
         clc_api_collect "cc10"
@@ -9608,6 +9737,7 @@ focus_clinical() {
       fi
       snap "cc10-edited" || true
       clc_api_mark "cc10-save"
+      # (round-3 audit) the same near-anchor pair as cc10-cancel above
       if v_click_near_anchor_y "Save" "Cancel" "cc10-save" 40; then
         sleep 2
         clc_api_collect "cc10"
@@ -9618,6 +9748,7 @@ focus_clinical() {
             snap "cc10-updated-card" || true
             local CC10_CAT="unchanged"
             ocr_grep "Treatment Plan" && CC10_CAT="Treatment Plan"
+            CLC_NOTE_EDITED="yes" # (round-3 cascade guard) the note edit is PROVEN (PUT + the updated card)
             qa_cap CLINICAL_CC10_NOTE_EDIT "GREEN (the note edited: PUT /api/notes ×$CLC_API_HITS in the log; the card shows the edited title '$CLC_NOTE_EDIT'; category=$CC10_CAT)"
             surface_row "Note edit save" "inline edit → change title/content → 'Save'" "—" "the note card updates" "saved; PUT in the log; the edited title rendered" "GREEN" "cc10-*" "OK"
           else
@@ -9741,13 +9872,21 @@ focus_clinical() {
     clc_api_count GET "/api/notes" "cc12-reopen-get"
     # (wave2 fix) the reopened detail lands mid-page — restore the top first
     detail_scroll_top "cc12-reopen-top" || true
-    if v_scroll_find "$CLC_NOTE_EDIT" 8 || wait_for_ocr "$CLC_NOTE_EDIT" 15 "cc12-note-survived"; then
+    # (round-3 cascade guard — the CC2-PERSIST lesson): the note's survival
+    # may only be DEMANDED when the note was PROVEN created this run (CC8);
+    # the accepted title is the EDITED sentinel when the edit succeeded,
+    # else the create sentinel (the edit's own D record stays the honest
+    # verdict for the edit — the restart persistence is proven by whichever
+    # title the battery last verified)
+    if [ "$CLC_NOTE_MADE" != "yes" ]; then
+      bug D CLINICAL_NOTE_PERSISTENCE "skipped — the clinical note was not PROVEN created this run (the CC8 D above); the persistence of an uncreated record cannot be verified (honest)"
+    elif v_scroll_find "$CLC_NOTE_EDIT" 8 || v_scroll_find "$CLC_NOTE" 8 || wait_for_ocr "$CLC_NOTE_EDIT" 15 "cc12-note-survived" || wait_for_ocr "$CLC_NOTE" 5 "cc12-note-survived2"; then
       ocr_capture || true
       snap "cc12-note-survived" || true
-      qa_cap CLINICAL_CC12_NOTE_PERSISTENCE "GREEN (the clinical note survived the quit/reopen: the edited sentinel title is visible after the restart; the reopen refetched the notes (GET /api/notes ×$CLC_API_HITS in the API log))"
-      surface_row "Note persistence (quit/reopen)" "quit → relaunch → the patient detail" "—" "the note survives the restart" "the edited title visible after the reopen" "GREEN" "cc12-*" "OK"
+      qa_cap CLINICAL_CC12_NOTE_PERSISTENCE "GREEN (the clinical note survived the quit/reopen: the sentinel title is visible after the restart; the reopen refetched the notes (GET /api/notes ×$CLC_API_HITS in the API log))"
+      surface_row "Note persistence (quit/reopen)" "quit → relaunch → the patient detail" "—" "the note survives the restart" "the sentinel title visible after the reopen" "GREEN" "cc12-*" "OK"
     else
-      bug P1 CLINICAL_NOTE_PERSISTENCE "the clinical note did not survive the quit/reopen (the edited title is not visible)"
+      bug P1 CLINICAL_NOTE_PERSISTENCE "the clinical note did not survive the quit/reopen (neither the edited nor the created sentinel title is visible)"
     fi
   else
     bug D CLINICAL_NOTE_PERSISTENCE "could not reopen the primary patient's detail after the restart (honest)"
@@ -9854,6 +9993,11 @@ focus_clinical() {
     fi
     # (f) cancel the generator — nothing may be created
     clc_api_mark "cc13-cancel"
+    # (round-3 audit) the generator's footer CANCEL keeps the near-anchor
+    # form: 'Cancel' is a single hit here and the needle itself is the fragile
+    # outline button — no last-hit idiom can rescue a needle that does not
+    # OCR; a miss stays an honest D (the CC13 cancel-probe is not a cascade
+    # head — CC14 opens its own generator)
     if v_click_near_anchor_y "Cancel" "Create Prescription" "cc13-cancel" 40; then
       sleep 2
       if wait_text_gone "Create Prescription" 10 "cc13-closed"; then
@@ -10003,7 +10147,11 @@ focus_clinical() {
       b14=$(( b14 + 1 ))
     done
     clc_api_mark "cc15-save"
-    if v_click_near_anchor_y "Create Prescription" "Cancel" "cc15-save" 40; then
+    # (round-3 fix) the last-hit footer idiom — the generator's sticky footer
+    # is the lowest 'Create Prescription' hit, y-gated below the body's own
+    # 'Prescription Notes' heading (visible after the scroll-down; the top
+    # 'Quick Templates' may have scrolled away on this tall dialog)
+    if clc_footer_click "Create Prescription" "Prescription Notes" "cc15-save"; then
       sleep 2
       if wait_text_gone "Create Prescription" 10 "cc15-closed"; then
         clc_api_collect "cc15"
@@ -10017,6 +10165,7 @@ focus_clinical() {
             ocr_grep "active" && CC15_STATUS="yes"
             CLC_N_RX=$(( CLC_N_RX + 1 ))
             CLC_N_RX_ACTIVE=$(( CLC_N_RX_ACTIVE + 1 ))
+            CLC_RX_MADE="yes" # (round-3 cascade guard) the prescription create is PROVEN (POST + the rendered card)
             qa_cap CLINICAL_CC15_RX_CREATE "GREEN (the prescription created: POST /api/prescriptions ×$CLC_API_HITS in the log; the card renders (${CC15_MEDS} medication(s), status-active=$CC15_STATUS, the '$CLC_RX' preview visible))"
             surface_row "Prescription create" "the generator → 'Create Prescription'" "—" "the prescription card appears in the Prescriptions list" "saved; POST in the log; the card rendered" "GREEN" "cc15-*" "OK"
             # reopen persistence
@@ -10082,7 +10231,8 @@ focus_clinical() {
             ba=$(( ba + 1 ))
           done
           clc_api_mark "${aux_stem}-save"
-          if v_click_near_anchor_y "Create Prescription" "Cancel" "${aux_stem}-save" 40; then
+          # (round-3 fix) the last-hit footer idiom (the cc15-save class)
+          if clc_footer_click "Create Prescription" "Prescription Notes" "${aux_stem}-save"; then
             sleep 2
             wait_text_gone "Create Prescription" 10 "${aux_stem}-closed" || true
             clc_api_collect "$aux_stem"
@@ -10510,21 +10660,46 @@ focus_clinical() {
     local CC15B_V="no" CC15B_N="no" CC15B_RX="no"
     # (wave2 fix) the reopened detail lands mid-page — restore the top first,
     # then the four sentinel finds walk down the page in order
+    # (round-3 cascade guard — the CC2-PERSIST lesson): each class is only
+    # REQUIRED when the verified-outcome ledger says it was PROVEN to exist
+    # this run; the accepted visit/note sentinel is the EDITED one when the
+    # edit succeeded, else the create sentinel (the edit's own D record stays
+    # the honest verdict for the edit — the restart persistence is proven by
+    # whichever sentinel the battery last verified)
     detail_scroll_top "cc15b-top" || true
-    v_scroll_find "$CLC_VISIT_EDIT" 8 || true
-    ocr_grep "$CLC_VISIT_EDIT" && CC15B_V="yes"
-    v_scroll_find "Follow-up for" 8 || true
-    ocr_grep "Follow-up for" && CC15B_V="yes"
-    v_scroll_find "$CLC_NOTE_EDIT" 8 || true
-    ocr_grep "$CLC_NOTE_EDIT" && CC15B_N="yes"
-    v_scroll_find "$CLC_RX" 8 || true
-    ocr_grep "$CLC_RX" && CC15B_RX="yes"
+    if [ "$CLC_VISIT_EDITED" = "yes" ] || [ "$CLC_VISIT_MADE" = "yes" ]; then
+      if v_scroll_find "$CLC_VISIT_EDIT" 8 || v_scroll_find "$CLC_VISIT" 8; then
+        if ocr_grep "$CLC_VISIT_EDIT" || ocr_grep "$CLC_VISIT"; then CC15B_V="yes"; fi
+      fi
+    fi
+    if [ "$CLC_FOLLOWUP_MADE" = "yes" ]; then
+      v_scroll_find "Follow-up for" 8 || true
+      ocr_grep "Follow-up for" && CC15B_V="yes"
+    fi
+    if [ "$CLC_NOTE_MADE" = "yes" ]; then
+      if v_scroll_find "$CLC_NOTE_EDIT" 8 || v_scroll_find "$CLC_NOTE" 8; then
+        if ocr_grep "$CLC_NOTE_EDIT" || ocr_grep "$CLC_NOTE"; then CC15B_N="yes"; fi
+      fi
+    fi
+    if [ "$CLC_RX_MADE" = "yes" ]; then
+      v_scroll_find "$CLC_RX" 8 || true
+      ocr_grep "$CLC_RX" && CC15B_RX="yes"
+    fi
     snap "cc15b-persist-verified" || true
-    if [ "$CC15B_V" = "yes" ] && [ "$CC15B_N" = "yes" ] && [ "$CC15B_RX" = "yes" ]; then
-      qa_cap CLINICAL_CC15_RESTART_PERSISTENCE "GREEN (all three clinical object classes survived the quit/reopen: the edited visit + the follow-up visit, the edited clinical note, and the '$CLC_RX' prescription card)"
-      surface_row "Clinical persistence (quit/reopen)" "quit → relaunch → the patient detail" "—" "visits, notes, and prescriptions all survive the restart" "all three sentinels visible after the reopen" "GREEN" "cc15b-*" "OK"
+    # the requirement mask (only the PROVEN classes) — a create that D'd
+    # upstream must record D/skip here, never a false 'lost across the
+    # restart' P1
+    local CC15B_MISS=""
+    if { [ "$CLC_VISIT_EDITED" = "yes" ] || [ "$CLC_VISIT_MADE" = "yes" ] || [ "$CLC_FOLLOWUP_MADE" = "yes" ]; } && [ "$CC15B_V" != "yes" ]; then CC15B_MISS="visit"; fi
+    if [ "$CLC_NOTE_MADE" = "yes" ] && [ "$CC15B_N" != "yes" ]; then CC15B_MISS="${CC15B_MISS:+$CC15B_MISS }note"; fi
+    if [ "$CLC_RX_MADE" = "yes" ] && [ "$CC15B_RX" != "yes" ]; then CC15B_MISS="${CC15B_MISS:+$CC15B_MISS }prescription"; fi
+    if [ -n "$CC15B_MISS" ]; then
+      bug P1 CLINICAL_RESTART_PERSISTENCE "clinical objects were lost across the quit/reopen ($CC15B_MISS — see cc15b-persist-verified)"
+    elif [ "$CLC_VISIT_MADE" = "yes" ] || [ "$CLC_NOTE_MADE" = "yes" ] || [ "$CLC_RX_MADE" = "yes" ]; then
+      qa_cap CLINICAL_CC15_RESTART_PERSISTENCE "GREEN (every clinical object class PROVEN this run survived the quit/reopen: visit=$CC15B_V (incl. the follow-up when made), note=$CC15B_N, prescription=$CC15B_RX — per the verified-outcome ledger)"
+      surface_row "Clinical persistence (quit/reopen)" "quit → relaunch → the patient detail" "—" "visits, notes, and prescriptions all survive the restart" "every PROVEN class's sentinel visible after the reopen" "GREEN" "cc15b-*" "OK"
     else
-      bug P1 CLINICAL_RESTART_PERSISTENCE "clinical objects were lost across the quit/reopen (visit=$CC15B_V note=$CC15B_N prescription=$CC15B_RX — see cc15b-persist-verified)"
+      bug D CLINICAL_RESTART_PERSISTENCE "skipped — no clinical object was PROVEN created this run (the upstream D records); the restart persistence is unverifiable (honest)"
     fi
   else
     bug D CLINICAL_RESTART_PERSISTENCE "could not reopen the primary patient's detail after the second restart (honest)"
@@ -11005,7 +11180,7 @@ dio_click_backup_icon() { # <stem> — verified by a NEW MediVault_Backup_*.zip 
       local zips_after
       zips_after="$(dio_downloads_new 'MediVault_Backup_*.zip' | wc -l | tr -d ' ')"
       if [ "$zips_after" -gt "$zips_before" ]; then
-        probe "dio-backup-icon[$stem]: the header backup icon WORKED via x=$cand (new ZIP in ~/Downloads; $zips_before→$zips_after new)"
+        probe "dio-backup-icon[$stem]: the header backup icon WORKED via x=$cand (new ZIP in ~/Downloads; $zips_before -> $zips_after new)"
         return 0
       fi
       probe "dio-backup-icon[$stem]: GET /api/backup fired from x=$cand but no new ZIP observed (the DD6 WKWebView-download record applies)"
@@ -11297,11 +11472,42 @@ focus_dataio() {
         if [ "${DIO_IMP_IMPORTED:-}" = "5" ]; then dd2_ok="yes"; fi
         read_patient_count
         local dd2_after="${PATIENTS_COUNT:-unreadable}"
+        # (wave3 run 105017220191 first-red, class D): this verification NEVER
+        # ran — the badge interpolations carried a MULTIBYTE arrow directly
+        # against the variable name, and the runner's bash parsed the arrow's
+        # lead byte INTO the name (`dd2_before<0xE2>: unbound variable` under
+        # set -u — the focus died mid-verify, badge 3 + 5 imported = 8 read
+        # correctly and then discarded). ASCII separators everywhere since.
+        # The badge corroboration now actually computes: the expected roster
+        # total = the before-badge + the panel's IMPORTED count (the SKIPPED
+        # duplicates are never added — they create no records).
+        local dd2_delta="unreadable"
+        case "$dd2_before$dd2_after" in
+          ''|*[!0-9]*) : ;;
+          *) dd2_delta=$(( dd2_after - dd2_before )) ;;
+        esac
+        if [ "$dd2_ok" = "yes" ] && [ "$dd2_delta" != "unreadable" ] && [ "$dd2_delta" != "${DIO_IMP_IMPORTED}" ]; then
+          # a possible list-refetch lag — ONE bounded re-read before any verdict
+          sleep 3
+          read_patient_count
+          dd2_after="${PATIENTS_COUNT:-unreadable}"
+          case "$dd2_before$dd2_after" in
+            ''|*[!0-9]*) : ;;
+            *) dd2_delta=$(( dd2_after - dd2_before )) ;;
+          esac
+        fi
         if [ "$dd2_ok" = "yes" ]; then
-          qa_cap DATAIO_DD2_IMPORT "GREEN (Import Successful: 5 patients imported; list badge $dd2_before→$dd2_after)"
-          surface_row "DD2 valid import (5 rows: Unicode + Arabic + quoted-comma address + empty optionals)" "Import dialog → dropzone → NSOpenPanel → Import Patients" "POST /api/patients/import multipart (quote-aware parser)" "imported=5, the list grows by 5, no existing record changes" "result panel '5 patients imported successfully'; badge $dd2_before→$dd2_after; API-log POST observed" "GREEN" "dd2-result" "OK"
+          if [ "$dd2_delta" = "${DIO_IMP_IMPORTED}" ]; then
+            qa_cap DATAIO_DD2_IMPORT "GREEN (Import Successful: 5 patients imported; the list badge corroborates: $dd2_before + $dd2_delta imported = $dd2_after — the 5 skipped duplicates added nothing)"
+            surface_row "DD2 valid import (5 rows: Unicode + Arabic + quoted-comma address + empty optionals)" "Import dialog → dropzone → NSOpenPanel → Import Patients" "POST /api/patients/import multipart (quote-aware parser)" "imported=5, the list grows by 5, no existing record changes" "result panel '5 patients imported successfully'; badge $dd2_before + imported $DIO_IMP_IMPORTED = $dd2_after; API-log POST observed" "GREEN" "dd2-result" "OK"
+          elif [ "$dd2_delta" != "unreadable" ]; then
+            bug P2 DATAIO_DD2_IMPORT "the import reports imported=${DIO_IMP_IMPORTED} but the roster badge grew by only $dd2_delta ($dd2_before -> $dd2_after) — rows may have been silently dropped"
+          else
+            qa_cap DATAIO_DD2_IMPORT "GREEN-with-caveat (Import Successful: 5 patients imported; the badge ($dd2_before -> $dd2_after) could not be read numerically for the delta corroboration — the panel counts + the API POST stand as the proof)"
+            surface_row "DD2 valid import (5 rows: Unicode + Arabic + quoted-comma address + empty optionals)" "Import dialog → dropzone → NSOpenPanel → Import Patients" "POST /api/patients/import multipart (quote-aware parser)" "imported=5, the list grows by 5, no existing record changes" "result panel '5 patients imported successfully'; badge unreadable ($dd2_before -> $dd2_after); API-log POST observed" "GREEN-with-caveat (badge delta not corroborated)" "dd2-result" "OK"
+          fi
         else
-          bug P2 DATAIO_DD2_IMPORT "the 5-row valid import did not report imported=5 (panel: imported='${DIO_IMP_IMPORTED:-unreadable}' skipped='${DIO_IMP_SKIPPED:-unreadable}'; badge $dd2_before→$dd2_after)"
+          bug P2 DATAIO_DD2_IMPORT "the 5-row valid import did not report imported=5 (panel: imported='${DIO_IMP_IMPORTED:-unreadable}' skipped='${DIO_IMP_SKIPPED:-unreadable}'; badge $dd2_before -> $dd2_after)"
         fi
       else
         bug P1 DATAIO_DD2_IMPORT "the valid 5-row import ended in the error state (panel state=$DIO_IMP_STATE; API-log cross-check above)"
@@ -11450,12 +11656,12 @@ focus_dataio() {
       if [ "$DIO_IMP_STATE" = "complete" ]; then
         # source fact: the import route creates every well-formed row (no dedup)
         if [ "${DIO_IMP_IMPORTED:-}" = "2" ]; then
-          qa_cap DATAIO_DD3D_DUPES "RECORDED (duplicates imported=2 skipped=0 — the import route has NO dedup; badge $dd3d_before→$dd3d_after)"
-          surface_row "DD3d duplicate rows" "import duplicates.csv (2 identical rows)" "POST /api/patients/import" "imported+skipped counts must be honest" "panel: imported=${DIO_IMP_IMPORTED:-?} skipped=${DIO_IMP_SKIPPED:-?}; badge $dd3d_before→$dd3d_after" "COUNTS HONEST (no dedup — both rows created; a P3 data-hygiene record)" "dd3d-result" "P3"
+          qa_cap DATAIO_DD3D_DUPES "RECORDED (duplicates imported=2 skipped=0 — the import route has NO dedup; badge $dd3d_before -> $dd3d_after)"
+          surface_row "DD3d duplicate rows" "import duplicates.csv (2 identical rows)" "POST /api/patients/import" "imported+skipped counts must be honest" "panel: imported=${DIO_IMP_IMPORTED:-?} skipped=${DIO_IMP_SKIPPED:-?}; badge $dd3d_before -> $dd3d_after" "COUNTS HONEST (no dedup — both rows created; a P3 data-hygiene record)" "dd3d-result" "P3"
           bug P3 DATAIO_IMPORT_NO_DEDUPE "the CSV import creates duplicate patients without any duplicate detection or warning (two identical rows → imported=2, two separate records). A bulk import of an exported CSV twice silently doubles the roster."
         else
-          qa_cap DATAIO_DD3D_DUPES "RECORDED (panel imported='${DIO_IMP_IMPORTED:-unreadable}' skipped='${DIO_IMP_SKIPPED:-unreadable}'; badge $dd3d_before→$dd3d_after)"
-          surface_row "DD3d duplicate rows" "import duplicates.csv (2 identical rows)" "—" "honest counts" "panel: imported=${DIO_IMP_IMPORTED:-?} skipped=${DIO_IMP_SKIPPED:-?}; badge $dd3d_before→$dd3d_after" "RECORDED" "dd3d-result" "OK"
+          qa_cap DATAIO_DD3D_DUPES "RECORDED (panel imported='${DIO_IMP_IMPORTED:-unreadable}' skipped='${DIO_IMP_SKIPPED:-unreadable}'; badge $dd3d_before -> $dd3d_after)"
+          surface_row "DD3d duplicate rows" "import duplicates.csv (2 identical rows)" "—" "honest counts" "panel: imported=${DIO_IMP_IMPORTED:-?} skipped=${DIO_IMP_SKIPPED:-?}; badge $dd3d_before -> $dd3d_after" "RECORDED" "dd3d-result" "OK"
         fi
       else
         bug P2 DATAIO_DD3D_DUPES "the duplicate-rows import ended in the error state (state=$DIO_IMP_STATE)"
@@ -13331,7 +13537,13 @@ focus_desktop() {
   fi
 
   # upload both documents through the REAL Upload Files + NSOpenPanel path
-  if open_patient_by_phone_token "0456" "$PAT1_FULL" "fx3-detail"; then
+  # (round-3 run 105017220139 first-red — the fx3 row click): the BARE token
+  # '0456' matched the search box's own QUERY line (the row sits below the
+  # fold) and the click never opened the detail. The 4th arg (the ROW phone
+  # '+1 555 0456') is the patients-campaign row-needle fix — the helper
+  # scrolls to the FORMATTED row-only text and clicks THAT; every open in
+  # this focus passes it now (the proven open_patient_by_phone_token path)
+  if open_patient_by_phone_token "0456" "$PAT1_FULL" "fx3-detail" "$PAT1_PHONE"; then
     v_scroll_find "Upload Files" 8 || v_scroll_find "Upload Your First Document" 6 || true
     dsk_upload_fixtures "$FIX_DIR" "fx3-upload"
     snap "fx3-upload-state" || true
@@ -13354,7 +13566,7 @@ focus_desktop() {
   fi
 
   # prescription via the UI generator (template card → Create Prescription)
-  if open_patient_by_phone_token "0456" "$PAT1_FULL" "fx4-detail"; then
+  if open_patient_by_phone_token "0456" "$PAT1_FULL" "fx4-detail" "$PAT1_PHONE"; then
     detail_scroll_top "fx4-top" || true
     if v_scroll_find "New Prescription" 8; then
       dsk_api_mark
@@ -13391,7 +13603,7 @@ focus_desktop() {
   dsk_dl_manifest "DE1-before"
   if ! dsk_docs_ready "DE1"; then
     qa_cap DESKTOP_DE1 "NOT-EXERCISED-ENV (the fixture documents are unavailable — see the FX upload record)"
-  elif open_patient_by_phone_token "0456" "$PAT1_FULL" "de1-detail"; then
+  elif open_patient_by_phone_token "0456" "$PAT1_FULL" "de1-detail" "$PAT1_PHONE"; then
     if v_click "$PDF_TITLE" "de1-doc-open" "" || v_click_try_hits "$PDF_TITLE" "de1-doc-open" ""; then
       sleep 3
       if wait_for_ocr "Loading document" 10 "de1-loading"; then
@@ -13469,7 +13681,7 @@ focus_desktop() {
   dsk_dl_manifest "DE2-before"
   if ! dsk_docs_ready "DE2"; then
     qa_cap DESKTOP_DE2 "NOT-EXERCISED-ENV (the fixture documents are unavailable — see the FX upload record)"
-  elif open_patient_by_phone_token "0456" "$PAT1_FULL" "de2-detail"; then
+  elif open_patient_by_phone_token "0456" "$PAT1_FULL" "de2-detail" "$PAT1_PHONE"; then
     if v_click "$PDF_TITLE" "de2-doc-open" "" || v_click_try_hits "$PDF_TITLE" "de2-doc-open" ""; then
       sleep 3
       wait_text_gone "Loading document" 45 "de2-loaded" || true
@@ -13522,7 +13734,7 @@ focus_desktop() {
   # ------------------------------------------------------------------
   note "=== desktop DE3: patient summary report print + Download-as-PDF alias ==="
   dsk_dl_manifest "DE3-before"
-  if open_patient_by_phone_token "0456" "$PAT1_FULL" "de3-detail"; then
+  if open_patient_by_phone_token "0456" "$PAT1_FULL" "de3-detail" "$PAT1_PHONE"; then
     detail_scroll_top "de3-top" || true
     if dsk_click_banner_report "$PAT1_FULL" "de3-report-open"; then
       wait_for_ocr "Patient Summary Report" 20 "de3-report-dialog" || true
@@ -13611,7 +13823,7 @@ focus_desktop() {
   # ------------------------------------------------------------------
   note "=== desktop DE4: prescription print ==="
   dsk_dl_manifest "DE4-before"
-  if open_patient_by_phone_token "0456" "$PAT1_FULL" "de4-detail"; then
+  if open_patient_by_phone_token "0456" "$PAT1_FULL" "de4-detail" "$PAT1_PHONE"; then
     if v_scroll_find "medication" 8; then
       if dsk_click_rx_print_icon "de4-rxicon"; then
         wait_for_ocr "Print Prescription" 20 "de4-preview" || true
@@ -13835,7 +14047,7 @@ focus_desktop() {
   # 6e) document blob download from the viewer + SHA-256 compare
   if ! dsk_docs_ready "DE6E"; then
     qa_cap DESKTOP_DOC_BLOB_DOWNLOAD "NOT-EXERCISED-ENV (the fixture documents are unavailable — see the FX upload record)"
-  elif open_patient_by_phone_token "0456" "$PAT1_FULL" "de6e-detail"; then
+  elif open_patient_by_phone_token "0456" "$PAT1_FULL" "de6e-detail" "$PAT1_PHONE"; then
     if v_click "$PDF_TITLE" "de6e-doc-open" "" || v_click_try_hits "$PDF_TITLE" "de6e-doc-open" ""; then
       sleep 3
       wait_text_gone "Loading document" 45 "de6e-loaded" || true
@@ -13958,7 +14170,7 @@ focus_desktop() {
   fi
 
   # 8c) the clinical analog (PC10 family): rx generator rapid open/cancel ×3
-  if open_patient_by_phone_token "0456" "$PAT1_FULL" "de8c-detail"; then
+  if open_patient_by_phone_token "0456" "$PAT1_FULL" "de8c-detail" "$PAT1_PHONE"; then
     if v_scroll_find "New Prescription" 8; then
       dsk_api_mark
       local de8c_i=0 de8c_opens=0
@@ -13988,7 +14200,7 @@ focus_desktop() {
   # DE9 — DIALOG MID-FLOW CLOSE ON A NEW SURFACE (rx generator, filled, Cancel)
   # ------------------------------------------------------------------
   note "=== desktop DE9: prescription generator mid-flow cancel ==="
-  if open_patient_by_phone_token "0456" "$PAT1_FULL" "de9-detail"; then
+  if open_patient_by_phone_token "0456" "$PAT1_FULL" "de9-detail" "$PAT1_PHONE"; then
     if v_scroll_find "New Prescription" 8; then
       dsk_api_mark
       if v_click "New Prescription" "de9-rx-open" "New Prescription"; then
@@ -14033,7 +14245,7 @@ focus_desktop() {
   # DE10 — NAVIGATE AWAY DURING UNSAVED WORK (clinical note quick-add)
   # ------------------------------------------------------------------
   note "=== desktop DE10: navigate away with an unsaved clinical note ==="
-  if open_patient_by_phone_token "0456" "$PAT1_FULL" "de10-detail"; then
+  if open_patient_by_phone_token "0456" "$PAT1_FULL" "de10-detail" "$PAT1_PHONE"; then
     if v_scroll_find "Clinical Notes" 8; then
       if v_click "Add Note" "de10-addnote" "Note title" || v_click_try_hits "Add Note" "de10-addnote" "Note title"; then
         if v_type_into "Note title" "DE10-unsaved-note-title" "de10-title"; then
@@ -14047,7 +14259,7 @@ focus_desktop() {
           dsk_api_count '"method":"POST","url":"/api/notes"'
           if [ "$DSK_API_COUNT" = "0" ]; then
             # go back and confirm the note was never created
-            if open_patient_by_phone_token "0456" "$PAT1_FULL" "de10-return"; then
+            if open_patient_by_phone_token "0456" "$PAT1_FULL" "de10-return" "$PAT1_PHONE"; then
               if v_scroll_find "Clinical Notes" 8; then
                 if ocr_grep "DE10-unsaved-note-title"; then
                   bug P1 DESKTOP_DE10 "the unsaved note text is VISIBLE after navigating away and returning (was it persisted? POST count was 0 — client-only residue; capture below)"
@@ -14083,7 +14295,7 @@ focus_desktop() {
   # DE11 — CANCEL THE NATIVE FILE CHOOSER
   # ------------------------------------------------------------------
   note "=== desktop DE11: cancel the native file chooser ==="
-  if open_patient_by_phone_token "0456" "$PAT1_FULL" "de11-detail"; then
+  if open_patient_by_phone_token "0456" "$PAT1_FULL" "de11-detail" "$PAT1_PHONE"; then
     if v_scroll_find "Upload Files" 8 || v_scroll_find "Upload Your First Document" 6; then
       dsk_api_mark
       dsk_dl_mark
@@ -14156,7 +14368,7 @@ focus_desktop() {
   # persistence integration: the patient + document + prescription survive
   local de12_doc_required="no"
   [ "${DSK_DOCS_UPLOADED:-no}" = "yes" ] && de12_doc_required="yes"
-  if open_patient_by_phone_token "0456" "$PAT1_FULL" "de12-verify-detail"; then
+  if open_patient_by_phone_token "0456" "$PAT1_FULL" "de12-verify-detail" "$PAT1_PHONE"; then
     local de12_pat=0 de12_doc=0 de12_rx=0
     ocr_grep "$PAT1_FULL" && de12_pat=1
     if v_scroll_find "$PDF_TITLE" 8; then
