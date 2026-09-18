@@ -35,6 +35,18 @@ set -uo pipefail
 # --------------------------- configuration ---------------------------
 EXPECTED_ARCH="${EXPECTED_ARCH:-arm64}"
 QA_FOCUS="${QA_FOCUS:-surface}"
+# FIRST-LOGIN TOUR GATEWAY (FEATURE C — the guided tour integration):
+# the guided tour auto-offers EXACTLY ONCE per install at the first
+# authenticated-shell mount (tour-state.ts: status 'unseen') and its modal
+# spotlight overlay dims/occludes the dashboard the harness is about to OCR
+# (the transparent input-blocker also eats every pointer event below it) —
+# so every battery dismisses it through the product's own affordances
+# (Escape → skip(); the card's Skip button) BEFORE any dashboard wait, via
+# tour_dismiss_if_present. The ONLY opt-out is the micro:tour-* shards,
+# whose own test subject IS the offer (the top micro case below sets
+# TOUR_GATEWAY=skip for them so the offer survives for the shard to
+# exercise; see MICRO-SHARDS.md).
+TOUR_GATEWAY="${TOUR_GATEWAY:-on}"
 # MICRO-SHARD MODE (directive 2026-09-18: micro-shard parallel QA):
 # QA_FOCUS=micro:<name> runs ONE capability on its own clean macOS VM (the
 # workflow .github/workflows/micro-qa-parallel.yml fans these out as a
@@ -50,6 +62,14 @@ case "$QA_FOCUS" in
     case "$MICRO_NAME" in
       camera|viewer-pdf|viewer-image|print|save-pdf|backup|csv-export|csv-import|csv-import-valid|csv-import-edge|csv-import-cancel|security|persistence|settings|dashboard|core-startup|auth|visits|clinical-notes|prescriptions|reports|upload|scan|download|annotations|patient-isolation|document-isolation|bulk-delete|tour-en|tour-ar|rtl) : ;;
       *) echo "::error::QA_FOCUS micro:<name>: unknown micro shard '$MICRO_NAME' (the catalog + statuses live in MICRO-SHARDS.md at the repo root)"; exit 1 ;;
+    esac
+    # FEATURE C opt-out: the tour shards' OWN test subject is the first-login
+    # offer itself — the gateway must NOT dismiss it before they can exercise
+    # it. (micro:rtl keeps the default: its subject is the app's RTL layout;
+    # at the first mount the offer is English, so the gateway dismissal
+    # needle works and the battery runs on the plain RTL UI.)
+    case "$MICRO_NAME" in
+      tour-en|tour-ar) TOUR_GATEWAY="skip" ;;
     esac
     ;;
   *) echo "::error::QA_FOCUS must be surface|account|patients|search|settings|persistence|documents|clinical|dataio|desktop|micro:<name> (got '$QA_FOCUS')"; exit 1 ;;
@@ -2028,6 +2048,100 @@ submit_focused_return() { # Return in whatever field currently holds focus
   sleep 3
 }
 
+# =============================================================================
+# FIRST-LOGIN TOUR OFFER GATEWAY (FEATURE C — the guided-tour integration).
+#
+# The guided tour (src/components/tour/guided-tour.tsx) auto-offers EXACTLY
+# once per install: GuidedTour mounts with the authenticated app shell and,
+# while the persisted status is 'unseen' (src/components/tour/tour-state.ts —
+# localStorage key medivault-tour-completed-v1), requestTourStart()s. The
+# offer is a MODAL spotlight overlay: a transparent input-blocker div
+# (data-qa="guided-tour-overlay", fixed inset-0 z-[100]) that eats every
+# pointer event below it, plus a cutout-shadow that dims the rest of the
+# screen — exactly the dashboard this harness is about to OCR and click.
+# Every battery runs a pristine install + a fresh account, so the FIRST
+# shell mount of every battery shows the offer on top of the dashboard.
+#
+# The dismissal goes through the product's OWN affordances only:
+#   * Escape maps to skip() (the component's window keydown listener —
+#     key code 53 below, the same System Events pattern as everywhere);
+#   * the card carries a visible Skip button (data-qa="tour-skip", OCR
+#     text 'Skip') as the second-chance affordance;
+#   * the welcome step title 'Welcome to MediVault' is the distinctive
+#     needle (the auth/setup screens never render that phrase as the tour
+#     card's h3 does; the setup-success TOAST 'Welcome to MediVault. Your
+#     account is ready.' can transiently match on pre-tour builds — the
+#     escape/skip attempts against it are inert and it self-expires within
+#     the re-check window, so no false red can result).
+# After a successful skip (markTourDismissed → localStorage) the tour NEVER
+# auto-offers again on that install (logout/login/quit/reopen included — the
+# WKWebView profile persists), so this is a FIRST-ARRIVAL-only step: the
+# logout/login and quit/reopen cycles inside the batteries never re-see it.
+#
+# (invocation-order lesson, run 34873498636 class D — exactly like
+# submit_focused_return above: this is called from the setup-validation
+# suite (SU4/SU5 accepted branches) AND from GATEWAY 6, all of which EXECUTE
+# before the focus-framework helper section is even parsed — the definition
+# must live here, before the first call. The Escape osa call is inlined for
+# the same reason: press_escape() is defined later in the file.)
+# =============================================================================
+TOUR_GATEWAY_STATE="pending" # pending → dismissed (markTourDismissed persists it for the install)
+tour_dismiss_if_present() { # <label> — clear the first-login tour offer via the product's own affordances
+  local label="${1:-gateway}"
+  if [ "$TOUR_GATEWAY" = "skip" ]; then
+    probe "tour-gateway[$label]: SKIPPED (TOUR_GATEWAY=skip — this shard's own subject is the tour; the offer stays up)"
+    return 0
+  fi
+  if [ "$TOUR_GATEWAY_STATE" = "dismissed" ]; then
+    probe "tour-gateway[$label]: the offer was already dismissed this run (persisted for the install) — nothing to do"
+    return 0
+  fi
+  local t0
+  t0="$(date +%s)"
+  while [ $(( $(date +%s) - t0 )) -le 15 ]; do
+    if ocr_capture && ocr_grep "Welcome to MediVault"; then
+      snap "tour-offer-$label" || true
+      if ocr_grep "practice guide"; then
+        probe "tour-gateway[$label]: the first-login tour offer is visible (welcome title + the 'practice guide' card body)"
+      else
+        probe "tour-gateway[$label]: 'Welcome to MediVault' is OCR-visible (the 'practice guide' card-body marker was not read this capture — proceeding on the title needle)"
+      fi
+      # 1) the product's keyboard affordance: Escape → skip()
+      osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 53' 10 >/dev/null 2>&1 || true
+      sleep 2
+      if ocr_capture && ! ocr_grep "Welcome to MediVault"; then
+        TOUR_GATEWAY_STATE="dismissed"
+        qa_cap TOUR_OFFER "DISMISSED (the first-login tour offer was cleared by the Escape key — the product's skip affordance; the battery proceeds on the plain UI; the tour itself is exercised by the micro:tour-en / micro:tour-ar shards)"
+        return 0
+      fi
+      # 2) the product's visible affordance: the card's Skip button
+      if v_click "Skip" "tour-offer-skip-$label" "Add Patient"; then
+        sleep 2
+        if ocr_capture && ! ocr_grep "Welcome to MediVault"; then
+          TOUR_GATEWAY_STATE="dismissed"
+          qa_cap TOUR_OFFER "DISMISSED (Escape did not clear it; the card's Skip button did — the battery proceeds on the plain UI)"
+          return 0
+        fi
+      else
+        probe "tour-gateway[$label]: the Skip-button click could not be attempted/verified (no OCR-located 'Skip' — see the tour-offer-skip captures)"
+      fi
+      sleep 2
+      if ocr_capture && ! ocr_grep "Welcome to MediVault"; then
+        TOUR_GATEWAY_STATE="dismissed"
+        qa_cap TOUR_OFFER "DISMISSED (the offer cleared after the Escape + Skip attempts — the battery proceeds on the plain UI)"
+        return 0
+      fi
+      # A stuck modal overlay would block the WHOLE battery (the blocker eats
+      # every pointer event) — a possible REAL product defect, first-red it.
+      bug P1 TOUR_OFFER_BLOCKING "the first-login tour offer is visible but neither Escape nor the Skip button dismissed it (captures tour-offer-$label.png / tour-offer-skip-$label-*) — a stuck modal overlay would block the whole battery"
+      return 1
+    fi
+    sleep 2
+  done
+  probe "tour-gateway[$label]: no 'Welcome to MediVault' offer within 15s (older build without the tour, or already dismissed) — continuing"
+  return 0
+}
+
 setup_validation_suite() {
   note "=== SETUP VALIDATION SUITE (focus account): probing the one-time form ==="
   surface_section "Account setup form — validation battery (focus account)"
@@ -2140,7 +2254,7 @@ setup_validation_suite() {
         qa_cap PASSWORD_BOUNDARY "GREEN (8-char all-class password REJECTED by the server's 10-char policy — the on-screen checklist understates it)"
         surface_row "Password requirement boundary" "checklist-compliant 8-char all-class password submitted" "checklist says '8+ characters'; submit gate is 6" "the real enforced minimum is discoverable only by rejection" "submitted the checklist-compliant password; the visible server rejection was OCR-verified" "GREEN (rejected — server minimum is 10, checklist says 8)" "su4-boundary-rejected" "P3-NOTE"
         bug P3 PASSWORD_POLICY_MISMATCH "the setup form's on-screen checklist advertises '8+ characters' and its client gate is 6, but the server enforces 10 — a checklist-compliant password is visibly rejected. Clinic impact: a doctor following the on-screen requirements gets an unexplained rejection (no checklist row says 10)."
-      elif wait_for_ocr "Add Patient" 20 "su4-boundary-accepted"; then
+      elif tour_dismiss_if_present "su4-accepted" && wait_for_ocr "Add Patient" 20 "su4-boundary-accepted"; then
         su4_done=1
         snap "su4-boundary-accepted" || true
         bug P3 PASSWORD_BOUNDARY_ACCEPTED "the server ACCEPTED the 8-char all-class password (the source-declared policy is 10) — the real enforced minimum is 8 or lower this build; the account was created with the boundary password"
@@ -2210,7 +2324,7 @@ setup_validation_suite() {
         record_inventory "setup form after the malformed-email submission (native validation)"
         qa_cap INVALID_EMAIL "GREEN (the structurally invalid email (no @) was visibly REJECTED — the browser's native type=email validation fired; no account was created with it)"
         surface_row "Malformed email handling" "structurally invalid email (no @) + otherwise valid form" "the Email input (type=email + required) + submit" "an invalid address must be rejected before an account exists" "typed the malformed address + submitted; the native validation rejection was OCR-verified (bubble text visible)" "GREEN (rejected at the input layer)" "su5-malformed-rejected" "OK"
-      elif wait_for_ocr "Add Patient" 90 "su5-malformed-accepted"; then
+      elif tour_dismiss_if_present "su5-accepted" && wait_for_ocr "Add Patient" 90 "su5-malformed-accepted"; then
         su5_done=1
         snap "su5-malformed-accepted" || true
         record_inventory "dashboard after the malformed-email account creation"
@@ -2264,6 +2378,10 @@ fi
 note "=== GATEWAY 6: account creation (real UI) ==="
 if [ "$SETUP_CONSUMED" = "yes" ]; then
   note "GATEWAY 6 submission SKIPPED — the one-time form was already consumed by the setup-validation suite (the account exists and the session is live; see the SU records)"
+  # FEATURE C: the suite's probe submit mounted the authenticated shell (and
+  # the first-login tour offer with it) — dismiss it BEFORE the dashboard
+  # confirmation so the wait reads the plain UI, not the dimmed overlay.
+  tour_dismiss_if_present "g6-suite-consumed"
   if ! wait_for_ocr "Add Patient" 90 "dashboard-after-suite-consumed"; then
     snap "10-dashboard-not-visible-after-suite" || true
     bug P1 ACCOUNT_CREATION "the suite consumed the form but the dashboard never appeared"
@@ -2284,6 +2402,11 @@ snap "09-account-form-filled" || true
 SUBMITTED=0
 if osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10; then
   sleep 3
+  # FEATURE C: the first-login tour offer mounts the INSTANT the dashboard
+  # mounts (with the authenticated shell) and its spotlight overlay occludes
+  # the OCR needles — dismiss it BEFORE the first dashboard wait so the wait
+  # never races the dimming overlay.
+  tour_dismiss_if_present "g6-submit"
   if wait_for_ocr "Add Patient" 45 "dashboard-after-enter-submit"; then
     SUBMITTED=1
     snap "10-account-submit-enter" || true
@@ -2293,16 +2416,36 @@ fi
 if [ "$SUBMITTED" = "0" ]; then
   ocr_capture || true
   if ! ocr_grep "Create Account"; then
+    # FEATURE C: the form is GONE — the Return submit may have gone through
+    # with the tour offer occluding the dashboard (the first wait's needle
+    # raced the dimming overlay). Clear the offer BEFORE the button-click
+    # fallback (the offer's input-blocker eats every pointer event below it,
+    # so the fallback clicks could never land while it is up).
+    tour_dismiss_if_present "g6-fallback"
     osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 121' 10 >/dev/null 2>&1 || true
     sleep 1
   fi
   if ! v_click "Create Account & Start" "10-account-submit" "Add Patient"; then
     if ! v_click "Create Account" "10-account-submit" "Add Patient"; then
-      snap "10-account-submit-failed" || true
-      bug P1 ACCOUNT_CREATION "submitting the real setup form produced no visible change (no dashboard)"
+      if ocr_grep "Add Patient"; then
+        # FEATURE C: the submit DID complete — the dashboard was hidden behind
+        # the tour offer during the first wait (the dismissal above cleared
+        # it); the click fallback is unnecessary. Fail-closed: the
+        # dashboard-after-setup wait below still must confirm it.
+        probe "the setup submit had already completed (the dashboard was behind the tour offer; no click fallback needed)"
+      else
+        snap "10-account-submit-failed" || true
+        bug P1 ACCOUNT_CREATION "submitting the real setup form produced no visible change (no dashboard)"
+      fi
     fi
   fi
 fi
+# FEATURE C: last-chance catch before the focus batteries start — if the
+# offer mounted AFTER the submit-path poll window (a slow first mount), it
+# is dismissed here so every battery step below runs on the plain UI. (The
+# TOUR_GATEWAY_STATE flag makes this a no-op when the offer was already
+# cleared; the not-found probe is the cheap pre-tour-build path.)
+tour_dismiss_if_present "g6-final"
 if ! wait_for_ocr "Add Patient" 90 "dashboard-after-setup"; then
   snap "10-dashboard-not-visible" || true
   bug P1 ACCOUNT_CREATION "the dashboard ('Add Patient') never appeared after account creation"

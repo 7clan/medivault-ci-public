@@ -82,9 +82,9 @@ Status legend:
 | SETTINGS | `micro:settings` | `qa-settings-en` | mapped-to-parent | `focus_settings` |
 | PERSISTENCE | `micro:persistence` | `qa-persistence` | **implemented** (granularity fits: the parent battery IS the shard) | `focus_persistence` (the h-series quit/reopen battery) |
 | SECURITY | `micro:security` | `qa-security` | **implemented** | `micro_security` — no-credential 401 probes, logout → protected-UI gone, loopback-only binds, relogin (the FINAL section re-proves loopback + crash watch at teardown) |
-| TOUR | `micro:tour-en` | `qa-tour-en` | pending-feature | the guided-tour capability is in flight on `feature/guided-tour` |
-| TOUR (Arabic) | `micro:tour-ar` | `qa-tour-ar` | pending-feature | same |
-| LANGUAGE / RTL | `micro:rtl` | `qa-rtl-layout` | pending-feature | the i18n infrastructure is in flight on `feature/i18n` |
+| TOUR | `micro:tour-en` | `qa-tour-en` | pending-feature | the guided-tour capability is in flight on `feature/guided-tour`. **Gateway opt-out:** this shard sets `TOUR_GATEWAY=skip` at the top `QA_FOCUS` case — the first-login offer is the shard's own test subject, so the gateway's `tour_dismiss_if_present` must NOT clear it before the shard body runs |
+| TOUR (Arabic) | `micro:tour-ar` | `qa-tour-ar` | pending-feature | same — `TOUR_GATEWAY=skip` (the offer survives for the shard; the shard itself exercises/dismisses it through the product's affordances) |
+| LANGUAGE / RTL | `micro:rtl` | `qa-rtl-layout` | pending-feature | the i18n infrastructure is in flight on `feature/i18n`. Keeps the DEFAULT `TOUR_GATEWAY=on`: this shard's subject is the app's RTL layout, not the tour — at the first shell mount the offer is English (default locale), so the gateway dismissal needle works and the battery runs on the plain RTL UI |
 
 Impact-map aliases: `qa-report-pdf` and `qa-prescription-pdf` (per
 `qa-registry/impact-map.json`) are satisfied by `micro:print` /
@@ -109,6 +109,31 @@ The dispatch corollary: pass `micro_shards` = exactly the affected subset
 stay frozen and are simply absent from the matrix. A D-class harness
 finding on a shard does NOT unfreeze the others (fix the harness, rerun the
 affected shard against the SAME frozen DMG — no rebuild).
+
+## The first-login tour offer (FEATURE C gateway step)
+
+The guided tour auto-offers exactly ONCE per install at the first
+authenticated-shell mount, and its modal spotlight overlay dims the
+dashboard (and blocks every pointer event below it) — the exact surface
+every battery OCRs. `exploratory-qa.sh` therefore gained
+`tour_dismiss_if_present` (the `TOUR_OFFER` capability record): a bounded
+15s poll for the welcome-step needle `Welcome to MediVault`, then the
+product's own affordances in order — Escape (key code 53 → the tour's
+`skip()`), re-check, the card's visible Skip button (`data-qa="tour-skip"`),
+re-check — with an honest `P1 TOUR_OFFER_BLOCKING` first-red if NEITHER
+clears a visible offer (a stuck modal would block the whole battery). It is
+invoked at every pristine-install first-arrival point (GATEWAY 6 submit /
+fallback / final, the SETUP_CONSUMED branch, and the SU4/SU5
+accepted-branch dashboard waits of the account suite). The dismissal
+persists (`markTourDismissed` → localStorage, WKWebView profile), so the
+batteries' logout/login and quit/reopen cycles never re-see the offer.
+
+The **micro:tour-en / micro:tour-ar shards are the opt-out**: their QA_FOCUS
+case sets `TOUR_GATEWAY=skip`, so the gateway step is a no-op probe and the
+offer survives for the shard's own battery to exercise (their bodies are the
+pending-feature records above). Every OTHER battery — coarse and micro —
+dismisses the offer and proceeds on the plain UI. (micro:rtl keeps the
+default: its subject is the RTL layout, not the tour.)
 
 ## Provenance of the micro bodies (honesty note)
 
