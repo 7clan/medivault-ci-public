@@ -874,6 +874,36 @@ sysdialog_present() {
   printf '%s\n' "$OCR_TEXT" | grep -qi -- "|[^|]*Apple Account" && return 0
   return 1
 }
+# (runs 35386829330/35389185554/35390220206) the macOS FIRST-BOOT STORM: the
+# runner generation raises the FaceTime modal → the Notes welcome tour →
+# (any stray keystroke) the Notes main window + the 'Turn On iCloud' modal
+# — landing ~90-120s into every fresh session, exactly while the setup form
+# is being filled. The per-step sysdialog recovery handles strays; the
+# WEATHERING below rides the storm out BEFORE any form interaction: dismiss
+# everything that appears (the modal Cancel → the storm-app Cancel-first +
+# Cmd+Q, via sysdialog_dismiss's cascade loop) until two consecutive clean
+# checks, bounded. Deterministic — no background interleaving with the
+# harness's own typing.
+storm_weather() { # <stem>
+  local stem="$1" clean=0 i=0 rounds=0
+  note "=== storm weathering ($stem): riding out the macOS first-boot tour window ==="
+  while [ "$i" -lt 30 ] && [ "$clean" -lt 2 ]; do
+    i=$(( i + 1 ))
+    if sysdialog_dismiss "weather-$stem-$i"; then
+      rounds=$(( rounds + 1 ))
+      clean=0
+    else
+      clean=$(( clean + 1 ))
+    fi
+    sleep 5
+  done
+  if [ "$rounds" -gt 0 ]; then
+    qa_cap STORM_WEATHER "RODE OUT ($rounds dismissal round(s) over $(( i * 5 ))s — the macOS first-boot tour window is clear; the setup form interactions proceed on a quiet screen)"
+  else
+    probe "storm weathering ($stem): nothing appeared within $(( i * 5 ))s (the runner was already quiet)"
+  fi
+}
+
 # (runs 35386829330 + 35389185554) the first-boot STORM is a CASCADE: the
 # FaceTime modal → (its Cancel) → the Notes welcome tour → (any stray
 # keystroke) → the Notes main window + the 'Turn On iCloud' prompt — each
@@ -2160,36 +2190,6 @@ setup_form_alive() { # is the one-time setup form still on screen?
 # clear=yes — Cmd+A + Backspace before typing — so residual probe values
 # can never be appended to (run 2's "MediVault Test DoctorMediVault Test
 # Doctor" concatenation was the symptom).
-# (runs 35386829330/35389185554/35390220206) the macOS FIRST-BOOT STORM: the
-# runner generation raises the FaceTime modal → the Notes welcome tour →
-# (any stray keystroke) the Notes main window + the 'Turn On iCloud' modal
-# — landing ~90-120s into every fresh session, exactly while the setup form
-# is being filled. The per-step sysdialog recovery handles strays; the
-# WEATHERING below rides the storm out BEFORE any form interaction: dismiss
-# everything that appears (the modal Cancel → the storm-app Cancel-first +
-# Cmd+Q, via sysdialog_dismiss's cascade loop) until two consecutive clean
-# checks, bounded. Deterministic — no background interleaving with the
-# harness's own typing.
-storm_weather() { # <stem>
-  local stem="$1" clean=0 i=0 rounds=0
-  note "=== storm weathering ($stem): riding out the macOS first-boot tour window ==="
-  while [ "$i" -lt 30 ] && [ "$clean" -lt 2 ]; do
-    i=$(( i + 1 ))
-    if sysdialog_dismiss "weather-$stem-$i"; then
-      rounds=$(( rounds + 1 ))
-      clean=0
-    else
-      clean=$(( clean + 1 ))
-    fi
-    sleep 5
-  done
-  if [ "$rounds" -gt 0 ]; then
-    qa_cap STORM_WEATHER "RODE OUT ($rounds dismissal round(s) over $(( i * 5 ))s — the macOS first-boot tour window is clear; the setup form interactions proceed on a quiet screen)"
-  else
-    probe "storm weathering ($stem): nothing appeared within $(( i * 5 ))s (the runner was already quiet)"
-  fi
-}
-
 setup_fill_form() { # <name> <email> <password> <confirm> <stem-prefix>
   # A real user's flow: scroll to the form top, fill name/email, scroll the
   # lower fields into view, fill password/confirm. On a compact (error-free)
@@ -2640,6 +2640,26 @@ fi
 # cleared; the not-found probe is the cheap pre-tour-build path.)
 tour_dismiss_if_present "g6-final"
 if ! wait_for_ocr "Add Patient" 90 "dashboard-after-setup"; then
+  # (run 35392966093) the storm can eat the MASKED-field typing: the submit
+  # click 'succeeds' (a hash-diff — the form renders its validation errors:
+  # 'Fill out this field' / 'Min 6 chars' / 'Repeat password') and the
+  # dashboard never appears because the form REFUSED. When the setup form
+  # is still up, the refill is the honest recovery (idempotent clear=yes).
+  ocr_capture || true
+  if ocr_grep "Create Your Account"; then
+    probe "dashboard-after-setup: the setup form is STILL UP (validation errors visible — the storm likely ate the masked-field typing) — refilling once"
+    if setup_fill_form "$DOC_NAME" "$DOC_EMAIL" "$DOC_PASS" "$DOC_PASS" "09-refill-final"; then
+      osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10 || true
+      sleep 3
+      tour_dismiss_if_present "g6-final-refill"
+      if wait_for_ocr "Add Patient" 60 "dashboard-after-final-refill"; then
+        qa_cap SYSDIALOG_RECOVERY "GREEN (the storm ate the masked-field typing — the form was refilled and resubmitted; the dashboard is up)"
+        snap "10-final-refill-ok" || true
+      fi
+    fi
+  fi
+fi
+if ! wait_for_ocr "Add Patient" 30 "dashboard-after-setup-final"; then
   snap "10-dashboard-not-visible" || true
   bug P1 ACCOUNT_CREATION "the dashboard ('Add Patient') never appeared after account creation"
 fi
