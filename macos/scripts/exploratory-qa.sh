@@ -926,8 +926,16 @@ sysdialog_dismiss() { # <stem> — 0 = something was present and is now cleared;
     storm_app="$(frontmost_storm_app)"
     if [ -n "$storm_app" ]; then
       acted=1
-      probe "sysdialog[$stem]: the first-boot storm app '$storm_app' is frontmost, covering the app — quitting it (Cmd+Q; the product is unaffected; the runner environment)"
+      probe "sysdialog[$stem]: the first-boot storm app '$storm_app' is frontmost, covering the app — dismissing its modal first, then quitting it (the product is unaffected; the runner environment)"
       snap_file "$MV_SHOT" "${stem}-storm-${storm_app}" || true
+      # (run 35390220206) the storm app's own MODAL (the Notes 'Turn On
+      # iCloud' prompt) EATS Cmd+Q — the app never quits while the modal
+      # holds the event loop. Click the modal's own Cancel (OCR-located,
+      # never a guessed coordinate) FIRST, then the quit lands.
+      if ocr_lookup "Cancel" "first" "any"; then
+        "$MV_MOUSE" "$OCR_HIT_X" "$OCR_HIT_Y" 2>>"$LOG" || true
+        sleep 2
+      fi
       osa "tell application \"System Events\" to tell (first process whose name is \"$storm_app\") to keystroke \"q\" using command down" 10 || true
       sleep 2
       continue
