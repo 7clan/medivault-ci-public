@@ -84,6 +84,7 @@ export function DocumentViewer({ document: doc }: DocumentViewerProps) {
 
   return (
     <motion.div
+      data-qa="document-viewer"
       className={`flex flex-col ${fullscreen ? 'fixed inset-0 z-50 bg-white dark:bg-gray-950' : 'max-w-5xl mx-auto px-4 md:px-6 py-6'}`}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
@@ -176,7 +177,7 @@ export function DocumentViewer({ document: doc }: DocumentViewerProps) {
         <div className="flex items-center gap-3 mb-4 flex-shrink-0">
           <motion.div whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}><Button variant="ghost" size="icon" onClick={goBack} className="flex-shrink-0 hover:bg-emerald-50 dark:hover:bg-emerald-950/20"><ChevronLeft className="h-5 w-5" /></Button></motion.div>
           <div className="flex-1 min-w-0">
-            <h1 className="text-lg font-semibold text-gray-900 dark:text-white truncate">{doc.title || doc.fileName}</h1>
+            <h1 data-qa="document-viewer-title" className="text-lg font-semibold text-gray-900 dark:text-white truncate">{doc.title || doc.fileName}</h1>
             <div className="flex items-center gap-2 mt-0.5 flex-wrap">
               <Badge className={`text-xs rounded-full ${getCategoryColor(doc.category)}`}>{doc.category}</Badge>
               <span className="text-xs text-muted-foreground">{formatFileSize(doc.fileSize)}</span>
@@ -256,7 +257,7 @@ export function DocumentViewer({ document: doc }: DocumentViewerProps) {
         </AnimatePresence>
 
         {doc.mimeType === 'application/pdf' ? (
-          <div className="w-full h-full min-h-[70vh] relative">
+          <div data-qa="document-viewer-frame" className="w-full h-full min-h-[70vh] relative">
             <iframe src={viewUrl} className="w-full h-full min-h-[70vh] border-0" title={doc.title || doc.fileName} onLoad={() => setLoading(false)} />
             {fullscreen && !loading && (
               <div className="absolute bottom-3 left-1/2 -translate-x-1/2 glass rounded-full px-3 py-1.5 flex items-center gap-2 pointer-events-none">
@@ -266,7 +267,7 @@ export function DocumentViewer({ document: doc }: DocumentViewerProps) {
             )}
           </div>
         ) : (
-          <div className="flex items-center justify-center h-full min-h-[60vh] p-4 overflow-auto">
+          <div data-qa="document-viewer-frame" className="flex items-center justify-center h-full min-h-[60vh] p-4 overflow-auto">
             <motion.img src={viewUrl} alt={doc.title || doc.fileName} className="max-w-full max-h-[80vh] object-contain rounded-lg shadow-lg smooth-zoom" style={{ transform: `scale(${zoom})` }} onLoad={() => setLoading(false)} />
           </div>
         )}

@@ -97,6 +97,17 @@ export default function Home() {
   const isAppView = currentView !== 'login' && currentView !== 'setup'
   useKeyboardShortcuts(isAppView)
 
+  // BUG-PD23 (viewer P1 root cause): the window is the scroll owner for every
+  // top-level view (main's content grows the body; overflow-hidden is inert),
+  // and view transitions never reset it — a deep patient-detail scroll carried
+  // into the document viewer clamps to the new page's maxScroll and opens the
+  // document BELOW its header (back button/title/category/toolbar scrolled out
+  // of view; proven for BOTH the image and the PDF branch). Every top-level
+  // view change resets the scroll so each view opens at its own top.
+  useEffect(() => {
+    window.scrollTo(0, 0)
+  }, [currentView])
+
   useEffect(() => {
     const init = async () => {
       // Desktop first-run: the embedded Tauri page cannot reach the API

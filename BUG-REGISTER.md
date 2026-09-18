@@ -882,3 +882,57 @@ open product finding. PATIENTS = FROZEN GREEN.
 - **The verdict stands**: the product's document rows render (fx3 verified
   both rows OCR-visible in the same battery); only the harness neglected to
   bring the row into the viewport before clicking.
+
+### BUG-PD23 [P1 PRODUCT, FIXED] VIEW_TRANSITION_STALE_SCROLL — the document-viewer P1 root cause (DE1/DB6, three macOS reds + the DE1i image discrimination)
+
+- **Class**: P1 product — the viewer red was REAL, but its original
+  "DocumentViewer does not mount / does not render" reading was FALSE.
+- **The finding**: clicking a document row from a deep-scrolled patient
+  detail switched the view correctly (store + DOM + the /view fetch all
+  prove the DocumentViewer mounted and rendered) — but the viewer's HEADER
+  (back button, title, category badge, size, toolbar) never appeared. The
+  same red reproduced on old-build B, new-build B, and shard E (PDF), and
+  the DE1i discrimination proved the IMAGE branch equally red — a shared
+  defect, not the PDF iframe.
+- **Root cause (proven in the local production repro, per the directive's
+  protocol)**: the WINDOW is the scroll owner for every top-level view
+  (main's content grows the body; the `overflow-hidden` on main is inert),
+  and no view transition ever reset it. A deep patient-detail scroll
+  (~2400px, reaching the Documents section below the fold) carried into the
+  document viewer, CLAMPED to the new page's maxScroll (~256px), and opened
+  the document BELOW its header — the top ~256px (the py-6 padding + the
+  entire header row) sat above the viewport while the canvas content and
+  the WKWebView native PDF chrome painted mid-screen. The proof: before the
+  click scrollY=2409; after the click scrollY=256 (=maxScroll) with the
+  viewer's h1 at y=-89 (above the viewport); `window.scrollTo(0,0)` ALONE
+  revealed the fully-functional header (both image and PDF) with the view,
+  the content, and the document association all intact — no remount, no
+  reload. The macOS evidence matches exactly: the canvas painting at
+  y≈130 (above its unscrolled position), the sticky app header intact, the
+  white PDF area + native floating toolbar, and the OCR failure on the
+  title that sat above the viewport.
+- **The fix (product, minimal — the navigation layer, not the store)**:
+  one `useEffect` in `src/app/page.tsx` resets the window scroll on every
+  `currentView` change (instant — no smooth behavior), covering all five
+  top-level transitions (dashboard→patient-detail,
+  patient-detail→document-viewer, document-viewer→patient-detail,
+  dashboard→settings, dashboard→scan-capture; all verified at scrollY=0
+  with the viewer h1 visible at y=88 for BOTH the image and the PDF).
+  Plus three stable QA anchors on the DocumentViewer
+  (`data-qa=document-viewer/-title/-frame`).
+- **Regression coverage**: `tests/pd23-view-scroll-reset.test.ts` (5
+  fail-closed static assertions: the reset exists + is keyed on currentView
+  + is instant + lives in page.tsx NOT the store + the QA anchors + the
+  unchanged selectDocument contract).
+- **Disproven along the way (kept for the record)**: the WKWebView
+  iframe-PDF layer theory (the image branch red too), the service-worker
+  controllerchange/reload theory (no page reload — the API log is silent
+  after the click; the post-click `/sw.js` fetch is the spec-compliant
+  soft-update triggered by the in-scope iframe navigation, byte-identical
+  SW → no controllerchange), and the viewer-mount/state theory (the viewer
+  mounted and rendered correctly the whole time). The pdf.js canvas rewrite
+  was prepared but never committed — reverted in full per the directive.
+- **The historical viewer RED evidence STANDS** (run-9 DB6 old-build, run
+  35170397410-family new-build B, runs 35256165070/35258613892 shard E,
+  and run 35324944270 DE1i) — reclassified from "viewer does not open"
+  to "viewer opened below its header (stale scroll)".
