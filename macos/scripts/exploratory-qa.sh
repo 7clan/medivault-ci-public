@@ -874,22 +874,40 @@ sysdialog_present() {
   printf '%s\n' "$OCR_TEXT" | grep -qi -- "|[^|]*Apple Account" && return 0
   return 1
 }
-sysdialog_dismiss() { # <stem> — 0 = was present and is now cleared; 1 = not present; 2 = present but unclearable
-  local stem="$1"
+sysdialog_dismiss() { # <stem> — 0 = something was present and is now cleared; 1 = nothing present; 2 = present but unclearable
+  local stem="$1" acted=0
   ocr_capture 2>/dev/null || return 1
-  sysdialog_present || return 1
-  probe "sysdialog[$stem]: a macOS first-boot system dialog is covering the app — dismissing via its own Cancel (the product is unaffected; this is the runner environment)"
-  snap_file "$MV_SHOT" "${stem}-sysdialog-before" || true
-  if ocr_lookup "Cancel" "first" "any"; then
-    "$MV_MOUSE" "$OCR_HIT_X" "$OCR_HIT_Y" 2>>"$LOG" || true
+  # (a) the modal dialogs with their own Cancel button (the FaceTime activation)
+  if sysdialog_present; then
+    acted=1
+    probe "sysdialog[$stem]: a macOS first-boot system dialog is covering the app — dismissing via its own Cancel (the product is unaffected; this is the runner environment)"
+    snap_file "$MV_SHOT" "${stem}-sysdialog-before" || true
+    if ocr_lookup "Cancel" "first" "any"; then
+      "$MV_MOUSE" "$OCR_HIT_X" "$OCR_HIT_Y" 2>>"$LOG" || true
+      sleep 2
+    else
+      probe "sysdialog[$stem]: the dialog's Cancel was not OCR-locatable (recorded honestly)"
+    fi
+  fi
+  ocr_capture 2>/dev/null || true
+  # (b) (run 35386829330) the first-boot CASCADE: dismissing the FaceTime
+  # dialog can launch the macOS Notes welcome window ('Welcome to Notes' /
+  # 'Great new tools for notes…') which then covers the app. It is an app
+  # window, not a modal — the dismissal is Cmd+Q on the Notes process.
+  if ocr_grep "Welcome to Notes"; then
+    acted=1
+    probe "sysdialog[$stem]: the macOS Notes first-boot welcome window is covering the app — quitting the Notes app (Cmd+Q; the product is unaffected)"
+    snap_file "$MV_SHOT" "${stem}-notes-before" || true
+    osa 'tell application "System Events" to tell (first process whose name contains "otes") to keystroke "q" using command down' 10 || true
     sleep 2
-  else
-    probe "sysdialog[$stem]: the dialog's Cancel was not OCR-locatable (recorded honestly)"
+  fi
+  if [ "$acted" = "0" ]; then
+    return 1
   fi
   ocr_capture 2>/dev/null || true
   snap_file "$MV_SHOT" "${stem}-sysdialog-after" || true
-  if sysdialog_present; then
-    probe "sysdialog[$stem]: STILL present after the Cancel click (recorded honestly — the interrupted step will fail honestly if the app stays unreachable)"
+  if sysdialog_present || ocr_grep "Welcome to Notes"; then
+    probe "sysdialog[$stem]: STILL present after the dismissals (recorded honestly — the interrupted step will fail honestly if the app stays unreachable)"
     return 2
   fi
   probe "sysdialog[$stem]: dismissed — the app is reachable again"
@@ -2508,7 +2526,30 @@ if [ "$SUBMITTED" = "0" ]; then
         # it); the click fallback is unnecessary. Fail-closed: the
         # dashboard-after-setup wait below still must confirm it.
         probe "the setup submit had already completed (the dashboard was behind the tour offer; no click fallback needed)"
-      else
+      elif sysdialog_dismiss "10-storm-refill" && ocr_grep "Create Your Account" && setup_fill_form "$DOC_NAME" "$DOC_EMAIL" "$DOC_PASS" "$DOC_PASS" "09-refill"; then
+        # (run 35386829330) the first-boot STORM (FaceTime dialog → the Notes
+        # welcome cascade) can interrupt the typing AND swallow the submit
+        # Return — the fields may be incomplete and the submit went to a
+        # system window. The storm is dismissed above; the re-fill is
+        # idempotent (clear=yes replaces any field content); the Confirm
+        # field holds focus after the fill → the Return submits.
+        osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10 || true
+        sleep 3
+        tour_dismiss_if_present "g6-refill-submit"
+        if wait_for_ocr "Add Patient" 60 "dashboard-after-refill"; then
+          SUBMITTED=1
+          qa_cap SYSDIALOG_RECOVERY "GREEN (the first-boot storm interrupted the setup submit — the form was re-filled and submitted on the cleared screen; capture 10-refill-submitted)"
+          snap "10-refill-submitted" || true
+        else
+          osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 121' 10 >/dev/null 2>&1 || true
+          sleep 1
+          if v_click "Create Account & Start" "10-refill-submit" "Add Patient" || v_click "Create Account" "10-refill-submit" "Add Patient"; then
+            SUBMITTED=1
+            qa_cap SYSDIALOG_RECOVERY "GREEN (the first-boot storm interrupted the setup submit — the re-filled form was submitted via the button fallback)"
+          fi
+        fi
+      fi
+      if [ "$SUBMITTED" = "0" ]; then
         snap "10-account-submit-failed" || true
         bug P1 ACCOUNT_CREATION "submitting the real setup form produced no visible change (no dashboard)"
       fi
