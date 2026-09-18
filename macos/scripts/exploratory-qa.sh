@@ -3008,7 +3008,7 @@ focus_surface() {
     surface_row "Supported Devices / Install App" "Settings scroll" "static device copy; 'Windows / Desktop' + 'iOS / Android' buttons" "PWA install entry points" "observed=$s_seen_devices install=$s_seen_install; not clicked this focus (deferred)" "RECORDED (not tested)" "s22-settings-*" "OK"
     surface_row "Security & Privacy checklist" "Settings scroll" "static checklist (bcrypt, JWT, local storage, isolation, middleware)" "security posture copy" "observed=$s_seen_security" "RECORDED" "s22-settings-*" "OK"
     surface_row "About MediVault" "Settings scroll" "'Version 2.0.0'; Build Date; Tech Stack badges" "version information" "observed=$s_seen_about" "RECORDED" "s22-settings-*" "OK"
-    surface_row "Danger Zone" "Settings scroll (bottom)" "'These actions are irreversible…'; 'Reset All Data' row + 'Reset' button" "destructive-action area" "observed=$s_seen_danger; NOT activated this focus (the stub proof belongs to the settings focus)" "RECORDED (not tested)" "s22-settings-*" "OK"
+    surface_row "Danger Zone (FEATURE A: removed)" "Settings scroll (bottom)" "—" "FEATURE A: the section must be ABSENT" "observed=$s_seen_danger (expected=no — the g15 absence proof is authoritative in the settings focus)" "RECORDED" "s22-settings-*" "OK"
 
     # Appearance toggle (real clicks, hash-verified).
     # (self-review fix) 'Dark'/'Light' as plain needles are OCR-AMBIGUOUS: the
@@ -5874,40 +5874,34 @@ focus_settings() {
     surface_row "Theme → Light (restore)" "Settings → Appearance" "segmented 'Light'" "the app restores the light theme" "clicked; visible change" "GREEN" "g14-appearance-light" "OK"
   fi
 
-  # g4: Danger Zone stub probe (the real proof — Confirm Reset must NOT delete)
-  v_scroll_find "Danger Zone" 8 || bug P1 SETTINGS_DANGERZONE "the Danger Zone section was not reachable"
-  snap "g15-dangerzone" || true
-  if v_click "Reset" "g15-reset-click" "Confirm Reset"; then
+  # g4: FEATURE A (checkpoint 2): the Danger Zone is REMOVED COMPLETELY.
+  # The probe now proves the ABSENCE across the FULL settings scroll: no
+  # 'Danger Zone' section, no 'Reset All Data' control anywhere. (The old
+  # g15 arming probe + the P3 stub record are superseded — the destructive
+  # global-delete surface no longer exists; the old P3
+  # SETTINGS_DANGERZONE_STUB is CLOSED by the removal.)
+  v_click "Settings" "g15-settings-open" "Doctor Profile" || true
+  wait_for_ocr "Doctor Profile" 30 "g15-settings-open" || true
+  v_scroll_top 10 || true
+  local dz_seen=no dz_k=0 dz_last_hash=""
+  while [ "$dz_k" -lt 14 ]; do
     ocr_capture || true
-    snap "g15-reset-armed" || true
-    surface_row "Danger Zone reset arming" "Settings → Danger Zone → 'Reset'" "'Reset All Data' row; 'Reset' → 'Cancel' + 'Confirm Reset'" "arming the destructive action" "clicked; Confirm appeared" "GREEN (armed)" "g15-reset-armed" "OK"
-    # (BUG-PD18) the Confirm Reset placeholder produces NO visible change by
-    # design (source: a 'Feature Placeholder' toast — and the Toaster is not
-    # mounted, so nothing renders). "No visible change" is EXPECTED here and
-    # is NOT a defect; the stub verdict is the data-intact proof below.
-    v_click "Confirm Reset" "g16-confirm-reset" "" || probe "Confirm Reset produced no visible change (expected for the placeholder — the toast never renders; the verdict is the data-intact proof below)"
-    sleep 3
-    ocr_capture || true
-    snap "g16-after-confirm-reset" || true
-    # the proof: the patient still exists
-    v_click "Dashboard" "g17-back-verify" "Add Patient" || true
-    wait_for_ocr "Add Patient" 45 "dashboard-after-reset" || true
-    v_scroll_top 10 || true
-    search_type "John" "g17-verify-patients" || true
-    sleep 2
-    v_scroll_find "John Test" 8 || true
-    ocr_capture || true
-    snap "g17-verify-patients" || true
-    if ocr_grep "John Test"; then
-      qa_cap SETTINGS_DANGERZONE "STUB PROVEN (Confirm Reset deleted nothing)"
-      surface_row "Danger Zone Confirm Reset" "Danger Zone → 'Confirm Reset'" "—" "labeled 'Permanently delete all patients…' — source: a placeholder toast, no API call" "clicked Confirm; patient data fully intact afterward" "STUB (no reset happens; the placeholder toast also never renders — the Toaster is not mounted)" "g16-after-confirm-reset; g17-verify-patients" "P3"
-      bug P3 SETTINGS_DANGERZONE_STUB "the Danger Zone 'Reset All Data' confirm is a no-op stub: after clicking 'Confirm Reset', the patient data is fully intact, while the UI promises 'Permanently delete all patients, documents, and settings' (the 'Feature Placeholder' toast never renders because the Toaster component is not mounted). A user relying on the reset to scrub data before handing over the machine would leave patient data in place."
-    else
-      qa_cap SETTINGS_DANGERZONE "REAL RESET (the confirm deleted the patient)"
-      surface_row "Danger Zone Confirm Reset" "Danger Zone → 'Confirm Reset'" "—" "labeled 'Permanently delete…'" "clicked Confirm; the patient is gone" "REAL RESET" "g17-verify-patients" "OK"
+    if [ -n "$dz_last_hash" ] && [ "$LAST_OCR_HASH" = "$dz_last_hash" ]; then break; fi
+    dz_last_hash="$LAST_OCR_HASH"
+    if ocr_grep "Danger Zone" || ocr_grep "Reset All Data"; then
+      dz_seen=yes
+      break
     fi
+    scroll_burst down
+    sleep 1
+    dz_k=$(( dz_k + 1 ))
+  done
+  snap "g15-dangerzone-sweep" || true
+  if [ "$dz_seen" = "no" ]; then
+    qa_cap SETTINGS_DANGERZONE "GREEN (FEATURE A: the Danger Zone / 'Reset All Data' control is completely absent from the Settings surface — no destructive global-delete control remains)"
+    surface_row "Danger Zone removal (FEATURE A)" "Settings full scroll" "—" "no 'Danger Zone' section, no 'Reset All Data' control anywhere" "scrolled the full settings surface ($dz_k stops); neither 'Danger Zone' nor 'Reset All Data' OCR-visible" "GREEN (removed)" "g15-dangerzone-sweep" "OK"
   else
-    bug P2 SETTINGS_DANGERZONE_ARM "clicking 'Reset' did not reveal the 'Confirm Reset' control"
+    bug P1 SETTINGS_DANGERZONE_RESIDUAL "the Danger Zone / 'Reset All Data' control is still present after the FEATURE A removal (capture g15-dangerzone-sweep — a destructive global-delete surface must not remain)"
   fi
 
   # g5: Install App buttons (inert in the desktop app)
