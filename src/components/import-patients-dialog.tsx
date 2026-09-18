@@ -56,6 +56,18 @@ export function ImportPatientsDialog({
   const [isDragging, setIsDragging] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const dragCounterRef = useRef(0)
+  // BUG-D-IMPORT-CANCEL (P2): the SYNCHRONOUS in-flight authority. React
+  // commits the 'uploading' phase only AFTER the fetch has already been
+  // dispatched — in that render-lag window a Cancel click (or ESC/overlay/X,
+  // which all funnel through onOpenChange) saw phase='idle' and closed the
+  // dialog while the import still committed server-side (the import route
+  // writes per-row creates with no mid-flight rollback, so a client-side
+  // "cancel" after dispatch can never be a real cancel — only an invisible
+  // one), and the user never saw the final result. A ref is set BEFORE the
+  // request leaves and is immune to the render lag; it also prevents a
+  // double-click from dispatching a duplicate POST before the disabled
+  // attribute commits.
+  const importInFlightRef = useRef(false)
   const { toast } = useToast()
 
   const resetState = useCallback(() => {
@@ -72,6 +84,13 @@ export function ImportPatientsDialog({
   }, [])
 
   const handleClose = useCallback(() => {
+    // BUG-D-IMPORT-CANCEL: refuse to close while the import POST is in
+    // flight — the ref is synchronous, so this holds even in the render-lag
+    // window where the phase state has not committed yet (the phase guard
+    // below stays as belt-and-braces). Once the import is dispatched it
+    // MUST run to completion and show its final result — closing here is
+    // how the dialog "canceled" while the import still committed.
+    if (importInFlightRef.current) return
     if (phase === 'uploading' || phase === 'processing') return
     resetState()
     onOpenChange(false)
@@ -182,6 +201,11 @@ export function ImportPatientsDialog({
 
   const handleImport = useCallback(async () => {
     if (!file) return
+    // BUG-D-IMPORT-CANCEL: synchronous duplicate-dispatch guard — a second
+    // click (double-click before the disabled attribute commits) must not
+    // fire a second POST.
+    if (importInFlightRef.current) return
+    importInFlightRef.current = true
 
     setPhase('uploading')
     setProgress(0)
@@ -262,6 +286,11 @@ export function ImportPatientsDialog({
         description: 'Network error. Please check your connection and try again.',
         variant: 'destructive',
       })
+    } finally {
+      // BUG-D-IMPORT-CANCEL: lift the in-flight lock only on a terminal
+      // phase (complete/error set above) — the dialog was held open the
+      // whole time and the final result is now visible.
+      importInFlightRef.current = false
     }
   }, [file, toast, onImportComplete])
 

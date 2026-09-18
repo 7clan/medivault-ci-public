@@ -280,6 +280,33 @@ export function Dashboard() {
     setCurrentView('scan-capture')
   }
 
+  // BUG-PD26 (P2, run 35341388397 shard E de6): the Export CSV button used
+  // to navigate the webview top-level to '/api/patients/export' — macOS
+  // WKWebView (Tauri) does not turn that into a file save in this app: it
+  // renders the raw CSV inline, REPLACING the app UI with patient data (the
+  // E-shard evidence: the webview showed the CSV rows, nothing landed in
+  // ~/Downloads, and the battery had to recover). The viewer's Download
+  // button already uses the correct pattern — fetch -> blob -> object URL
+  // -> <a download> — which WKWebView handles as a real file save. Same here.
+  const handleExportCsv = async () => {
+    try {
+      const res = await fetch('/api/patients/export', { credentials: 'include' })
+      if (!res.ok) throw new Error('Export failed')
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `medivault-patients-${new Date().toISOString().split('T')[0]}.csv`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+      toast({ title: 'Export Started', description: 'Your patient CSV is being downloaded.' })
+    } catch {
+      toast({ title: 'Export Failed', description: 'The CSV could not be exported.', variant: 'destructive' })
+    }
+  }
+
   // Animated counters
   const animatedPatients = useAnimatedCounter(stats?.patientCount || 0)
   const animatedDocuments = useAnimatedCounter(stats?.documentCount || 0)
@@ -439,9 +466,7 @@ export function Dashboard() {
           </Button>
           <Button
             variant="outline"
-            onClick={() => {
-              window.location.href = '/api/patients/export'
-            }}
+            onClick={handleExportCsv}
             className="border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-all duration-200"
           >
             <Download className="h-4 w-4 mr-2" />
