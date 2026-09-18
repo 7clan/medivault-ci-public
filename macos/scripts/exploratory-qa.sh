@@ -2256,8 +2256,47 @@ submit_focused_return() { # Return in whatever field currently holds focus
 # the same reason: press_escape() is defined later in the file.)
 # =============================================================================
 TOUR_GATEWAY_STATE="pending" # pending → dismissed (markTourDismissed persists it for the install)
+# FEATURE D (i18n): the first-run LANGUAGE PROMPT ('Choose your language',
+# English / العربية) mounts with the authenticated shell exactly like the
+# tour offer — and stays up until answered. (Run 35395609098: it sat through
+# the patients battery's early probes — the REQUIRED_FIELDS probe's OCR
+# fought its bottom-right card and misread a 'created patient'.) The
+# batteries need it answered 'English' (the default locale — every OCR
+# needle stays English) before they read the plain UI. Shares the
+# TOUR_GATEWAY opt-out: the tour-ar / rtl shards keep the prompt as their
+# own test subject.
+langprompt_dismiss_if_present() { # <label>
+  local label="${1:-gateway}"
+  if [ "$TOUR_GATEWAY" = "skip" ]; then
+    return 0
+  fi
+  if [ "$LANG_PROMPT_STATE" = "dismissed" ]; then
+    return 0
+  fi
+  if ! ocr_capture 2>/dev/null || ! ocr_grep "Choose your language"; then
+    return 0
+  fi
+  snap "langprompt-$label" || true
+  probe "langprompt[$label]: the i18n first-run language prompt is up — choosing 'English' (the default locale)"
+  if v_click "English" "langprompt-$label-choose" ""; then
+    sleep 1
+    if ocr_capture 2>/dev/null && ! ocr_grep "Choose your language"; then
+      LANG_PROMPT_STATE="dismissed"
+      qa_cap LANG_PROMPT "DISMISSED (the i18n first-run prompt — 'English' chosen via its own button; the batteries proceed on the plain English UI)"
+    else
+      probe "langprompt[$label]: still visible after the English click (recorded honestly — the batteries' probes may see its card)"
+    fi
+  else
+    probe "langprompt[$label]: the 'English' button was not OCR-locatable (recorded honestly)"
+  fi
+  return 0
+}
+
 tour_dismiss_if_present() { # <label> — clear the first-login tour offer via the product's own affordances
   local label="${1:-gateway}"
+  # FEATURE D: the language prompt mounts with the same shell — handle it
+  # FIRST (choosing English) so the tour-card needles below read a clean UI
+  langprompt_dismiss_if_present "$label"
   if [ "$TOUR_GATEWAY" = "skip" ]; then
     probe "tour-gateway[$label]: SKIPPED (TOUR_GATEWAY=skip — this shard's own subject is the tour; the offer stays up)"
     return 0
