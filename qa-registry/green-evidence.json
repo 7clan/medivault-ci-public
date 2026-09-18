@@ -31,6 +31,19 @@
         "PD26 Export CSV webview-navigation (0e6601b)"
       ],
       "status": "FINAL DMG — documents battery GREEN (Wave 16 B) + PD24 import-cancel contract GREEN (Wave 17 D) + PD26 export CSV GREEN (Wave 17 E surface row); remaining at this hash: backup ZIP (BUG-PD29 fixed, awaiting micro:backup) + DD5 export re-proof (BUG-PD30 fixed, awaiting micro:csv-export) + the print-family ENV records"
+    },
+    "87f2fe3f": {
+      "sha256": "87f2fe3f9ff62c13e1f8327160c5cc54dcf876558aeabf6fa24aaa90d9b6f49f",
+      "source_run": 35381647047,
+      "source_public_sha": "7f106d8e805c25ac63a90fbc638e10091606fc3a (the DMG build ref)",
+      "artifact_id": 10562382405,
+      "contains_product_changes": [
+        "FEATURE A: Reset All Data removed completely",
+        "FEATURE B: safe bulk patient management (Select Patients + DELETE /api/patients/bulk)",
+        "FEATURE C: guided doctor tour + Medi mascot + Help/Guide",
+        "FEATURE D: English+Arabic/RTL i18n (921-key catalogs, medical-record content never modified)"
+      ],
+      "status": "CHECKPOINT 2+3 DMG — the patients source run P1'd ENV+D (BUG-PD31: the fresh-runner FaceTime dialog; harness-fixed); the P shard (35385368383) re-runs the patients battery and the micro first flight (35385371196: 13 shards) runs against this SAME frozen DMG in PROVISIONAL mode. Acceptance lands when the P shard goes GREEN at this hash."
     }
   },
   "environment_baseline": {
@@ -316,6 +329,10 @@
       "capability": "dataio DD5 re-proof on b2fd83bf (BUG-PD30 fixed in ci/micro-shards ed69a34) — micro:csv-export or the dataio rerun carries it",
       "harvested": "Wave 17 D (35361609673, job 105654082273): 30 GREEN caps, DD1-DD4 GREEN incl. the PD24 contract proof, DD5 false-red D-class (BUG-PD30), DD6-DD7 unexercised",
       "p3_records": "DATAIO_IMPORT_NO_DEDUPE + DATAIO_IMPORT_BAD_DOB re-recorded (product P3 backlog, non-stoppers)"
+    },
+    {
+      "capability": "CHECKPOINT WAVE (in flight at 87f2fe3f): P shard run 35385368383 (patients regression) + micro first flight run 35385371196 (backup, csv-import-cancel, csv-export, camera, viewer-pdf, viewer-image, security, print, save-pdf, bulk-delete, tour-en, tour-ar, rtl) — all PROVISIONAL until the P shard GREENs at this hash",
+      "bug_pd31": "The first patients attempt (35381647047) P1'd at the setup form: a fresh-runner FaceTime activation dialog covered the app mid-typing (ENV trigger; nothing in MediVault opens FaceTime). Harness fixed: sysdialog_dismiss + single retry in v_click/v_type_into/wait_for_ocr. The DMG is unaffected (product code unchanged by the harness fix)."
     }
   ],
   "rules": {

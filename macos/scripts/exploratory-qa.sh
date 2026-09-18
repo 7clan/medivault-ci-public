@@ -861,9 +861,18 @@ ocr_grep() { # <needle> [haystack-default-OCR_TEXT]
 # MediVault opens FaceTime); the harness must dismiss the dialog through its
 # own visible Cancel and retry the interrupted step ONCE. Bounded + honest +
 # fail-closed (an unclearable dialog still fails the step honestly).
-SYSDIALOG_SIGNATURES="Sign in to FaceTime|Activate FaceTime|Apple Account"
+# (run 35385368383 lesson) the detection MUST use ocr_grep's BRE idiom — a
+# literal leading pipe (the OCR field separator). An -E pattern with the
+# leading '|' is an EMPTY ALTERNATION ("grep: empty (sub)expression") on
+# BSD grep: the detection silently failed and the P shard red at the same
+# setup-form field. Each multi-word signature is its OWN plain grep — a
+# word-split loop would match the ordinary 'Sign In' button (false positive
+# at every login screen).
 sysdialog_present() {
-  printf '%s\n' "$OCR_TEXT" | grep -qiE -- "|[^|]*(${SYSDIALOG_SIGNATURES})"
+  printf '%s\n' "$OCR_TEXT" | grep -qi -- "|[^|]*Sign in to FaceTime" && return 0
+  printf '%s\n' "$OCR_TEXT" | grep -qi -- "|[^|]*Activate FaceTime" && return 0
+  printf '%s\n' "$OCR_TEXT" | grep -qi -- "|[^|]*Apple Account" && return 0
+  return 1
 }
 sysdialog_dismiss() { # <stem> — 0 = was present and is now cleared; 1 = not present; 2 = present but unclearable
   local stem="$1"
