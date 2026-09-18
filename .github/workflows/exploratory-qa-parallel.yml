@@ -18,12 +18,25 @@ name: Exploratory QA Parallel Wave
 # Discipline identical to exploratory-qa.yml (P0 stop / P1-P2 first-red /
 # P3 record / D harness / ENV / EXPECTED). The expensive product build
 # happens exactly ONCE (in the SOURCE run); this workflow never rebuilds.
+#
+# OPT-IN PROVISIONAL MODE (directive 2026-09-18 — "artifact readiness and
+# product acceptance are separate concepts"): the DEFAULT source gate stays
+# strict (completed + success — never weakened globally). A dispatch may set
+# allow_in_progress_source=true to start shards while the source run is STILL
+# in_progress, but ONLY on proof that its immutable DMG is already built:
+# exact expected head SHA, the named product build job completed SUCCESS,
+# exactly ONE unexpired product-test-dmg-arm64 artifact, the DMG SHA-256
+# verified, and no product build job still running. Evidence gathered this
+# way is stamped PROVISIONAL — AWAITING SOURCE PATIENT REGRESSION and is
+# promoted to ACCEPTED only if the source run later completes GREEN at the
+# SAME DMG SHA-256 (a REAL product regression blocks promotion and triggers
+# targeted reruns; a D-class harness finding preserves the evidence).
 
 on:
   workflow_dispatch:
     inputs:
       source_run_id:
-        description: 'The completed GREEN patients run that owns the frozen DMG artifact'
+        description: 'The source run that owns the frozen DMG artifact (normally the completed GREEN patients run; in_progress allowed ONLY with allow_in_progress_source=true)'
         required: true
         type: string
       source_sha:
@@ -47,6 +60,11 @@ on:
         required: false
         default: ''
         type: string
+      allow_in_progress_source:
+        description: 'NARROW OPT-IN (default false keeps the strict gate: source run completed + success). true = additionally accept an in_progress source run whose immutable DMG is already proven: exact expected head SHA, the named build job completed SUCCESS, exactly ONE unexpired product-test-dmg-arm64 artifact, DMG SHA-256 verified, no product build job still running. Results are PROVISIONAL - AWAITING SOURCE PATIENT REGRESSION until the source run itself completes GREEN at the same DMG SHA-256.'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -57,24 +75,75 @@ jobs:
     name: "Validate the frozen source run + DMG"
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      provisional: ${{ steps.gate.outputs.provisional }}
+      frozen_dmg_sha: ${{ steps.dmg.outputs.sha256 }}
     env:
       SOURCE_RUN_ID: ${{ github.event.inputs.source_run_id }}
       SOURCE_SHA: ${{ github.event.inputs.source_sha }}
     steps:
-      - name: The source run must be completed + success at the expected SHA
+      - name: "Source gate (strict default; opt-in narrow exception for an in_progress source with a proven immutable DMG)"
+        id: gate
         shell: bash
+        env:
+          ALLOW_IN_PROGRESS: ${{ github.event.inputs.allow_in_progress_source }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          RUN_JSON="$(curl -sf -H "Authorization: Bearer ${{ github.token }}" \
+          RUN_JSON="$(curl -sf -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}")"
           STATUS="$(python3 -c "import json,sys; print(json.load(sys.stdin)['status'])" <<<"$RUN_JSON")"
           CONCL="$(python3 -c "import json,sys; print(json.load(sys.stdin)['conclusion'])" <<<"$RUN_JSON")"
           HEAD="$(python3 -c "import json,sys; print(json.load(sys.stdin)['head_sha'])" <<<"$RUN_JSON")"
-          echo "source run ${SOURCE_RUN_ID}: status=${STATUS} conclusion=${CONCL} head=${HEAD}"
-          [ "$STATUS" = "completed" ] || { echo "::error::source run not completed"; exit 1; }
-          [ "$CONCL" = "success" ] || { echo "::error::source run is not GREEN — patients must be definitively GREEN first"; exit 1; }
+          echo "source run ${SOURCE_RUN_ID}: status=${STATUS} conclusion=${CONCL} head=${HEAD} allow_in_progress_source=${ALLOW_IN_PROGRESS}"
+
+          # the stale-head guard applies in BOTH modes (artifact identity follows the SHA)
           [ "$HEAD" = "${SOURCE_SHA}" ] || { echo "::error::source run head ${HEAD} != expected ${SOURCE_SHA} (stale-head guard)"; exit 1; }
+
+          PROVISIONAL=false
+          if [ "$STATUS" = "completed" ]; then
+            # STRICT DEFAULT — unchanged behavior (also the only path when allow_in_progress_source=false)
+            [ "$CONCL" = "success" ] || { echo "::error::source run is not GREEN — patients must be definitively GREEN first"; exit 1; }
+            echo "source gate: STRICT PASS (run completed + success at the expected head)"
+          elif [ "$STATUS" = "in_progress" ] && [ "${ALLOW_IN_PROGRESS}" = "true" ]; then
+            echo "source gate: PROVISIONAL MODE (allow_in_progress_source=true, run in_progress) — proving immutable artifact readiness instead"
+            JOBS_JSON="$(curl -sf -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/jobs?per_page=100")"
+            BUILD_OK="$(REQUIRED_BUILD_JOB='Build the first-run-fix test DMG (arm64)' python3 -c '
+          import json, os, sys
+          required = os.environ["REQUIRED_BUILD_JOB"]
+          jobs = json.load(sys.stdin).get("jobs", [])
+          req = [j for j in jobs if j.get("name") == required]
+          if not req:
+              print("missing-required-build-job"); sys.exit(0)
+          j = req[0]
+          if j.get("status") != "completed" or j.get("conclusion") != "success":
+              print("required-build-not-success:" + str(j.get("status")) + "/" + str(j.get("conclusion"))); sys.exit(0)
+          still = [j.get("name") for j in jobs if (j.get("name") or "").startswith("Build") and j.get("status") != "completed"]
+          if still:
+              print("product-build-still-running:" + ",".join(still)); sys.exit(0)
+          print("ok")
+          ' <<<"$JOBS_JSON")"
+            [ "$BUILD_OK" = "ok" ] || { echo "::error::PROVISIONAL GATE: immutable product artifact not proven (${BUILD_OK}) — the named build job must be completed SUCCESS with no product build still running"; exit 1; }
+            echo "provisional gate: named build job completed SUCCESS; no product build job still running"
+            ART_OK="$(curl -sf -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts?per_page=100" \
+              | python3 -c '
+          import json, sys
+          arts = [a for a in json.load(sys.stdin).get("artifacts", []) if a.get("name") == "product-test-dmg-arm64" and not a.get("expired")]
+          print("ok" if len(arts) == 1 else "unexpired-count=%d" % len(arts))
+          ' )"
+            [ "$ART_OK" = "ok" ] || { echo "::error::PROVISIONAL GATE: expected exactly ONE unexpired product-test-dmg-arm64 artifact (${ART_OK})"; exit 1; }
+            echo "provisional gate: exactly one unexpired product-test-dmg-arm64 artifact (its SHA-256 is verified by the following steps)"
+            PROVISIONAL=true
+          else
+            echo "::error::source run status=${STATUS} is not completed+success (strict gate) and the in_progress opt-in is not enabled — wait for GREEN or dispatch with allow_in_progress_source=true"
+            exit 1
+          fi
+          echo "provisional=${PROVISIONAL}" >> "$GITHUB_OUTPUT"
 
       - name: Download the frozen DMG from the source run
         uses: actions/download-artifact@v4
@@ -85,6 +154,7 @@ jobs:
           path: dmg
 
       - name: Verify the DMG SHA-256 (the one frozen build for the whole wave)
+        id: dmg
         shell: bash
         run: |
           set -euo pipefail
@@ -98,6 +168,7 @@ jobs:
           echo "actual  =${ACTUAL}"
           [ "$EXPECTED" = "$ACTUAL" ] || { echo "::error::DMG hash mismatch"; exit 1; }
           echo "FROZEN DMG VERIFIED: ${ACTUAL}" | tee frozen-dmg-sha256.txt
+          echo "sha256=${ACTUAL}" >> "$GITHUB_OUTPUT"
 
       - name: Share the frozen DMG with all shards
         uses: actions/upload-artifact@v4
@@ -177,6 +248,8 @@ jobs:
       EXPECTED_ARCH: arm64
       SOURCE_RUN_ID: ${{ github.event.inputs.source_run_id }}
       SHARD: ${{ matrix.shard }}
+      PROVISIONAL: ${{ needs.validate-source.outputs.provisional }}
+      FROZEN_DMG_SHA: ${{ needs.validate-source.outputs.frozen_dmg_sha }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -230,6 +303,21 @@ jobs:
             fi
             [ "$rc_all" -ne 0 ] && break
           done
+          # provisional-mode marking (directive 2026-09-18 §3): evidence from an
+          # in_progress source run is stamped before it can ever be mistaken
+          # for accepted product evidence
+          if [ "${PROVISIONAL}" = "true" ]; then
+            for d in gui-evidence gui-evidence-*/; do
+              [ -d "$d" ] || continue
+              { echo "PROVISIONAL — AWAITING SOURCE PATIENT REGRESSION"
+                echo ""
+                echo "- shard: ${SHARD}"
+                echo "- source run: ${SOURCE_RUN_ID} (still in_progress when this shard was dispatched — allow_in_progress_source=true)"
+                echo "- frozen DMG SHA-256 (proved in-shard): ${FROZEN_DMG_SHA}"
+                echo "- promotion rule: this evidence becomes ACCEPTED only if the source run later completes GREEN and used the SAME DMG SHA-256. A REAL product regression found by the source run blocks promotion and triggers targeted shard reruns after the fix; a D-class harness finding preserves this evidence."
+              } > "$d/PROVISIONAL-MARKER.md"
+            done
+          fi
           exit "$rc_all"
 
       - name: Job summary — capability report
@@ -249,6 +337,18 @@ jobs:
             [ -f "$d/BUG-REGISTER.md" ] || continue
             { echo "## Shard ${SHARD} — bug register (${d})"; echo '```'; cat "$d/BUG-REGISTER.md"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           done
+
+      - name: Job summary — provisional-mode banner
+        if: always()
+        shell: bash
+        run: |
+          if [ "${PROVISIONAL}" = "true" ]; then
+            { echo "## PROVISIONAL — AWAITING SOURCE PATIENT REGRESSION"
+              echo ""
+              echo "Shard ${SHARD} ran against the immutable DMG (SHA-256 ${FROZEN_DMG_SHA}) of source run ${SOURCE_RUN_ID} while that run was still in_progress (allow_in_progress_source=true)."
+              echo "Promote to ACCEPTED only if the source run completes GREEN at the SAME DMG SHA-256."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Upload shard evidence (always, directive §9 names)
         if: always()
@@ -286,7 +386,7 @@ jobs:
 
   combined-gallery:
     name: "Combined post-run evidence gallery"
-    needs: [shard, prep-shards]
+    needs: [validate-source, shard, prep-shards]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -334,6 +434,38 @@ jobs:
           SOURCE_SHA: ${{ github.event.inputs.source_sha }}
           PARALLEL_RUN_ID: ${{ github.run_id }}
         run: bash macos/scripts/build-combined-gallery.sh
+
+      - name: Stamp the provisional banner into the gallery (opt-in mode only)
+        if: always() && needs.validate-source.outputs.provisional == 'true'
+        shell: bash
+        env:
+          SOURCE_RUN_ID: ${{ github.event.inputs.source_run_id }}
+        run: |
+          set -euo pipefail
+          [ -d combined-gallery ] || { echo "(no combined-gallery dir — nothing to stamp)"; exit 0; }
+          { echo "# PROVISIONAL — AWAITING SOURCE PATIENT REGRESSION"
+            echo ""
+            echo "This wave was dispatched with allow_in_progress_source=true while source run ${SOURCE_RUN_ID} was still in_progress, against its already-built immutable DMG."
+            echo "Promotion rule: every shard result below becomes ACCEPTED only when source run ${SOURCE_RUN_ID} completes GREEN and the DMG SHA-256 recorded in the shard evidence matches. A REAL product regression found by the source run blocks promotion and triggers targeted shard reruns after the fix."
+          } > combined-gallery/PROVISIONAL-README.md
+          if [ -f combined-gallery/index.html ]; then
+            python3 - <<'PYEOF'
+          import io
+          p = "combined-gallery/index.html"
+          html = io.open(p, encoding="utf-8").read()
+          banner = ('<div style="background:#7c2d12;color:#fff;padding:12px 18px;font-weight:bold;'
+                    'border-bottom:3px solid #c2410c">'
+                    'PROVISIONAL — AWAITING SOURCE PATIENT REGRESSION '
+                    '(source run still in_progress; promote only on source GREEN at the same DMG SHA-256)'
+                    '</div>')
+          if "PROVISIONAL" not in html:
+              html = html.replace("<body>", "<body>" + banner, 1)
+              io.open(p, "w", encoding="utf-8").write(html)
+              print("index.html: provisional banner injected")
+          else:
+              print("index.html: already marked")
+          PYEOF
+          fi
 
       - name: Upload the combined gallery
         if: always()
