@@ -874,39 +874,73 @@ sysdialog_present() {
   printf '%s\n' "$OCR_TEXT" | grep -qi -- "|[^|]*Apple Account" && return 0
   return 1
 }
-sysdialog_dismiss() { # <stem> — 0 = something was present and is now cleared; 1 = nothing present; 2 = present but unclearable
-  local stem="$1" acted=0
-  ocr_capture 2>/dev/null || return 1
-  # (a) the modal dialogs with their own Cancel button (the FaceTime activation)
-  if sysdialog_present; then
-    acted=1
-    probe "sysdialog[$stem]: a macOS first-boot system dialog is covering the app — dismissing via its own Cancel (the product is unaffected; this is the runner environment)"
-    snap_file "$MV_SHOT" "${stem}-sysdialog-before" || true
-    if ocr_lookup "Cancel" "first" "any"; then
-      "$MV_MOUSE" "$OCR_HIT_X" "$OCR_HIT_Y" 2>>"$LOG" || true
-      sleep 2
-    else
-      probe "sysdialog[$stem]: the dialog's Cancel was not OCR-locatable (recorded honestly)"
+# (runs 35386829330 + 35389185554) the first-boot STORM is a CASCADE: the
+# FaceTime modal → (its Cancel) → the Notes welcome tour → (any stray
+# keystroke) → the Notes main window + the 'Turn On iCloud' prompt — each
+# state has different OCR text. Enumerating window states is a losing game;
+# the ROBUST detection is the FRONTMOST PROCESS: if any app OTHER than
+# MediVault is frontmost AND is on the known first-boot-storm whitelist,
+# it gets Cmd+Q. The whitelist makes the quit safe by construction (never
+# Finder, never Terminal, never a runner/system process).
+STORM_APPS="FaceTime Notes Photos Music TV Reminders Freeform Maps News Stocks Weather Home Contacts"
+frontmost_storm_app() { # echoes the frontmost app's name when it is a whitelisted storm app
+  local fm app
+  # osa sets OSA_OUT (it does not print to stdout — the ui_window_count idiom)
+  if ! osa 'tell application "System Events" to get name of first application process whose frontmost is true' 6; then
+    return 1
+  fi
+  fm="$(printf '%s' "$OSA_OUT" | tr -d '[:space:]')"
+  [ -n "$fm" ] || return 1
+  for app in $STORM_APPS; do
+    if [ "$fm" = "$app" ]; then
+      printf '%s' "$fm"
+      return 0
     fi
-  fi
-  ocr_capture 2>/dev/null || true
-  # (b) (run 35386829330) the first-boot CASCADE: dismissing the FaceTime
-  # dialog can launch the macOS Notes welcome window ('Welcome to Notes' /
-  # 'Great new tools for notes…') which then covers the app. It is an app
-  # window, not a modal — the dismissal is Cmd+Q on the Notes process.
-  if ocr_grep "Welcome to Notes"; then
-    acted=1
-    probe "sysdialog[$stem]: the macOS Notes first-boot welcome window is covering the app — quitting the Notes app (Cmd+Q; the product is unaffected)"
-    snap_file "$MV_SHOT" "${stem}-notes-before" || true
-    osa 'tell application "System Events" to tell (first process whose name contains "otes") to keystroke "q" using command down' 10 || true
-    sleep 2
-  fi
+  done
+  return 1
+}
+sysdialog_dismiss() { # <stem> — 0 = something was present and is now cleared; 1 = nothing present; 2 = present but unclearable
+  local stem="$1" acted=0 round=0 storm_app
+  # the CASCADE loop (up to 3 rounds: FaceTime → Notes → any other storm app)
+  while [ "$round" -lt 3 ]; do
+    round=$(( round + 1 ))
+    ocr_capture 2>/dev/null || return 1
+    # (a) the modal dialogs with their own Cancel button (the FaceTime activation)
+    if sysdialog_present; then
+      acted=1
+      probe "sysdialog[$stem]: a macOS first-boot system dialog is covering the app — dismissing via its own Cancel (the product is unaffected; this is the runner environment)"
+      snap_file "$MV_SHOT" "${stem}-sysdialog-before" || true
+      if ocr_lookup "Cancel" "first" "any"; then
+        "$MV_MOUSE" "$OCR_HIT_X" "$OCR_HIT_Y" 2>>"$LOG" || true
+        sleep 2
+      else
+        probe "sysdialog[$stem]: the dialog's Cancel was not OCR-locatable (recorded honestly)"
+      fi
+      continue
+    fi
+    # (b) the storm apps: FaceTime's Cancel can LAUNCH the Notes welcome
+    # tour; a stray keystroke advances it to the Notes main window with the
+    # 'Turn On iCloud' prompt (35389185554 — the 'Welcome to Notes' needle
+    # alone missed that state). The frontmost check catches EVERY state of
+    # every whitelisted storm app — Cmd+Q quits it.
+    storm_app="$(frontmost_storm_app)"
+    if [ -n "$storm_app" ]; then
+      acted=1
+      probe "sysdialog[$stem]: the first-boot storm app '$storm_app' is frontmost, covering the app — quitting it (Cmd+Q; the product is unaffected; the runner environment)"
+      snap_file "$MV_SHOT" "${stem}-storm-${storm_app}" || true
+      osa "tell application \"System Events\" to tell (first process whose name is \"$storm_app\") to keystroke \"q\" using command down" 10 || true
+      sleep 2
+      continue
+    fi
+    # nothing more present — the cascade is cleared (or never started)
+    break
+  done
   if [ "$acted" = "0" ]; then
     return 1
   fi
   ocr_capture 2>/dev/null || true
   snap_file "$MV_SHOT" "${stem}-sysdialog-after" || true
-  if sysdialog_present || ocr_grep "Welcome to Notes"; then
+  if sysdialog_present; then
     probe "sysdialog[$stem]: STILL present after the dismissals (recorded honestly — the interrupted step will fail honestly if the app stays unreachable)"
     return 2
   fi
