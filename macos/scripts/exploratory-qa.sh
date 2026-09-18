@@ -13872,6 +13872,45 @@ focus_desktop() {
   snap "fx-complete" || true
 
   # ------------------------------------------------------------------
+  # DE1i — IMAGE VIEWER DISCRIMINATION (the DE1 P1 root-cause directive):
+  # the PDF viewer failed identically on old-build B, new-build B and E —
+  # row click → view switch → the native WKWebView PDF chrome (the floating
+  # zoom toolbar) paints, but the viewer header never appears. The IMAGE
+  # branch (<img>, no iframe → no native PDF layer) must be proven
+  # independently BEFORE any viewer change:
+  #   IMAGE GREEN + PDF RED = the WKWebView iframe-PDF path is the defect
+  #   IMAGE RED  + PDF RED = the shared viewer mount/state path is broken
+  # ------------------------------------------------------------------
+  note "=== desktop DE1i: image-viewer discrimination (DE1 P1 root cause) ==="
+  if ! dsk_docs_ready "DE1i"; then
+    qa_cap DESKTOP_DE1_IMAGE "NOT-EXERCISED-ENV (the fixture documents are unavailable — see the FX upload record)"
+  elif open_patient_by_phone_token "0456" "$PAT1_FULL" "de1i-detail" "$PAT1_PHONE"; then
+    v_scroll_find "$PNG_TITLE" 16 no down 4 || true
+    if v_click "$PNG_TITLE" "de1i-doc-open" "" || v_click_try_hits "$PNG_TITLE" "de1i-doc-open" ""; then
+      sleep 3
+      wait_text_gone "Loading document" 20 "de1i-loaded" || true
+      ocr_capture || true
+      snap "de1i-viewer" || true
+      record_inventory "document viewer (image document)"
+      if ocr_grep "$PNG_TITLE"; then
+        probe "de1i: the IMAGE document opens the viewer with the title visible — the viewer mount/state path is proven; the PDF red is iframe-PDF-specific"
+        qa_cap DESKTOP_DE1_IMAGE "GREEN (the image document opened the viewer with the title visible — the shared viewer mount/state path works; the PDF viewer red is isolated to the iframe-PDF branch)"
+        surface_row "Image document viewer open" "patient detail → image document row" "the row click" "the viewer opens with the title header + the image content" "row click → title OCR-visible + viewer capture" "GREEN" "de1i-*" "OK"
+      else
+        bug P1 DESKTOP_DE1_IMAGE "the image document row did not open the viewer either (both branches red — the defect is the shared viewer mount/state path, not the PDF iframe)"
+      fi
+    else
+      bug P1 DESKTOP_DE1_IMAGE "the image document row could not be clicked into the viewer"
+    fi
+    # return to the dashboard for DE1 (the viewer's icon-only back arrow is
+    # the known harness limit — the Dashboard pill is the proven fallback)
+    v_click "Dashboard" "de1i-back" "Add Patient" || true
+    wait_for_ocr "Add Patient" 45 "de1i-dashboard-back" || true
+  else
+    bug P1 DESKTOP_DE1_IMAGE "could not open $PAT1_FULL's detail for the image-viewer check"
+  fi
+
+  # ------------------------------------------------------------------
   # DE1 — DOCUMENT PRINT (the PDF document, through the viewer's Print icon)
   # ------------------------------------------------------------------
   note "=== desktop DE1: document print (open → Print → native sheet → cancel → reopen) ==="
@@ -13940,6 +13979,22 @@ focus_desktop() {
           bug ENV DESKTOP_PRINT_ICON "the viewer's icon-only Print control could not be activated by any verified anchored candidate (white header — the glyph scanner does not apply; all attempts recorded in de1-printicon-cand-*)"
         fi
       else
+        # native-layer probe (bounded, captures only): the floating zoom
+        # toolbar seen in de1-doc-open-after is the WKWebView native PDF
+        # chrome — hover the white content area (mouseMoved + a small
+        # scroll); if the toolbar re-reveals with the app shell intact,
+        # the native PDF layer owns/paints over the content area (the
+        # root-cause mechanism evidence for the fix design)
+        if [ -x "$MV_SCROLL" ]; then
+          "$MV_SCROLL" 512 300 2 2>/dev/null || true
+          sleep 1
+          snap "de1-native-hover-a" || true
+          "$MV_SCROLL" 512 600 2 2>/dev/null || true
+          sleep 1
+          snap "de1-native-hover-b" || true
+          ocr_capture || true
+          record_inventory "native-layer hover probe (white content area)"
+        fi
         bug P1 DESKTOP_DE1 "the document viewer did not open with the PDF title visible"
       fi
     else
