@@ -6,6 +6,7 @@ import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/compone
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Search, Users, Clock, Phone, UserCircle } from 'lucide-react'
+import { useT } from '@/i18n'
 
 // Gradient color pairs for patient avatars
 const AVATAR_GRADIENTS = [
@@ -52,6 +53,7 @@ interface PatientSwitcherProps {
 }
 
 export function QuickPatientSwitcher({ open, onOpenChange }: PatientSwitcherProps) {
+  const t = useT()
   const { selectPatient, recentlyViewed } = useAppStore()
   const [patients, setPatients] = useState<PatientInfo[]>([])
   const [searchQuery, setSearchQuery] = useState('')
@@ -188,7 +190,7 @@ export function QuickPatientSwitcher({ open, onOpenChange }: PatientSwitcherProp
         data-patient-item
         onClick={() => handleSelect(patient)}
         onMouseEnter={() => setSelectedIndex(index)}
-        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-colors duration-150 ${
+        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-start transition-colors duration-150 ${
           isSelected
             ? 'bg-emerald-50 dark:bg-emerald-950/40 ring-1 ring-emerald-200 dark:ring-emerald-800'
             : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'
@@ -235,8 +237,8 @@ export function QuickPatientSwitcher({ open, onOpenChange }: PatientSwitcherProp
         className="sm:max-w-lg p-0 gap-0 overflow-hidden rounded-xl"
       >
         {/* Accessible but visually hidden */}
-        <DialogTitle className="sr-only">Quick Patient Switcher</DialogTitle>
-        <DialogDescription className="sr-only">Search and navigate to a patient</DialogDescription>
+        <DialogTitle className="sr-only">{t('switcher.title')}</DialogTitle>
+        <DialogDescription className="sr-only">{t('switcher.description')}</DialogDescription>
 
         {/* Search input area */}
         <div className="flex items-center gap-3 border-b border-gray-200 dark:border-gray-800 px-4 py-3">
@@ -247,7 +249,7 @@ export function QuickPatientSwitcher({ open, onOpenChange }: PatientSwitcherProp
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Search patients..."
+            placeholder={t('switcher.searchPlaceholder')}
             className="flex-1 bg-transparent text-sm text-gray-900 dark:text-white placeholder:text-muted-foreground outline-none"
           />
           <kbd className="inline-flex items-center justify-center h-5 px-1.5 rounded bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-[10px] font-mono text-muted-foreground shadow-sm flex-shrink-0">
@@ -265,16 +267,16 @@ export function QuickPatientSwitcher({ open, onOpenChange }: PatientSwitcherProp
                   animate={{ rotate: 360 }}
                   transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
                 />
-                Loading patients...
+                {t('switcher.loading')}
               </div>
             </div>
           ) : allItems.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
               <Users className="h-10 w-10 mb-2 opacity-30" />
-              <p className="text-sm font-medium">No patients found</p>
+              <p className="text-sm font-medium">{t('dashboard.noPatientsFound')}</p>
               {searchQuery && (
                 <p className="text-xs mt-1 opacity-60">
-                  No results for &quot;{searchQuery}&quot;
+                  {t('switcher.noResultsFor', { query: searchQuery })}
                 </p>
               )}
             </div>
@@ -286,7 +288,7 @@ export function QuickPatientSwitcher({ open, onOpenChange }: PatientSwitcherProp
                   <div className="flex items-center gap-2 px-3 py-2 mt-1">
                     <Clock className="h-3 w-3 text-muted-foreground" />
                     <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                      Recently Viewed
+                      {t('dashboard.recentlyViewed')}
                     </span>
                     <div className="flex-1 h-px bg-gray-100 dark:bg-gray-800" />
                   </div>
@@ -299,7 +301,7 @@ export function QuickPatientSwitcher({ open, onOpenChange }: PatientSwitcherProp
                     <div className="flex items-center gap-2 px-3 py-2 mt-1">
                       <Users className="h-3 w-3 text-muted-foreground" />
                       <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                        All Patients
+                        {t('switcher.allPatients')}
                       </span>
                       <div className="flex-1 h-px bg-gray-100 dark:bg-gray-800" />
                     </div>
@@ -325,23 +327,23 @@ export function QuickPatientSwitcher({ open, onOpenChange }: PatientSwitcherProp
               <kbd className="inline-flex items-center justify-center h-4 min-w-[18px] px-1 rounded bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-[9px] font-mono">
                 ↑↓
               </kbd>
-              Navigate
+              {t('switcher.navigate')}
             </span>
             <span className="flex items-center gap-1">
               <kbd className="inline-flex items-center justify-center h-4 min-w-[18px] px-1 rounded bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-[9px] font-mono">
                 ↵
               </kbd>
-              Select
+              {t('switcher.select')}
             </span>
             <span className="flex items-center gap-1">
               <kbd className="inline-flex items-center justify-center h-4 px-1 rounded bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-[9px] font-mono">
                 esc
               </kbd>
-              Close
+              {t('common.close')}
             </span>
           </div>
           <span className="text-xs text-muted-foreground">
-            {allItems.length} patient{allItems.length !== 1 ? 's' : ''}
+            {allItems.length} {allItems.length === 1 ? t('dashboard.patientSingular') : t('dashboard.patientPlural')}
           </span>
         </div>
       </DialogContent>

@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Loader2, UserPlus, User, Calendar, Phone, Mail, MapPin, StickyNote, Shield } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
+import { useT } from '@/i18n'
 
 interface AddPatientDialogProps {
   open: boolean
@@ -16,6 +17,7 @@ interface AddPatientDialogProps {
 }
 
 export function AddPatientDialog({ open, onOpenChange, onCreated }: AddPatientDialogProps) {
+  const t = useT()
   const [firstName, setFirstName] = useState('')
   const [lastName, setLastName] = useState('')
   const [dateOfBirth, setDateOfBirth] = useState('')
@@ -66,7 +68,7 @@ export function AddPatientDialog({ open, onOpenChange, onCreated }: AddPatientDi
 
       if (!res.ok) {
         const data = await res.json()
-        setError(data.error || 'Failed to create patient')
+        setError(data.error || t('errors.createPatientFailed'))
         return
       }
 
@@ -81,7 +83,7 @@ export function AddPatientDialog({ open, onOpenChange, onCreated }: AddPatientDi
       setAddress('')
       setNotes('')
     } catch {
-      setError('Failed to create patient. Please try again.')
+      setError(t('errors.createPatientRetry'))
     } finally {
       setLoading(false)
     }
@@ -105,10 +107,10 @@ export function AddPatientDialog({ open, onOpenChange, onCreated }: AddPatientDi
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center">
               <UserPlus className="h-4 w-4 text-white" />
             </div>
-            Add New Patient
+            {t('patients.addNew')}
           </DialogTitle>
           <DialogDescription>
-            Enter the patient&apos;s information to create their profile
+            {t('patients.addDescription')}
           </DialogDescription>
         </DialogHeader>
 
@@ -125,7 +127,7 @@ export function AddPatientDialog({ open, onOpenChange, onCreated }: AddPatientDi
             ))}
           </div>
           <span className="text-[11px] text-muted-foreground tabular-nums">
-            {optionalFilled > 0 && `${optionalFilled} optional filled`}
+            {optionalFilled > 0 && t('patients.optionalFilled', { count: optionalFilled })}
           </span>
         </div>
 
@@ -148,11 +150,11 @@ export function AddPatientDialog({ open, onOpenChange, onCreated }: AddPatientDi
             <div className="space-y-2">
               <Label htmlFor="firstName" className="flex items-center gap-1.5">
                 <User className="h-3.5 w-3.5 text-emerald-600" />
-                First Name <span className="text-red-500">*</span>
+                {t('patients.firstName')} <span className="text-red-500">*</span>
               </Label>
               <Input
                 id="firstName"
-                placeholder="John"
+                placeholder={t('patients.firstNamePlaceholder')}
                 value={firstName}
                 onChange={(e) => setFirstName(e.target.value)}
                 className="transition-all duration-200 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400"
@@ -162,11 +164,11 @@ export function AddPatientDialog({ open, onOpenChange, onCreated }: AddPatientDi
             <div className="space-y-2">
               <Label htmlFor="lastName" className="flex items-center gap-1.5">
                 <User className="h-3.5 w-3.5 text-emerald-600" />
-                Last Name <span className="text-red-500">*</span>
+                {t('patients.lastName')} <span className="text-red-500">*</span>
               </Label>
               <Input
                 id="lastName"
-                placeholder="Smith"
+                placeholder={t('patients.lastNamePlaceholder')}
                 value={lastName}
                 onChange={(e) => setLastName(e.target.value)}
                 className="transition-all duration-200 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400"
@@ -182,7 +184,7 @@ export function AddPatientDialog({ open, onOpenChange, onCreated }: AddPatientDi
             </div>
             <div className="relative flex justify-center text-xs">
               <span className="px-2 bg-white dark:bg-gray-900 text-muted-foreground rounded">
-                Optional Details
+                {t('patients.optionalDetails')}
               </span>
             </div>
           </div>
@@ -190,7 +192,7 @@ export function AddPatientDialog({ open, onOpenChange, onCreated }: AddPatientDi
           <div className="space-y-2">
             <Label htmlFor="dob" className="flex items-center gap-1.5">
               <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
-              Date of Birth
+              {t('patients.dateOfBirth')}
             </Label>
             <Input
               id="dob"
@@ -205,7 +207,7 @@ export function AddPatientDialog({ open, onOpenChange, onCreated }: AddPatientDi
             <div className="space-y-2">
               <Label htmlFor="patientPhone" className="flex items-center gap-1.5">
                 <Phone className="h-3.5 w-3.5 text-muted-foreground" />
-                Phone
+                {t('patients.phone')}
               </Label>
               <Input
                 id="patientPhone"
@@ -219,7 +221,7 @@ export function AddPatientDialog({ open, onOpenChange, onCreated }: AddPatientDi
             <div className="space-y-2">
               <Label htmlFor="patientEmail" className="flex items-center gap-1.5">
                 <Mail className="h-3.5 w-3.5 text-muted-foreground" />
-                Email
+                {t('patients.email')}
               </Label>
               <Input
                 id="patientEmail"
@@ -235,11 +237,11 @@ export function AddPatientDialog({ open, onOpenChange, onCreated }: AddPatientDi
           <div className="space-y-2">
             <Label htmlFor="address" className="flex items-center gap-1.5">
               <MapPin className="h-3.5 w-3.5 text-muted-foreground" />
-              Address
+              {t('patients.address')}
             </Label>
             <Input
               id="address"
-              placeholder="123 Main St, City"
+              placeholder={t('patients.addressPlaceholder')}
               value={address}
               onChange={(e) => setAddress(e.target.value)}
               className="transition-all duration-200 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400"
@@ -249,11 +251,11 @@ export function AddPatientDialog({ open, onOpenChange, onCreated }: AddPatientDi
           <div className="space-y-2">
             <Label htmlFor="notes" className="flex items-center gap-1.5">
               <StickyNote className="h-3.5 w-3.5 text-muted-foreground" />
-              Notes
+              {t('patients.notes')}
             </Label>
             <Textarea
               id="notes"
-              placeholder="Any additional notes about the patient..."
+              placeholder={t('patients.notesPlaceholder')}
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               rows={3}
@@ -269,7 +271,7 @@ export function AddPatientDialog({ open, onOpenChange, onCreated }: AddPatientDi
               disabled={loading}
               className="transition-all duration-200"
             >
-              Cancel
+              {t('common.cancel')}
             </Button>
             <motion.div whileTap={{ scale: 0.98 }}>
               <Button
@@ -279,13 +281,13 @@ export function AddPatientDialog({ open, onOpenChange, onCreated }: AddPatientDi
               >
                 {loading ? (
                   <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Adding...
+                    <Loader2 className="me-2 h-4 w-4 animate-spin" />
+                    {t('patients.adding')}
                   </>
                 ) : (
                   <>
-                    <UserPlus className="mr-2 h-4 w-4" />
-                    Add Patient
+                    <UserPlus className="me-2 h-4 w-4" />
+                    {t('patients.addPatient')}
                   </>
                 )}
               </Button>

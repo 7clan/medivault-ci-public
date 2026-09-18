@@ -6,6 +6,7 @@ import { Bell, X, FileText, UserPlus, AlertTriangle, CheckCircle, Trash2, Clock,
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { useAppStore } from '@/store/app-store'
+import { useT } from '@/i18n'
 
 interface Notification {
   id: string
@@ -73,6 +74,7 @@ function getNotificationBg(type: Notification['type']) {
 export { addNotification as notify }
 
 export function NotificationCenter() {
+  const t = useT()
   const [isOpen, setIsOpen] = useState(false)
   const [notifications, setNotifications] = useState<Notification[]>(loadNotifications)
   const [bellRinging, setBellRinging] = useState(false)
@@ -133,10 +135,10 @@ export function NotificationCenter() {
     const diffHours = Math.floor(diffMs / 3600000)
     const diffDays = Math.floor(diffMs / 86400000)
 
-    if (diffMins < 1) return 'Just now'
-    if (diffMins < 60) return `${diffMins}m ago`
-    if (diffHours < 24) return `${diffHours}h ago`
-    return `${diffDays}d ago`
+    if (diffMins < 1) return t('timeAgo.justNow')
+    if (diffMins < 60) return t('timeAgo.minutesAgo', { minutes: diffMins })
+    if (diffHours < 24) return t('timeAgo.hoursAgo', { hours: diffHours })
+    return t('timeAgo.daysAgo', { days: diffDays })
   }
 
   return (
@@ -147,14 +149,14 @@ export function NotificationCenter() {
           size="icon"
           className="relative text-muted-foreground hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/20 transition-colors duration-200"
           onClick={() => setIsOpen(!isOpen)}
-          title="Notifications"
+          title={t('notifications.title')}
         >
           <Bell className={`h-4 w-4 ${bellRinging ? 'bell-ring' : ''}`} />
           {unreadCount > 0 && (
             <motion.span
               initial={{ scale: 0 }}
               animate={{ scale: 1 }}
-              className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full bg-emerald-500 text-[10px] text-white flex items-center justify-center font-bold shadow-sm"
+              className="absolute -top-0.5 -end-0.5 w-4 h-4 rounded-full bg-emerald-500 text-[10px] text-white flex items-center justify-center font-bold shadow-sm"
             >
               {unreadCount > 9 ? '9+' : unreadCount}
             </motion.span>
@@ -165,7 +167,7 @@ export function NotificationCenter() {
       <AnimatePresence>
         {isOpen && (
           <motion.div
-            className="absolute right-0 top-full mt-2 w-80 sm:w-96 bg-white dark:bg-gray-900 rounded-xl shadow-xl border border-gray-200 dark:border-gray-800 z-50 overflow-hidden"
+            className="absolute end-0 top-full mt-2 w-80 sm:w-96 bg-white dark:bg-gray-900 rounded-xl shadow-xl border border-gray-200 dark:border-gray-800 z-50 overflow-hidden"
             initial={{ opacity: 0, y: -8, scale: 0.95 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -8, scale: 0.95 }}
@@ -175,10 +177,10 @@ export function NotificationCenter() {
             <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/30">
               <div className="flex items-center gap-2">
                 <Bell className="h-4 w-4 text-emerald-600" />
-                <h3 className="font-semibold text-sm text-gray-900 dark:text-white">Notifications</h3>
+                <h3 className="font-semibold text-sm text-gray-900 dark:text-white">{t('notifications.title')}</h3>
                 {unreadCount > 0 && (
                   <Badge variant="secondary" className="text-xs bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800/50">
-                    {unreadCount} new
+                    {t('notifications.newCount', { count: unreadCount })}
                   </Badge>
                 )}
               </div>
@@ -190,7 +192,7 @@ export function NotificationCenter() {
                     className="text-xs text-muted-foreground hover:text-emerald-600 h-7 px-2"
                     onClick={handleMarkAllRead}
                   >
-                    Mark all read
+                    {t('notifications.markAllRead')}
                   </Button>
                 )}
                 {notifications.length > 0 && (
@@ -213,8 +215,8 @@ export function NotificationCenter() {
                   <div className="w-12 h-12 rounded-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center mb-3">
                     <Shield className="h-5 w-5 text-muted-foreground" />
                   </div>
-                  <p className="text-sm text-muted-foreground">No notifications yet</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">Activity alerts will appear here</p>
+                  <p className="text-sm text-muted-foreground">{t('notifications.empty')}</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">{t('notifications.emptyHint')}</p>
                 </div>
               ) : (
                 <div className="divide-y divide-gray-100 dark:divide-gray-800">

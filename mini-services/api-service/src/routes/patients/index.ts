@@ -151,6 +151,124 @@ export async function registerPatientRoutes(server: FastifyInstance): Promise<vo
     }
   })
 
+  // ─── Bulk Delete Patients (Select Patients mode) ───
+  // Deletes an EXPLICIT, validated array of patient IDs supplied by the
+  // client — this is deliberately NOT a "delete all" affordance. The same
+  // auth (requireAuth + patient:delete) and CSRF pre-handler as the single
+  // delete; ownership isolation is enforced per patient so one doctor can
+  // never delete (or even detect) another doctor's patients.
+  // Everything runs in one transaction with a fail-closed verification:
+  // the response only reports a patient as deleted when the transaction
+  // that verified its deletion committed. Partial failures (patients not
+  // found / already deleted / not owned) are reported per patient — the
+  // client must never claim full success when failedCount > 0.
+  server.delete('/api/patients/bulk', { preHandler: [requireAuth, requirePermission('patient:delete'), csrfPreHandler] }, async (request, reply) => {
+    try {
+      const session = request.session!
+      const body = request.body as { patientIds?: unknown } | undefined
+
+      if (!body || !Array.isArray(body.patientIds) || body.patientIds.length === 0) {
+        return reply.status(400).send({ error: 'patientIds must be a non-empty array of patient IDs' })
+      }
+
+      // Deduplicate and validate ids (strings only) before touching the DB.
+      const patientIds = [...new Set(
+        (body.patientIds as unknown[]).filter((id): id is string => typeof id === 'string' && id.trim().length > 0),
+      )]
+      if (patientIds.length === 0) {
+        return reply.status(400).send({ error: 'patientIds must contain at least one valid patient ID' })
+      }
+
+      const MAX_BULK_DELETE = 200
+      if (patientIds.length > MAX_BULK_DELETE) {
+        return reply.status(400).send({ error: `Bulk delete accepts at most ${MAX_BULK_DELETE} patients per request` })
+      }
+
+      type DeletedPatient = { id: string; name: string }
+      type FailedPatient = { id: string; error: string }
+      const deleted: DeletedPatient[] = []
+      const failed: FailedPatient[] = []
+
+      const txDeleted = await db.$transaction(async (tx) => {
+        for (const id of patientIds) {
+          // Ownership isolation inside the transaction, mirroring the
+          // single delete's findFirst({ id, doctorId }) contract.
+          const patient = await tx.patient.findFirst({
+            where: { id, doctorId: session.user.id },
+            select: { id: true, firstName: true, lastName: true },
+          })
+          if (!patient) {
+            failed.push({ id, error: 'Patient not found' })
+            continue
+          }
+
+          try {
+            // Cascade deletes the patient's documents, visits,
+            // prescriptions, and clinical notes (annotations and document
+            // versions cascade via their document).
+            await tx.patient.delete({ where: { id } })
+            deleted.push({ id, name: `${patient.firstName} ${patient.lastName}`.trim() })
+          } catch {
+            // Per-patient failure (e.g. concurrently deleted between the
+            // findFirst and the delete). The batch continues; the patient
+            // is reported as failed so the client never claims full
+            // success. The raw error is not echoed to the client.
+            failed.push({ id, error: 'Delete failed' })
+          }
+        }
+
+        // Fail-closed verification: every patient reported as deleted must
+        // actually be gone (and gone for THIS doctor) inside this
+        // transaction. A mismatch (or an aborted underlying transaction,
+        // which makes this count query throw) rolls the whole batch back
+        // and surfaces as a 500 — the client then re-fetches the truth
+        // from the server instead of trusting a false success.
+        if (deleted.length > 0) {
+          const remaining = await tx.patient.count({
+            where: { id: { in: deleted.map((p) => p.id) }, doctorId: session.user.id },
+          })
+          if (remaining !== 0) {
+            throw new Error('Bulk delete verification failed')
+          }
+
+          // Audit trail (IDs + counts only — same convention as the
+          // DOCUMENT_MOVE audit entry). Inside the transaction so the log
+          // never records a delete that rolled back.
+          await tx.auditLog.create({
+            data: {
+              actorId: session.user.id,
+              action: 'PATIENT_BULK_DELETE',
+              entityType: 'Patient',
+              entityId: deleted[0].id,
+              details: {
+                deletedCount: deleted.length,
+                failedCount: failed.length,
+                deletedIds: deleted.map((p) => p.id),
+                failedIds: failed.map((p) => p.id),
+              },
+            },
+          })
+        }
+
+        return deleted
+      })
+
+      return reply.status(200).send({
+        success: failed.length === 0,
+        requestedCount: patientIds.length,
+        deletedCount: txDeleted.length,
+        failedCount: failed.length,
+        deleted: txDeleted,
+        failed,
+      })
+    } catch (error) {
+      // The transaction rolled back — NOTHING was deleted. Report exactly
+      // that; the client re-verifies against the server state.
+      console.error('Bulk delete patients error:', error)
+      return reply.status(500).send({ error: 'Failed to delete patients — no changes were applied' })
+    }
+  })
+
   // ─── Move Document to Another Patient ─────────────────
   server.put('/api/patients/:id/documents/move', { preHandler: [requireAuth, requirePermission('document:edit'), csrfPreHandler] }, async (request, reply) => {
     try {

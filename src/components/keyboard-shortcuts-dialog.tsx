@@ -6,24 +6,26 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { motion } from 'framer-motion'
 import { Keyboard, Command } from 'lucide-react'
+import { useT } from '@/i18n'
 
 interface ShortcutItem {
   keys: string[]
-  description: string
+  descriptionKey: string
   category: string
 }
 
 const shortcuts: ShortcutItem[] = [
-  { keys: ['Ctrl', 'N'], description: 'Add new patient', category: 'Actions' },
-  { keys: ['Ctrl', 'D'], description: 'Scan document', category: 'Actions' },
-  { keys: ['Ctrl', 'P'], description: 'Quick patient switcher', category: 'Navigation' },
-  { keys: ['Ctrl', 'F'], description: 'Focus search bar', category: 'Navigation' },
-  { keys: ['Ctrl', 'K'], description: 'Focus search bar (alt)', category: 'Navigation' },
-  { keys: ['Ctrl', 'B'], description: 'Go back', category: 'Navigation' },
-  { keys: ['Esc'], description: 'Close dialogs', category: 'General' },
+  { keys: ['Ctrl', 'N'], descriptionKey: 'shortcuts.addPatient', category: 'shortcuts.category.actions' },
+  { keys: ['Ctrl', 'D'], descriptionKey: 'shortcuts.scanDocument', category: 'shortcuts.category.actions' },
+  { keys: ['Ctrl', 'P'], descriptionKey: 'shortcuts.patientSwitcher', category: 'shortcuts.category.navigation' },
+  { keys: ['Ctrl', 'F'], descriptionKey: 'shortcuts.focusSearch', category: 'shortcuts.category.navigation' },
+  { keys: ['Ctrl', 'K'], descriptionKey: 'shortcuts.focusSearchAlt', category: 'shortcuts.category.navigation' },
+  { keys: ['Ctrl', 'B'], descriptionKey: 'shortcuts.goBack', category: 'shortcuts.category.navigation' },
+  { keys: ['Esc'], descriptionKey: 'shortcuts.closeDialogs', category: 'shortcuts.category.general' },
 ]
 
 export function KeyboardShortcutsDialog() {
+  const t = useT()
   const [open, setOpen] = useState(false)
 
   useEffect(() => {
@@ -40,10 +42,10 @@ export function KeyboardShortcutsDialog() {
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Keyboard className="h-5 w-5 text-emerald-600" />
-            Keyboard Shortcuts
+            {t('shortcuts.title')}
           </DialogTitle>
           <DialogDescription>
-            Quick shortcuts to navigate MediVault faster
+            {t('shortcuts.description')}
           </DialogDescription>
         </DialogHeader>
 
@@ -51,18 +53,18 @@ export function KeyboardShortcutsDialog() {
           {categories.map((category) => (
             <div key={category}>
               <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
-                {category}
+                {t(category)}
               </h4>
               <div className="space-y-2">
                 {shortcuts
                   .filter((s) => s.category === category)
                   .map((shortcut) => (
                     <div
-                      key={shortcut.description}
+                      key={shortcut.descriptionKey}
                       className="flex items-center justify-between py-1.5"
                     >
                       <span className="text-sm text-gray-700 dark:text-gray-300">
-                        {shortcut.description}
+                        {t(shortcut.descriptionKey)}
                       </span>
                       <div className="flex items-center gap-1">
                         {shortcut.keys.map((key, index) => (
@@ -83,7 +85,7 @@ export function KeyboardShortcutsDialog() {
 
         <div className="flex items-center justify-center mt-4">
           <p className="text-xs text-muted-foreground">
-            Press <kbd className="inline-flex items-center justify-center h-5 px-1.5 rounded bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-[10px] font-mono text-gray-600 dark:text-gray-400 shadow-sm">?</kbd> anytime to show this dialog
+            {t('shortcuts.pressHint')} <kbd className="inline-flex items-center justify-center h-5 px-1.5 rounded bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-[10px] font-mono text-gray-600 dark:text-gray-400 shadow-sm">?</kbd> {t('shortcuts.anytime')}
           </p>
         </div>
       </DialogContent>

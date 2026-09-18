@@ -6,9 +6,21 @@ export function formatFileSize(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
 }
 
+/**
+ * FEATURE D — locale-aware date helpers. The SPA's <html lang> attribute
+ * is the single source of truth for the active locale (set imperatively by
+ * the I18nProvider + the pre-paint bootstrap in app/layout.tsx), so these
+ * shared pure helpers can localize without a React context. Arabic keeps
+ * Latin digits (ar-u-nu-latn) — clinical convention.
+ */
+function activeLocale(): string {
+  if (typeof document === 'undefined') return 'en-US'
+  return document.documentElement.lang === 'ar' ? 'ar-u-nu-latn' : 'en-US'
+}
+
 export function formatDate(dateString: string): string {
   const date = new Date(dateString)
-  return date.toLocaleDateString('en-US', {
+  return date.toLocaleDateString(activeLocale(), {
     year: 'numeric',
     month: 'short',
     day: 'numeric',
@@ -17,7 +29,7 @@ export function formatDate(dateString: string): string {
 
 export function formatDateTime(dateString: string): string {
   const date = new Date(dateString)
-  return date.toLocaleDateString('en-US', {
+  return date.toLocaleDateString(activeLocale(), {
     year: 'numeric',
     month: 'short',
     day: 'numeric',
@@ -39,6 +51,8 @@ export function calculateAge(dateOfBirth: string): number {
 
 export function formatAge(dateOfBirth: string): string {
   const age = calculateAge(dateOfBirth)
+  const isAr = typeof document !== 'undefined' && document.documentElement.lang === 'ar'
+  if (isAr) return `${age} ${age === 1 ? 'سنة' : 'سنوات'}`
   return `${age} year${age !== 1 ? 's' : ''}`
 }
 

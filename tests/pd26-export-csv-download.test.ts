@@ -57,8 +57,12 @@ describe('BUG-PD26 — Export CSV must save a file, never navigate the webview',
   it('the handler surfaces both outcomes (started + failed toasts)', () => {
     const handlerAt = dashboard.indexOf('const handleExportCsv')
     const handler = dashboard.slice(handlerAt, handlerAt + 1800)
-    expect(handler).toMatch(/Export Started/)
-    expect(handler).toMatch(/Export Failed/)
+    // FEATURE D (i18n): the toast titles moved from hardcoded literals to the
+    // dashboard.exportStartedTitle / dashboard.exportFailedTitle catalog keys
+    // (en values "Export Started" / "Export Failed"); both outcomes are still
+    // surfaced by the handler.
+    expect(handler).toMatch(/Export Started|dashboard\.exportStartedTitle/)
+    expect(handler).toMatch(/Export Failed|dashboard\.exportFailedTitle/)
   })
 
   it('the API route still declares the attachment disposition (the server side of the contract)', () => {

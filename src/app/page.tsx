@@ -17,8 +17,11 @@ import { QuickActionsFab } from '@/components/quick-actions-fab'
 import { useKeyboardShortcuts } from '@/hooks/use-keyboard-shortcuts'
 import { motion, AnimatePresence } from 'framer-motion'
 import { FirstRunOnboarding } from '@/components/first-run-onboarding'
+import { GuidedTour } from '@/components/tour/guided-tour'
 import { doctorInfoFromMeResponse } from '@/lib/auth-me'
 import { isDesktopFirstRun } from '@/lib/local-backend'
+import { useI18n } from '@/i18n'
+import { LanguageFirstRunPrompt } from '@/components/language-first-run-prompt'
 // CSRF double-submit bootstrap — completes the API's own cookie model
 // (attaches x-csrf-token on mutating /api requests; no-ops outside http).
 import '@/lib/fetch-csrf'
@@ -85,6 +88,7 @@ const viewTransitionVariants = {
 }
 
 export default function Home() {
+  const { t } = useI18n()
   const currentView = useAppStore((s) => s.currentView)
   const selectedPatient = useAppStore((s) => s.selectedPatient)
   const selectedDocument = useAppStore((s) => s.selectedDocument)
@@ -198,7 +202,7 @@ export default function Home() {
               animate={{ opacity: 1 }}
               transition={{ delay: 1.3, duration: 0.5 }}
             >
-              Secure Medical Document Management
+              {t('common.appTagline')}
             </motion.p>
           </div>
 
@@ -293,6 +297,9 @@ export default function Home() {
       {/* Mobile FAB */}
       <QuickActionsFab />
 
+      {/* FEATURE D — one-shot first-login language choice */}
+      <LanguageFirstRunPrompt />
+
       {/* Mobile Bottom Navigation */}
       <MobileBottomNav />
 
@@ -311,12 +318,12 @@ export default function Home() {
               </motion.div>
               <span className="font-semibold text-emerald-600 text-base">MediVault</span>
               <span className="text-gray-300 dark:text-gray-700">|</span>
-              <span>Secure Medical Document Management</span>
+              <span>{t('common.appTagline')}</span>
             </div>
             <div className="flex items-center gap-3 text-xs text-muted-foreground">
               <div className="flex items-center gap-1">
                 <Shield className="h-3.5 w-3.5 text-emerald-500" />
-                <span>HIPAA Ready</span>
+                <span>{t('common.hipaaReady')}</span>
               </div>
               <span className="text-gray-300 dark:text-gray-700">•</span>
               <div className="flex items-center gap-1">
@@ -324,7 +331,7 @@ export default function Home() {
                 <span>v1.0</span>
               </div>
               <span className="text-gray-300 dark:text-gray-700">•</span>
-              <span>All data stored locally</span>
+              <span>{t('common.allDataLocal')}</span>
               <span className="text-gray-300 dark:text-gray-700">•</span>
               <span>{new Date().getFullYear()}</span>
             </div>
@@ -339,7 +346,7 @@ export default function Home() {
               whileTap={{ scale: 0.97 }}
             >
               <MessageCircle className="h-3.5 w-3.5" />
-              <span>Community</span>
+              <span>{t('common.community')}</span>
             </motion.a>
             <span className="text-gray-200 dark:text-gray-800">•</span>
             <motion.a
@@ -349,7 +356,7 @@ export default function Home() {
               whileTap={{ scale: 0.97 }}
             >
               <Github className="h-3.5 w-3.5" />
-              <span>Support</span>
+              <span>{t('common.support')}</span>
             </motion.a>
             <span className="text-gray-200 dark:text-gray-800">•</span>
             <motion.a
@@ -359,21 +366,21 @@ export default function Home() {
               whileTap={{ scale: 0.97 }}
             >
               <Newspaper className="h-3.5 w-3.5" />
-              <span>Updates</span>
+              <span>{t('common.updates')}</span>
             </motion.a>
           </div>
 
           {/* Tagline + shortcuts */}
           <div className="flex flex-col items-center gap-2">
             <p className="text-xs text-muted-foreground/70">
-              Made with <HeartPulse className="inline h-3 w-3 text-rose-400 mx-0.5" /> for healthcare
+              {t('common.madeForPrefix')} <HeartPulse className="inline h-3 w-3 text-rose-400 mx-0.5" /> {t('common.madeForSuffix')}
             </p>
             <button
               onClick={() => window.dispatchEvent(new CustomEvent('medivault:show-shortcuts'))}
               className="flex items-center gap-1 text-[11px] text-muted-foreground/60 hover:text-emerald-600 transition-colors duration-200"
             >
               <Keyboard className="h-3 w-3" />
-              <span>Press Shift+? for shortcuts</span>
+              <span>{t('common.shortcutsHint')}</span>
             </button>
           </div>
         </div>
@@ -381,6 +388,10 @@ export default function Home() {
 
       {/* Keyboard shortcuts dialog */}
       <KeyboardShortcutsDialog />
+
+      {/* Guided tour overlay (first-login offer; replays from the header
+          Help & Guide menu — see src/components/tour) */}
+      <GuidedTour />
     </div>
   )
 }

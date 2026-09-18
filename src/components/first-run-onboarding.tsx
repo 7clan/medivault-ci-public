@@ -63,6 +63,8 @@ import {
   FIRST_RUN_INITIAL,
   DEFAULT_HEALTH_WAIT_BUDGET_MS,
 } from '@/lib/first-run-machine'
+import { useI18n } from '@/i18n'
+import { LanguageToggle } from '@/components/language-switcher'
 
 /** Poll interval for the bounded backend health wait. */
 const HEALTH_POLL_INTERVAL_MS = 1500
@@ -70,6 +72,7 @@ const HEALTH_POLL_INTERVAL_MS = 1500
 const HEALTH_WAIT_BUDGET_MS = DEFAULT_HEALTH_WAIT_BUDGET_MS
 
 export function FirstRunOnboarding() {
+  const { t } = useI18n()
   const [phase, dispatch] = useReducer(firstRunReducer, FIRST_RUN_INITIAL)
   const [elapsed, setElapsed] = useState(0)
   const mounted = useRef(true)
@@ -191,46 +194,45 @@ export function FirstRunOnboarding() {
           </div>
           <h1 className="text-2xl font-bold text-gradient-emerald">MediVault</h1>
           <p className="text-sm text-muted-foreground">
-            Secure Medical Document Management — first-run setup
+            {t('desktop.firstRun.tagline')}
           </p>
+          <div className="flex justify-center pt-1">
+            <LanguageToggle />
+          </div>
         </div>
 
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Server className="h-5 w-5" aria-hidden="true" />
-              Local services
+              {t('desktop.firstRun.localServices')}
             </CardTitle>
             <CardDescription>
-              MediVault keeps your data on this Mac. The background service
-              (PostgreSQL + local API) must be set up before you can create
-              an account or sign in.
+              {t('desktop.firstRun.description')}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             {phase.kind === 'checking' && (
               <div className="flex items-center gap-2 text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                MediVault is preparing local services…
+                {t('desktop.firstRun.checking')}
               </div>
             )}
 
             {phase.kind === 'status' && phase.status === 'notRegistered' && (
               <div className="space-y-3">
                 <div className="flex items-center gap-2">
-                  <Badge variant="secondary">Not registered</Badge>
+                  <Badge variant="secondary">{t('desktop.firstRun.notRegistered')}</Badge>
                   <span className="text-sm text-muted-foreground">
-                    The background service is installed but not yet enabled.
+                    {t('desktop.firstRun.notRegisteredDesc')}
                   </span>
                 </div>
                 <p className="text-sm text-muted-foreground">
-                  Register it to start the local backend automatically at
-                  login. Registration uses your account — no administrator
-                  password is required.
+                  {t('desktop.firstRun.registerDesc')}
                 </p>
                 <Button size="sm" onClick={() => void runRegister()}>
-                  <ShieldCheck className="mr-2 h-4 w-4" aria-hidden="true" />
-                  Set up MediVault
+                  <ShieldCheck className="me-2 h-4 w-4" aria-hidden="true" />
+                  {t('desktop.firstRun.setUp')}
                 </Button>
               </div>
             )}
@@ -240,15 +242,15 @@ export function FirstRunOnboarding() {
                 <div className="flex items-center gap-2">
                   <Badge className="gap-1 border-emerald-600/30 bg-emerald-600/10 text-emerald-700 dark:text-emerald-400">
                     <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
-                    Registered
+                    {t('desktop.firstRun.registered')}
                   </Badge>
                   <span className="text-sm text-muted-foreground">
-                    Starting the local backend…
+                    {t('desktop.firstRun.starting')}
                   </span>
                 </div>
                 <Button variant="outline" size="sm" onClick={() => void refresh()}>
-                  <RefreshCw className="mr-2 h-4 w-4" aria-hidden="true" />
-                  Check again
+                  <RefreshCw className="me-2 h-4 w-4" aria-hidden="true" />
+                  {t('desktop.firstRun.checkAgain')}
                 </Button>
               </div>
             )}
@@ -258,26 +260,23 @@ export function FirstRunOnboarding() {
                 <div className="flex items-center gap-2">
                   <Badge variant="outline" className="gap-1 border-amber-600/30 bg-amber-600/10 text-amber-700 dark:text-amber-400">
                     <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
-                    Approval required
+                    {t('desktop.firstRun.approvalRequired')}
                   </Badge>
                   <span className="text-sm text-muted-foreground">
-                    macOS needs your approval before the background service
-                    can run.
+                    {t('desktop.firstRun.approvalDesc')}
                   </span>
                 </div>
                 <p className="text-sm text-muted-foreground">
-                  Open System Settings → Login Items, find MediVault under
-                  &ldquo;Allowed at Login&rdquo;, and turn on its background
-                  service. This approval can only be granted by you.
+                  {t('desktop.firstRun.approvalHow')}
                 </p>
                 <div className="flex flex-wrap gap-2">
                   <Button size="sm" onClick={() => void runOpenLoginItems()}>
-                    <Settings2 className="mr-2 h-4 w-4" aria-hidden="true" />
-                    Open Login Items
+                    <Settings2 className="me-2 h-4 w-4" aria-hidden="true" />
+                    {t('desktop.firstRun.openLoginItems')}
                   </Button>
                   <Button variant="outline" size="sm" onClick={() => void refresh()}>
-                    <RefreshCw className="mr-2 h-4 w-4" aria-hidden="true" />
-                    I&apos;ve approved it — recheck
+                    <RefreshCw className="me-2 h-4 w-4" aria-hidden="true" />
+                    {t('desktop.firstRun.approvedRecheck')}
                   </Button>
                 </div>
               </div>
@@ -286,21 +285,17 @@ export function FirstRunOnboarding() {
             {phase.kind === 'status' && phase.status === 'notFound' && (
               <div className="space-y-3">
                 <div className="flex items-center gap-2">
-                  <Badge variant="secondary">Not found yet</Badge>
+                  <Badge variant="secondary">{t('desktop.firstRun.notFound')}</Badge>
                   <span className="text-sm text-muted-foreground">
-                    macOS has no record of the background service — this is
-                    normal on a brand-new install.
+                    {t('desktop.firstRun.notFoundDesc')}
                   </span>
                 </div>
                 <p className="text-sm text-muted-foreground">
-                  Register it to start the local backend automatically at
-                  login. Registration uses your account — no administrator
-                  password is required. If this copy of the app is
-                  incomplete, registration will report the exact reason.
+                  {t('desktop.firstRun.notFoundDesc2')}
                 </p>
                 <Button size="sm" onClick={() => void runRegister()}>
-                  <ShieldCheck className="mr-2 h-4 w-4" aria-hidden="true" />
-                  Set up MediVault
+                  <ShieldCheck className="me-2 h-4 w-4" aria-hidden="true" />
+                  {t('desktop.firstRun.setUp')}
                 </Button>
               </div>
             )}
@@ -309,8 +304,8 @@ export function FirstRunOnboarding() {
               <div className="flex items-center gap-2 text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
                 {phase.action === 'register'
-                  ? 'Registering the background service…'
-                  : 'Opening Login Items Settings…'}
+                  ? t('desktop.firstRun.busy.register')
+                  : t('desktop.firstRun.busy.settings')}
               </div>
             )}
 
@@ -319,16 +314,14 @@ export function FirstRunOnboarding() {
                 <div className="flex items-center gap-2 text-muted-foreground">
                   <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
                   <span>
-                    MediVault is preparing local services…
-                    <span className="ml-1 tabular-nums">
+                    {t('desktop.firstRun.checking')}
+                    <span className="ms-1 tabular-nums">
                       ({Math.floor(elapsed / 1000)}s)
                     </span>
                   </span>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  First setup initializes the local database — this can take
-                  a few minutes. The window continues automatically when the
-                  service is ready.
+                  {t('desktop.firstRun.waitingNote')}
                 </p>
               </div>
             )}
@@ -338,10 +331,10 @@ export function FirstRunOnboarding() {
                 <div className="flex items-center gap-2">
                   <Badge className="gap-1 border-emerald-600/30 bg-emerald-600/10 text-emerald-700 dark:text-emerald-400">
                     <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
-                    Local service ready
+                    {t('desktop.firstRun.ready')}
                   </Badge>
                   <span className="text-sm text-muted-foreground">
-                    Opening MediVault…
+                    {t('desktop.firstRun.opening')}
                   </span>
                 </div>
                 {/* Visible fallback in case the automatic hand-off is blocked. */}
@@ -349,8 +342,8 @@ export function FirstRunOnboarding() {
                   href={`${DESKTOP_API_BASE}/`}
                   className="inline-flex items-center gap-2 text-sm font-medium text-emerald-600 hover:text-emerald-700 dark:text-emerald-400"
                 >
-                  Open MediVault
-                  <ArrowRight className="h-4 w-4" aria-hidden="true" />
+                  {t('desktop.firstRun.open')}
+                  <ArrowRight className="h-4 w-4 rtl:-scale-x-100" aria-hidden="true" />
                 </a>
               </div>
             )}
@@ -361,16 +354,14 @@ export function FirstRunOnboarding() {
                   <AlertTriangle className="h-4 w-4" aria-hidden="true" />
                   <AlertDescription>
                     <span className="font-medium">
-                      The local service did not become ready in time.
+                      {t('desktop.firstRun.timeoutTitle')}
                     </span>{' '}
-                    The background service is registered but the backend has
-                    not answered. It may still be initializing — try again,
-                    and check the MediVault logs if this keeps happening.
+                    {t('desktop.firstRun.timeoutDesc')}
                   </AlertDescription>
                 </Alert>
                 <Button variant="outline" size="sm" onClick={() => void refresh()}>
-                  <RefreshCw className="mr-2 h-4 w-4" aria-hidden="true" />
-                  Try again
+                  <RefreshCw className="me-2 h-4 w-4" aria-hidden="true" />
+                  {t('desktop.firstRun.tryAgain')}
                 </Button>
               </div>
             )}
@@ -382,8 +373,8 @@ export function FirstRunOnboarding() {
                   <AlertDescription>{phase.message}</AlertDescription>
                 </Alert>
                 <Button variant="outline" size="sm" onClick={() => void refresh()}>
-                  <RefreshCw className="mr-2 h-4 w-4" aria-hidden="true" />
-                  Try again
+                  <RefreshCw className="me-2 h-4 w-4" aria-hidden="true" />
+                  {t('desktop.firstRun.tryAgain')}
                 </Button>
               </div>
             )}
@@ -391,8 +382,7 @@ export function FirstRunOnboarding() {
         </Card>
 
         <p className="text-center text-xs text-muted-foreground mt-6">
-          All data stays local on this Mac. MediVault never sends patient
-          data to the internet.
+          {t('desktop.firstRun.footer')}
         </p>
       </motion.div>
     </div>

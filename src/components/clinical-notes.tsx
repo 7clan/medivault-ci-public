@@ -38,6 +38,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { useI18n } from '@/i18n'
 
 export interface ClinicalNoteData {
   id: string
@@ -72,6 +73,14 @@ const NOTE_CATEGORIES = ['General', 'Diagnosis', 'Treatment Plan', 'Lab Results'
 
 export function ClinicalNotes({ patientId }: ClinicalNotesProps) {
   const { toast } = useToast()
+  const { t } = useI18n()
+  // Note categories are STORED DATA (API values stay raw English); labels
+  // localize via the catalog, unknown custom values pass through verbatim
+  // (same contract as tCategory for document categories).
+  const tNoteCategory = (value: string) => {
+    const label = t(`clinical.category.${value}`)
+    return label.startsWith('clinical.category.') ? value : label
+  }
   const [notes, setNotes] = useState<ClinicalNoteData[]>([])
   const [loading, setLoading] = useState(true)
   const [expandedId, setExpandedId] = useState<string | null>(null)
@@ -141,11 +150,11 @@ export function ClinicalNotes({ patientId }: ClinicalNotesProps) {
       if (res.ok) {
         const updated = await res.json()
         setNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)))
-        toast({ title: 'Note updated' })
+        toast({ title: t('clinical.noteUpdated') })
         setEditingId(null)
       }
     } catch {
-      toast({ title: 'Error updating note', variant: 'destructive' })
+      toast({ title: t('clinical.errorUpdate'), variant: 'destructive' })
     }
     setSaving(false)
   }
@@ -162,7 +171,7 @@ export function ClinicalNotes({ patientId }: ClinicalNotesProps) {
         setNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)))
       }
     } catch {
-      toast({ title: 'Error toggling pin', variant: 'destructive' })
+      toast({ title: t('clinical.errorPin'), variant: 'destructive' })
     }
   }
 
@@ -173,10 +182,10 @@ export function ClinicalNotes({ patientId }: ClinicalNotesProps) {
       const res = await fetch(`/api/notes/${deleteConfirm}`, { method: 'DELETE' })
       if (res.ok) {
         setNotes((prev) => prev.filter((n) => n.id !== deleteConfirm))
-        toast({ title: 'Note deleted' })
+        toast({ title: t('clinical.noteDeleted') })
       }
     } catch {
-      toast({ title: 'Error deleting note', variant: 'destructive' })
+      toast({ title: t('clinical.errorDelete'), variant: 'destructive' })
     }
     setDeleting(false)
     setDeleteConfirm(null)
@@ -199,14 +208,14 @@ export function ClinicalNotes({ patientId }: ClinicalNotesProps) {
       if (res.ok) {
         const created = await res.json()
         setNotes((prev) => [created, ...prev])
-        toast({ title: 'Note added' })
+        toast({ title: t('clinical.noteAdded') })
         setNewTitle('')
         setNewContent('')
         setNewCategory('General')
         setQuickAdd(false)
       }
     } catch {
-      toast({ title: 'Error adding note', variant: 'destructive' })
+      toast({ title: t('clinical.errorAdd'), variant: 'destructive' })
     }
     setSaving(false)
   }
@@ -236,7 +245,7 @@ export function ClinicalNotes({ patientId }: ClinicalNotesProps) {
             <Card className="border-emerald-200 dark:border-emerald-800">
               <CardContent className="p-4 space-y-3">
                 <div className="flex items-center justify-between">
-                  <h4 className="text-sm font-semibold text-gray-900 dark:text-white">New Clinical Note</h4>
+                  <h4 className="text-sm font-semibold text-gray-900 dark:text-white">{t('clinical.newNote')}</h4>
                   <Button
                     variant="ghost"
                     size="icon"
@@ -248,7 +257,7 @@ export function ClinicalNotes({ patientId }: ClinicalNotesProps) {
                 </div>
                 <div className="flex gap-2">
                   <Input
-                    placeholder="Note title"
+                    placeholder={t('clinical.noteTitlePlaceholder')}
                     value={newTitle}
                     onChange={(e) => setNewTitle(e.target.value)}
                     className="flex-1 h-9"
@@ -259,13 +268,13 @@ export function ClinicalNotes({ patientId }: ClinicalNotesProps) {
                     </SelectTrigger>
                     <SelectContent>
                       {NOTE_CATEGORIES.map((cat) => (
-                        <SelectItem key={cat} value={cat}>{cat}</SelectItem>
+                        <SelectItem key={cat} value={cat}>{tNoteCategory(cat)}</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                 </div>
                 <Textarea
-                  placeholder="Note content..."
+                  placeholder={t('clinical.noteContentPlaceholder')}
                   value={newContent}
                   onChange={(e) => setNewContent(e.target.value)}
                   className="min-h-[80px] resize-none"
@@ -276,7 +285,7 @@ export function ClinicalNotes({ patientId }: ClinicalNotesProps) {
                     size="sm"
                     onClick={() => { setQuickAdd(false); setNewTitle(''); setNewContent(''); setNewCategory('General') }}
                   >
-                    Cancel
+                    {t('common.cancel')}
                   </Button>
                   <Button
                     size="sm"
@@ -284,8 +293,8 @@ export function ClinicalNotes({ patientId }: ClinicalNotesProps) {
                     disabled={saving || !newTitle.trim() || !newContent.trim()}
                     className="bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-teal-600 text-white"
                   >
-                    {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" /> : <Plus className="h-3.5 w-3.5 mr-1.5" />}
-                    Add Note
+                    {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin me-1.5" /> : <Plus className="h-3.5 w-3.5 me-1.5" />}
+                    {t('clinical.addNote')}
                   </Button>
                 </div>
               </CardContent>
@@ -304,14 +313,14 @@ export function ClinicalNotes({ patientId }: ClinicalNotesProps) {
               <div className="w-14 h-14 rounded-full bg-gradient-to-br from-emerald-50 to-teal-50 dark:from-emerald-950/30 dark:to-teal-950/30 flex items-center justify-center mb-3">
                 <StickyNote className="h-7 w-7 text-emerald-400" />
               </div>
-              <p className="text-sm text-muted-foreground">No clinical notes yet</p>
+              <p className="text-sm text-muted-foreground">{t('clinical.noNotesYet')}</p>
               <Button
                 variant="link"
                 size="sm"
                 className="text-emerald-600"
                 onClick={() => setQuickAdd(true)}
               >
-                Add first note
+                {t('clinical.addFirstNote')}
               </Button>
             </CardContent>
           </Card>
@@ -378,17 +387,17 @@ export function ClinicalNotes({ patientId }: ClinicalNotesProps) {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <AlertTriangle className="h-5 w-5 text-red-500" />
-              Delete Clinical Note
+              {t('clinical.deleteNoteTitle')}
             </DialogTitle>
             <DialogDescription>
-              Are you sure you want to delete this clinical note? This action cannot be undone.
+              {t('clinical.deleteNoteConfirm')}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteConfirm(null)}>Cancel</Button>
+            <Button variant="outline" onClick={() => setDeleteConfirm(null)}>{t('common.cancel')}</Button>
             <Button variant="destructive" onClick={handleDelete} disabled={deleting}>
-              {deleting ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-              Delete
+              {deleting ? <Loader2 className="h-4 w-4 animate-spin me-2" /> : null}
+              {t('common.delete')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -403,12 +412,12 @@ export function ClinicalNotes({ patientId }: ClinicalNotesProps) {
             onClick={() => setQuickAdd(true)}
             className="border-emerald-200 dark:border-emerald-800 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/20"
           >
-            <Plus className="h-3.5 w-3.5 mr-1.5" />
-            Add Note
+            <Plus className="h-3.5 w-3.5 me-1.5" />
+            {t('clinical.addNote')}
           </Button>
         )}
         <Badge variant="secondary" className="text-xs bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400">
-          {notes.length} note{notes.length !== 1 ? 's' : ''}
+          {notes.length === 1 ? t('clinical.oneNote') : t('clinical.noteCount', { count: notes.length })}
         </Badge>
       </div>
     </div>
@@ -466,6 +475,11 @@ function NoteItem({
   onEditCategoryChange,
   saving,
 }: NoteItemProps) {
+  const { t } = useI18n()
+  const tNoteCategory = (value: string) => {
+    const label = t(`clinical.category.${value}`)
+    return label.startsWith('clinical.category.') ? value : label
+  }
   const categoryColor = CATEGORY_COLORS[note.category] || CATEGORY_COLORS.General
   const borderClass = getCategoryBorderClass(note.category)
 
@@ -489,7 +503,7 @@ function NoteItem({
                 size="icon"
                 className={`h-7 w-7 flex-shrink-0 ${note.isPinned ? 'text-amber-500 hover:text-amber-600' : 'text-gray-300 hover:text-amber-500 dark:text-gray-600'}`}
                 onClick={onTogglePin}
-                title={note.isPinned ? 'Unpin' : 'Pin'}
+                title={note.isPinned ? t('clinical.unpin') : t('clinical.pin')}
               >
                 <motion.div
                   className="pin-animated"
@@ -509,7 +523,7 @@ function NoteItem({
                     {note.title}
                   </span>
                   <Badge className={`text-[10px] rounded-full bg-gradient-to-r ${categoryColor}`}>
-                    {note.category}
+                    {tNoteCategory(note.category)}
                   </Badge>
                 </div>
                 <p className="text-xs text-muted-foreground mt-0.5">
@@ -569,7 +583,7 @@ function NoteItem({
                       <Input
                         value={editTitle}
                         onChange={(e) => onEditTitleChange(e.target.value)}
-                        placeholder="Title"
+                        placeholder={t('documents.titleLabel')}
                         className="h-9"
                       />
                       <Select value={editCategory} onValueChange={onEditCategoryChange}>
@@ -578,20 +592,20 @@ function NoteItem({
                         </SelectTrigger>
                         <SelectContent>
                           {NOTE_CATEGORIES.map((cat) => (
-                            <SelectItem key={cat} value={cat}>{cat}</SelectItem>
+                            <SelectItem key={cat} value={cat}>{tNoteCategory(cat)}</SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
                       <Textarea
                         value={editContent}
                         onChange={(e) => onEditContentChange(e.target.value)}
-                        placeholder="Content"
+                        placeholder={t('clinical.contentLabel')}
                         className="min-h-[100px] resize-none"
                       />
                       <div className="flex justify-end gap-2">
                         <Button variant="outline" size="sm" onClick={onCancelEdit}>
-                          <X className="h-3.5 w-3.5 mr-1" />
-                          Cancel
+                          <X className="h-3.5 w-3.5 me-1" />
+                          {t('common.cancel')}
                         </Button>
                         <Button
                           size="sm"
@@ -599,8 +613,8 @@ function NoteItem({
                           disabled={saving || !editTitle.trim() || !editContent.trim()}
                           className="bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-teal-600 text-white"
                         >
-                          {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <Check className="h-3.5 w-3.5 mr-1" />}
-                          Save
+                          {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin me-1" /> : <Check className="h-3.5 w-3.5 me-1" />}
+                          {t('common.save')}
                         </Button>
                       </div>
                     </>

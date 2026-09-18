@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
+import { useI18n } from '@/i18n'
 import { formatDateTime, formatDate, formatFileSize, getCategoryColor } from '@/lib/utils-helpers'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
@@ -46,7 +47,7 @@ interface PatientTimelineProps {
 type EventType = TimelineEvent['type']
 
 interface EventTypeConfig {
-  label: string
+  labelKey: string
   icon: React.ComponentType<{ className?: string }>
   dotColor: string
   iconBg: string
@@ -56,44 +57,44 @@ interface EventTypeConfig {
 
 const EVENT_TYPE_CONFIG: Record<EventType, EventTypeConfig> = {
   visit: {
-    label: 'Visits',
+    labelKey: 'timeline.type.visits',
     icon: Calendar,
     dotColor: 'bg-emerald-500',
     iconBg: 'bg-emerald-100 dark:bg-emerald-900/40',
     iconColor: 'text-emerald-600 dark:text-emerald-400',
-    borderLeft: 'border-l-emerald-500',
+    borderLeft: 'border-s-emerald-500',
   },
   document: {
-    label: 'Documents',
+    labelKey: 'timeline.type.documents',
     icon: FileText,
     dotColor: 'bg-teal-500',
     iconBg: 'bg-teal-100 dark:bg-teal-900/40',
     iconColor: 'text-teal-600 dark:text-teal-400',
-    borderLeft: 'border-l-teal-500',
+    borderLeft: 'border-s-teal-500',
   },
   prescription: {
-    label: 'Prescriptions',
+    labelKey: 'timeline.type.prescriptions',
     icon: Pill,
     dotColor: 'bg-amber-500',
     iconBg: 'bg-amber-100 dark:bg-amber-900/40',
     iconColor: 'text-amber-600 dark:text-amber-400',
-    borderLeft: 'border-l-amber-500',
+    borderLeft: 'border-s-amber-500',
   },
   note: {
-    label: 'Notes',
+    labelKey: 'timeline.type.notes',
     icon: StickyNote,
     dotColor: 'bg-purple-500',
     iconBg: 'bg-purple-100 dark:bg-purple-900/40',
     iconColor: 'text-purple-600 dark:text-purple-400',
-    borderLeft: 'border-l-purple-500',
+    borderLeft: 'border-s-purple-500',
   },
   annotation: {
-    label: 'Annotations',
+    labelKey: 'timeline.type.annotations',
     icon: MessageSquare,
     dotColor: 'bg-rose-500',
     iconBg: 'bg-rose-100 dark:bg-rose-900/40',
     iconColor: 'text-rose-600 dark:text-rose-400',
-    borderLeft: 'border-l-rose-500',
+    borderLeft: 'border-s-rose-500',
   },
 }
 
@@ -138,12 +139,13 @@ function getRelativeTime(dateString: string): string {
   const diffWeeks = Math.floor(diffDays / 7)
   const diffMonths = Math.floor(diffDays / 30)
 
-  if (diffSecs < 60) return 'just now'
-  if (diffMins < 60) return `${diffMins}m ago`
-  if (diffHours < 24) return `${diffHours}h ago`
-  if (diffDays < 7) return `${diffDays}d ago`
-  if (diffWeeks < 5) return `${diffWeeks}w ago`
-  if (diffMonths < 12) return `${diffMonths}mo ago`
+  const isAr = typeof document !== 'undefined' && document.documentElement.lang === 'ar'
+  if (diffSecs < 60) return isAr ? 'الآن' : 'just now'
+  if (diffMins < 60) return isAr ? `قبل ${diffMins} د` : `${diffMins}m ago`
+  if (diffHours < 24) return isAr ? `قبل ${diffHours} س` : `${diffHours}h ago`
+  if (diffDays < 7) return isAr ? `قبل ${diffDays} يوم` : `${diffDays}d ago`
+  if (diffWeeks < 5) return isAr ? `قبل ${diffWeeks} أسبوع` : `${diffWeeks}w ago`
+  if (diffMonths < 12) return isAr ? `قبل ${diffMonths} شهر` : `${diffMonths}mo ago`
   return formatDate(dateString)
 }
 
@@ -157,8 +159,9 @@ function getDateGroup(dateString: string): string {
   yesterday.setDate(yesterday.getDate() - 1)
   const dateOnly = new Date(date.getFullYear(), date.getMonth(), date.getDate())
 
-  if (dateOnly.getTime() === today.getTime()) return 'Today'
-  if (dateOnly.getTime() === yesterday.getTime()) return 'Yesterday'
+  const isAr = typeof document !== 'undefined' && document.documentElement.lang === 'ar'
+  if (dateOnly.getTime() === today.getTime()) return isAr ? 'اليوم' : 'Today'
+  if (dateOnly.getTime() === yesterday.getTime()) return isAr ? 'أمس' : 'Yesterday'
   return formatDate(dateString)
 }
 
@@ -199,6 +202,7 @@ export function PatientTimeline({ patientId }: PatientTimelineProps) {
   }, [events, activeFilters])
 
   // Group events by date
+  const { t, tCategory } = useI18n()
   const groupedEvents = useMemo(() => {
     const groups: { label: string; events: TimelineEvent[] }[] = []
     let currentGroup: { label: string; events: TimelineEvent[] } | null = null
@@ -323,9 +327,9 @@ export function PatientTimeline({ patientId }: PatientTimelineProps) {
               <Clock className="h-3 w-3 text-white" />
             </motion.div>
           </motion.div>
-          <h3 className="text-lg font-medium text-muted-foreground">No timeline events yet</h3>
+          <h3 className="text-lg font-medium text-muted-foreground">{t('timeline.empty')}</h3>
           <p className="text-sm text-muted-foreground mt-1 text-center max-w-sm">
-            Visits, documents, prescriptions, and notes will appear here as you manage this patient&apos;s care.
+            {t('timeline.emptyHint')}
           </p>
         </div>
       </motion.div>
@@ -378,7 +382,7 @@ export function PatientTimeline({ patientId }: PatientTimelineProps) {
                       <span className={cn('w-5 h-5 rounded-full flex items-center justify-center', config.iconBg)}>
                         <Icon className={cn('h-3 w-3', config.iconColor)} />
                       </span>
-                      <span className={config.iconColor}>{config.label}</span>
+                      <span className={config.iconColor}>{t(config.labelKey)}</span>
                       <span className={cn('text-[10px] leading-none px-1.5 py-0.5 rounded-full', config.iconBg, config.iconColor)}>
                         {count}
                       </span>
@@ -386,7 +390,7 @@ export function PatientTimeline({ patientId }: PatientTimelineProps) {
                   ) : (
                     <>
                       <Icon className="h-3 w-3" />
-                      {config.label}
+                      {t(config.labelKey)}
                       <span className="text-[10px] leading-none px-1.5 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-muted-foreground">
                         {count}
                       </span>
@@ -407,13 +411,13 @@ export function PatientTimeline({ patientId }: PatientTimelineProps) {
           className="text-center py-8"
         >
           <p className="text-sm text-muted-foreground">
-            No events match the selected filters
+            {t('timeline.noMatch')}
           </p>
         </motion.div>
       ) : (
         <div className="relative">
           {/* Connecting line */}
-          <div className="absolute left-[15px] top-2 bottom-2 w-0.5 bg-gradient-to-b from-emerald-300 via-teal-300 to-teal-400 dark:from-emerald-700 dark:via-teal-700 dark:to-teal-600 opacity-60" />
+          <div className="absolute start-[15px] top-2 bottom-2 w-0.5 bg-gradient-to-b from-emerald-300 via-teal-300 to-teal-400 dark:from-emerald-700 dark:via-teal-700 dark:to-teal-600 opacity-60" />
 
           {visibleGroups.map((group) => (
             <div key={group.label}>
@@ -421,10 +425,10 @@ export function PatientTimeline({ patientId }: PatientTimelineProps) {
               <motion.div
                 initial={{ opacity: 0, y: -5 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="relative pl-10 mb-3 first:mt-0 mt-6"
+                className="relative ps-10 mb-3 first:mt-0 mt-6"
               >
                 <div className={cn(
-                  'absolute left-[7px] top-1 w-[18px] h-[18px] rounded-full border-2 border-white dark:border-gray-900 bg-gradient-to-br from-emerald-400 to-teal-400 dark:from-emerald-600 dark:to-teal-600 flex items-center justify-center',
+                  'absolute start-[7px] top-1 w-[18px] h-[18px] rounded-full border-2 border-white dark:border-gray-900 bg-gradient-to-br from-emerald-400 to-teal-400 dark:from-emerald-600 dark:to-teal-600 flex items-center justify-center',
                   'z-10'
                 )}>
                   <Calendar className="h-2.5 w-2.5 text-white" />
@@ -465,7 +469,7 @@ export function PatientTimeline({ patientId }: PatientTimelineProps) {
             onClick={() => setVisibleCount((prev) => prev + 20)}
             className="border-emerald-200 dark:border-emerald-800 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/20"
           >
-            Load More ({filteredEvents.length - totalVisibleEvents} remaining)
+            {t('timeline.loadMore', { count: filteredEvents.length - totalVisibleEvents })}
           </Button>
         </motion.div>
       )}
@@ -497,6 +501,7 @@ function TimelineEventCard({
   onNavigate,
 }: TimelineEventCardProps) {
   const { selectDocument } = useAppStore()
+  const { t, tCategory } = useI18n()
   const config = EVENT_TYPE_CONFIG[event.type]
   const Icon = config.icon
   const relativeTime = getRelativeTime(event.timestamp)
@@ -528,11 +533,11 @@ function TimelineEventCard({
       initial={{ opacity: 0, x: -15 }}
       animate={{ opacity: 1, x: 0 }}
       transition={{ duration: 0.25, delay: index * 0.04, ease: [0.22, 1, 0.36, 1] }}
-      className="relative pl-10 pb-4"
+      className="relative ps-10 pb-4"
     >
       {/* Timeline dot */}
       <div className={cn(
-        'absolute left-[9px] top-4 w-3 h-3 rounded-full border-2 border-white dark:border-gray-900 z-10',
+        'absolute start-[9px] top-4 w-3 h-3 rounded-full border-2 border-white dark:border-gray-900 z-10',
         config.dotColor
       )} />
 
@@ -541,7 +546,7 @@ function TimelineEventCard({
         transition={{ duration: 0.15 }}
       >
         <Card className={cn(
-          'hover:shadow-md transition-all duration-200 border-l-[3px]',
+          'hover:shadow-md transition-all duration-200 border-s-[3px]',
           config.borderLeft
         )}>
           <CardContent className="p-3 sm:p-4">
@@ -565,8 +570,8 @@ function TimelineEventCard({
                     >
                       {event.title}
                     </button>
-                    {/* Type-specific badges */}
-                    {renderEventBadges(event)}
+                    {/* Type-specific badges (stored values localize; custom/user-typed values pass through verbatim) */}
+                    {renderEventBadges(event, t, tCategory)}
                   </div>
                   <div className="flex items-center gap-2 mt-0.5 text-xs text-muted-foreground">
                     <span className="flex items-center gap-1" title={fullTime}>
@@ -621,14 +626,25 @@ function TimelineEventCard({
 
 // ─── Event Badges ──────────────────────────────────────────────────────────
 
-function renderEventBadges(event: TimelineEvent) {
+function renderEventBadges(
+  event: TimelineEvent,
+  t: (key: string) => string,
+  tCategory: (category: string) => string,
+) {
+  // Stored-value label: the catalog map localizes standard values; anything
+  // user-typed has no catalog entry and passes through verbatim (never
+  // machine-localized medical record content).
+  const storedLabel = (key: string, fallback: string) => {
+    const label = t(key)
+    return label === key ? fallback : label
+  }
   switch (event.type) {
     case 'visit': {
       const status = event.details.status as string
       const style = VISIT_STATUS_STYLES[status] || VISIT_STATUS_STYLES.scheduled
       return (
         <Badge className={cn('text-[10px] rounded-full', style)}>
-          {status}
+          {storedLabel(`visits.status.${status}`, status)}
         </Badge>
       )
     }
@@ -636,7 +652,7 @@ function renderEventBadges(event: TimelineEvent) {
       const category = event.details.category as string
       return (
         <Badge className={cn('text-[10px] rounded-full', getCategoryColor(category))}>
-          {category}
+          {tCategory(category)}
         </Badge>
       )
     }
@@ -645,7 +661,7 @@ function renderEventBadges(event: TimelineEvent) {
       const style = PRESCRIPTION_STATUS_STYLES[status] || PRESCRIPTION_STATUS_STYLES.active
       return (
         <Badge className={cn('text-[10px] rounded-full', style)}>
-          {status}
+          {storedLabel(`prescriptions.statusValue.${status}`, status)}
         </Badge>
       )
     }
@@ -655,7 +671,7 @@ function renderEventBadges(event: TimelineEvent) {
       return (
         <>
           <Badge className={cn('text-[10px] rounded-full', style)}>
-            {category}
+            {storedLabel(`clinical.category.${category}`, category)}
           </Badge>
           {event.details.isPinned && (
             <Pin className="h-3 w-3 text-amber-500" />
@@ -668,7 +684,7 @@ function renderEventBadges(event: TimelineEvent) {
         <div
           className="w-3 h-3 rounded-full flex-shrink-0"
           style={{ backgroundColor: event.details.color || '#10b981' }}
-          title="Annotation color"
+          title={t('timeline.annotationColor')}
         />
       )
     }
@@ -701,17 +717,18 @@ function EventDetails({ event }: EventDetailsProps) {
 }
 
 function VisitDetails({ event }: EventDetailsProps) {
+  const { t } = useI18n()
   const d = event.details
   return (
     <div className="space-y-2">
       {/* Visit type and time */}
       <div className="flex items-center gap-4 text-xs">
         <span className="text-muted-foreground">
-          <span className="font-medium text-gray-700 dark:text-gray-300">Type:</span> {d.visitType}
+          <span className="font-medium text-gray-700 dark:text-gray-300">{t('timeline.type')}:</span> {d.visitType}
         </span>
         {d.visitTime && (
           <span className="text-muted-foreground">
-            <span className="font-medium text-gray-700 dark:text-gray-300">Time:</span> {d.visitTime}
+            <span className="font-medium text-gray-700 dark:text-gray-300">{t('timeline.time')}:</span> {d.visitTime}
           </span>
         )}
       </div>
@@ -720,7 +737,7 @@ function VisitDetails({ event }: EventDetailsProps) {
         <div className="flex items-start gap-2">
           <StickyNote className="h-3.5 w-3.5 text-emerald-600 mt-0.5 flex-shrink-0" />
           <div>
-            <p className="text-xs font-medium text-gray-700 dark:text-gray-300">Chief Complaint</p>
+            <p className="text-xs font-medium text-gray-700 dark:text-gray-300">{t('visits.chiefComplaint')}</p>
             <p className="text-xs text-muted-foreground">{d.chiefComplaint}</p>
           </div>
         </div>
@@ -730,7 +747,7 @@ function VisitDetails({ event }: EventDetailsProps) {
         <div className="flex items-start gap-2">
           <FileText className="h-3.5 w-3.5 text-teal-600 mt-0.5 flex-shrink-0" />
           <div>
-            <p className="text-xs font-medium text-gray-700 dark:text-gray-300">Diagnosis</p>
+            <p className="text-xs font-medium text-gray-700 dark:text-gray-300">{t('visits.diagnosis')}</p>
             <p className="text-xs text-muted-foreground">{d.diagnosis}</p>
           </div>
         </div>
@@ -740,7 +757,7 @@ function VisitDetails({ event }: EventDetailsProps) {
         <div className="flex items-start gap-2">
           <Calendar className="h-3.5 w-3.5 text-amber-600 mt-0.5 flex-shrink-0" />
           <div>
-            <p className="text-xs font-medium text-gray-700 dark:text-gray-300">Follow-up</p>
+            <p className="text-xs font-medium text-gray-700 dark:text-gray-300">{t('visits.followUp')}</p>
             <p className="text-xs text-muted-foreground">
               {formatDate(d.followUpDate)}
               {d.followUpNotes ? ` — ${d.followUpNotes}` : ''}
@@ -757,17 +774,18 @@ function VisitDetails({ event }: EventDetailsProps) {
 }
 
 function DocumentDetails({ event }: EventDetailsProps) {
+  const { t } = useI18n()
   const d = event.details
   const isImage = d.mimeType && IMAGE_TYPES.includes(d.mimeType)
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-4 text-xs">
         <span className="text-muted-foreground">
-          <span className="font-medium text-gray-700 dark:text-gray-300">File:</span> {d.fileName}
+          <span className="font-medium text-gray-700 dark:text-gray-300">{t('timeline.file')}:</span> {d.fileName}
         </span>
         {d.fileSize && (
           <span className="text-muted-foreground">
-            <span className="font-medium text-gray-700 dark:text-gray-300">Size:</span> {formatFileSize(d.fileSize)}
+            <span className="font-medium text-gray-700 dark:text-gray-300">{t('timeline.size')}:</span> {formatFileSize(d.fileSize)}
           </span>
         )}
       </div>
@@ -787,19 +805,20 @@ function DocumentDetails({ event }: EventDetailsProps) {
         <div className="flex items-start gap-2">
           <MessageSquare className="h-3.5 w-3.5 text-teal-600 mt-0.5 flex-shrink-0" />
           <div>
-            <p className="text-xs font-medium text-gray-700 dark:text-gray-300">Notes</p>
+            <p className="text-xs font-medium text-gray-700 dark:text-gray-300">{t('patients.notes')}</p>
             <p className="text-xs text-muted-foreground">{d.notes}</p>
           </div>
         </div>
       )}
       <p className="text-[10px] text-muted-foreground/60 pt-1">
-        Uploaded {formatDateTime(event.timestamp)}
+        {t('timeline.uploaded', { date: formatDateTime(event.timestamp) })}
       </p>
     </div>
   )
 }
 
 function PrescriptionDetails({ event }: EventDetailsProps) {
+  const { t } = useI18n()
   const d = event.details
   let medications: any[] = []
   try {
@@ -813,10 +832,10 @@ function PrescriptionDetails({ event }: EventDetailsProps) {
     <div className="space-y-2">
       <div className="flex items-center gap-4 text-xs">
         <span className="text-muted-foreground">
-          <span className="font-medium text-gray-700 dark:text-gray-300">Medications:</span> {d.medicationCount}
+          <span className="font-medium text-gray-700 dark:text-gray-300">{t('prescriptions.medications')}:</span> {d.medicationCount}
         </span>
         <span className="text-muted-foreground">
-          <span className="font-medium text-gray-700 dark:text-gray-300">Status:</span>{' '}
+          <span className="font-medium text-gray-700 dark:text-gray-300">{t('prescriptions.status')}:</span>{' '}
           <Badge className={cn('text-[10px] rounded-full ml-0.5', PRESCRIPTION_STATUS_STYLES[d.status] || PRESCRIPTION_STATUS_STYLES.active)}>
             {d.status}
           </Badge>
@@ -843,26 +862,27 @@ function PrescriptionDetails({ event }: EventDetailsProps) {
         <div className="flex items-start gap-2">
           <MessageSquare className="h-3.5 w-3.5 text-amber-600 mt-0.5 flex-shrink-0" />
           <div>
-            <p className="text-xs font-medium text-gray-700 dark:text-gray-300">Notes</p>
+            <p className="text-xs font-medium text-gray-700 dark:text-gray-300">{t('patients.notes')}</p>
             <p className="text-xs text-muted-foreground">{d.notes}</p>
           </div>
         </div>
       )}
       <p className="text-[10px] text-muted-foreground/60 pt-1">
-        Created {formatDateTime(event.timestamp)}
+        {t('timeline.created', { date: formatDateTime(event.timestamp) })}
       </p>
     </div>
   )
 }
 
 function NoteDetails({ event }: EventDetailsProps) {
+  const { t } = useI18n()
   const d = event.details
   return (
     <div className="space-y-2">
       {d.isPinned && (
         <div className="flex items-center gap-1 text-xs text-amber-600">
           <Pin className="h-3 w-3" />
-          <span className="font-medium">Pinned</span>
+          <span className="font-medium">{t('timeline.pinned')}</span>
         </div>
       )}
       <div className="flex items-center gap-2 text-xs">
@@ -881,6 +901,7 @@ function NoteDetails({ event }: EventDetailsProps) {
 }
 
 function AnnotationDetails({ event }: EventDetailsProps) {
+  const { t } = useI18n()
   const d = event.details
   return (
     <div className="space-y-2">
@@ -891,30 +912,30 @@ function AnnotationDetails({ event }: EventDetailsProps) {
             style={{ backgroundColor: d.color || '#10b981' }}
           />
           <span className="text-muted-foreground">
-            <span className="font-medium text-gray-700 dark:text-gray-300">Color:</span>
+            <span className="font-medium text-gray-700 dark:text-gray-300">{t('timeline.color')}:</span>
           </span>
         </div>
         {d.page && (
           <span className="text-muted-foreground">
-            <span className="font-medium text-gray-700 dark:text-gray-300">Page:</span> {d.page}
+            <span className="font-medium text-gray-700 dark:text-gray-300">{t('timeline.page')}:</span> {d.page}
           </span>
         )}
       </div>
       <div className="flex items-start gap-2">
         <MessageSquare className="h-3.5 w-3.5 text-rose-600 mt-0.5 flex-shrink-0" />
         <div>
-          <p className="text-xs font-medium text-gray-700 dark:text-gray-300">Annotation</p>
+          <p className="text-xs font-medium text-gray-700 dark:text-gray-300">{t('timeline.annotation')}</p>
           <p className="text-xs text-muted-foreground">{d.content}</p>
         </div>
       </div>
       <div className="flex items-center gap-2">
         <FileText className="h-3.5 w-3.5 text-teal-600 flex-shrink-0" />
         <p className="text-xs text-muted-foreground">
-          On document: <span className="text-gray-700 dark:text-gray-300">{d.documentName}</span>
+          {t('timeline.onDocument')}: <span className="text-gray-700 dark:text-gray-300">{d.documentName}</span>
         </p>
       </div>
       <p className="text-[10px] text-muted-foreground/60 pt-1">
-        Annotated {formatDateTime(event.timestamp)}
+        {t('timeline.annotated', { date: formatDateTime(event.timestamp) })}
       </p>
     </div>
   )

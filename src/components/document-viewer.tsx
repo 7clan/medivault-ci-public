@@ -9,24 +9,25 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   ArrowLeft,
   Download,
- FileText,
- Printer,
- Maximize2,
+  FileText,
+  Printer,
+  Maximize2,
   Minimize2,
- User,
- ChevronLeft,
- FileSearch,
- ZoomIn,
- ZoomOut,
- Info,
- Calendar,
- HardDrive,
- Tag,
- RotateCcw,
- MessageSquare,
+  User,
+  ChevronLeft,
+  FileSearch,
+  ZoomIn,
+  ZoomOut,
+  Info,
+  Calendar,
+  HardDrive,
+  Tag,
+  RotateCcw,
+  MessageSquare,
 } from 'lucide-react'
 import { useState, useEffect, useCallback } from 'react'
 import { DocumentAnnotations } from './document-annotations'
+import { useI18n } from '@/i18n'
 
 interface DocumentViewerProps {
   document: DocumentInfo
@@ -34,6 +35,7 @@ interface DocumentViewerProps {
 
 export function DocumentViewer({ document: doc }: DocumentViewerProps) {
   const { toast } = useToast()
+  const { t, tCategory } = useI18n()
   const { goBack, selectedPatient, selectPatient } = useAppStore()
   const [loading, setLoading] = useState(true)
   const [fullscreen, setFullscreen] = useState(false)
@@ -61,9 +63,9 @@ export function DocumentViewer({ document: doc }: DocumentViewerProps) {
       a.click()
       document.body.removeChild(a)
       URL.revokeObjectURL(url)
-      toast({ title: 'Download Started', description: `"${doc.fileName}" is being downloaded.` })
+      toast({ title: t('viewer.downloadStartedTitle'), description: t('viewer.downloadStartedDesc', { name: doc.fileName }) })
     } catch {
-      toast({ title: 'Download Failed', variant: 'destructive' })
+      toast({ title: t('documents.downloadFailedTitle'), variant: 'destructive' })
     }
   }
 
@@ -94,7 +96,7 @@ export function DocumentViewer({ document: doc }: DocumentViewerProps) {
       <AnimatePresence>
         {fullscreen && (
           <motion.div
-            className="absolute top-0 left-0 right-0 z-20 glass-strong"
+            className="absolute top-0 inset-x-0 z-20 glass-strong"
             initial={{ y: -60, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
             exit={{ y: -60, opacity: 0 }}
@@ -102,7 +104,7 @@ export function DocumentViewer({ document: doc }: DocumentViewerProps) {
           >
             <div className="flex items-center justify-between px-4 py-3">
               <div className="flex items-center gap-2">
-                <Button variant="ghost" size="icon" onClick={handleBackToPatient} className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20"><ArrowLeft className="h-4 w-4" /></Button>
+                <Button variant="ghost" size="icon" onClick={handleBackToPatient} className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20"><ArrowLeft className="h-4 w-4 rtl:-scale-x-100" /></Button>
                 <div className="h-5 w-px bg-gray-200 dark:bg-gray-700" />
                 <h1 className="text-sm font-medium text-gray-900 dark:text-white truncate max-w-[200px] sm:max-w-md">{doc.title || doc.fileName}</h1>
               </div>
@@ -110,19 +112,19 @@ export function DocumentViewer({ document: doc }: DocumentViewerProps) {
                 <AnimatePresence>
                   {zoom !== 1 && (
                     <motion.div initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.8 }}>
-                      <Button variant="ghost" size="sm" onClick={resetZoom} className="text-xs tabular-nums h-7 px-2 text-emerald-600"><RotateCcw className="h-3 w-3 mr-1" />{Math.round(zoom * 100)}%</Button>
+                      <Button variant="ghost" size="sm" onClick={resetZoom} className="text-xs tabular-nums h-7 px-2 text-emerald-600"><RotateCcw className="h-3 w-3 me-1" />{Math.round(zoom * 100)}%</Button>
                     </motion.div>
                   )}
                 </AnimatePresence>
                 <Button variant="ghost" size="icon" onClick={zoomOut} className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20" disabled={zoom <= 0.25}><ZoomOut className="h-4 w-4" /></Button>
                 <Button variant="ghost" size="icon" onClick={zoomIn} className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20" disabled={zoom >= 3}><ZoomIn className="h-4 w-4" /></Button>
                 <div className="h-5 w-px bg-gray-200 dark:bg-gray-700" />
-                <Button variant="ghost" size="icon" onClick={handleDownload} className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20" title="Download"><Download className="h-4 w-4" /></Button>
-                <Button variant="ghost" size="icon" onClick={handlePrint} className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20" title="Print"><Printer className="h-4 w-4" /></Button>
-                <Button variant="ghost" size="icon" onClick={() => setInfoOpen(!infoOpen)} className={`hover:bg-emerald-50 dark:hover:bg-emerald-950/20 ${infoOpen ? 'bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600' : ''}`} title="Info"><Info className="h-4 w-4" /></Button>
+                <Button variant="ghost" size="icon" onClick={handleDownload} className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20" title={t('documents.download')}><Download className="h-4 w-4" /></Button>
+                <Button variant="ghost" size="icon" onClick={handlePrint} className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20" title={t('viewer.print')}><Printer className="h-4 w-4" /></Button>
+                <Button variant="ghost" size="icon" onClick={() => setInfoOpen(!infoOpen)} className={`hover:bg-emerald-50 dark:hover:bg-emerald-950/20 ${infoOpen ? 'bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600' : ''}`} title={t('viewer.info')}><Info className="h-4 w-4" /></Button>
                 <div className="h-5 w-px bg-gray-200 dark:bg-gray-700" />
-                <Button variant="ghost" size="icon" onClick={() => setAnnotationsOpen(!annotationsOpen)} className={`hover:bg-emerald-50 dark:hover:bg-emerald-950/20 ${annotationsOpen ? 'bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600' : ''}`} title="Annotations"><MessageSquare className="h-4 w-4" /></Button>
-                <Button variant="ghost" size="icon" onClick={() => setFullscreen(false)} title="Exit Fullscreen" className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20"><Minimize2 className="h-4 w-4" /></Button>
+                <Button variant="ghost" size="icon" onClick={() => setAnnotationsOpen(!annotationsOpen)} className={`hover:bg-emerald-50 dark:hover:bg-emerald-950/20 ${annotationsOpen ? 'bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600' : ''}`} title={t('viewer.annotations')}><MessageSquare className="h-4 w-4" /></Button>
+                <Button variant="ghost" size="icon" onClick={() => setFullscreen(false)} title={t('viewer.exitFullscreen')} className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20"><Minimize2 className="h-4 w-4" /></Button>
               </div>
             </div>
           </motion.div>
@@ -133,27 +135,27 @@ export function DocumentViewer({ document: doc }: DocumentViewerProps) {
       <AnimatePresence>
         {fullscreen && infoOpen && (
           <motion.div
-            className="absolute top-14 right-0 z-10 w-72 glass-strong border-l border-gray-200/50 dark:border-gray-700/50"
+            className="absolute top-14 end-0 z-10 w-72 glass-strong border-s border-gray-200/50 dark:border-gray-700/50"
             initial={{ x: 300, opacity: 0 }}
             animate={{ x: 0, opacity: 1 }}
             exit={{ x: 300, opacity: 0 }}
             transition={{ type: 'spring', damping: 25, stiffness: 200 }}
           >
             <div className="p-4 space-y-4">
-              <h3 className="font-semibold text-sm text-gray-900 dark:text-white flex items-center gap-2"><Info className="h-4 w-4 text-emerald-600" />Document Info</h3>
+              <h3 className="font-semibold text-sm text-gray-900 dark:text-white flex items-center gap-2"><Info className="h-4 w-4 text-emerald-600" />{t('viewer.documentInfo')}</h3>
               <div className="space-y-3">
                 {[
-                  { icon: FileText, label: 'Name', value: doc.title || doc.fileName },
-                  { icon: Tag, label: 'Category', value: doc.category, badge: true },
-                  { icon: HardDrive, label: 'Size', value: formatFileSize(doc.fileSize) },
-                  { icon: Calendar, label: 'Scanned', value: formatDateTime(doc.scannedAt) },
+                  { icon: FileText, labelKey: 'viewer.name', value: doc.title || doc.fileName },
+                  { icon: Tag, labelKey: 'documents.categories', value: tCategory(doc.category), rawCategory: doc.category, badge: true },
+                  { icon: HardDrive, labelKey: 'viewer.size', value: formatFileSize(doc.fileSize) },
+                  { icon: Calendar, labelKey: 'viewer.scanned', value: formatDateTime(doc.scannedAt) },
                 ].map((item) => (
-                  <div key={item.label} className="flex items-start gap-2.5">
+                  <div key={item.labelKey} className="flex items-start gap-2.5">
                     <item.icon className="h-3.5 w-3.5 text-muted-foreground mt-0.5 flex-shrink-0" />
                     <div className="min-w-0">
-                      <p className="text-[11px] text-muted-foreground uppercase tracking-wider">{item.label}</p>
-                      {item.badge ? (
-                        <Badge className={`text-xs rounded-full mt-0.5 ${getCategoryColor(item.value)}`}>{item.value}</Badge>
+                      <p className="text-[11px] text-muted-foreground uppercase tracking-wider">{t(item.labelKey)}</p>
+                      {item.badge && item.rawCategory ? (
+                        <Badge className={`text-xs rounded-full mt-0.5 ${getCategoryColor(item.rawCategory)}`}>{item.value}</Badge>
                       ) : (
                         <p className="text-sm font-medium text-gray-900 dark:text-white break-words">{item.value}</p>
                       )}
@@ -163,7 +165,7 @@ export function DocumentViewer({ document: doc }: DocumentViewerProps) {
                 {doc.patient && (
                   <div className="flex items-start gap-2.5">
                     <User className="h-3.5 w-3.5 text-muted-foreground mt-0.5 flex-shrink-0" />
-                    <div><p className="text-[11px] text-muted-foreground uppercase tracking-wider">Patient</p><p className="text-sm font-medium text-gray-900 dark:text-white">{getPatientDisplayName(doc.patient)}</p></div>
+                    <div><p className="text-[11px] text-muted-foreground uppercase tracking-wider">{t('patients.title')}</p><p className="text-sm font-medium text-gray-900 dark:text-white">{getPatientDisplayName(doc.patient)}</p></div>
                   </div>
                 )}
               </div>
@@ -175,11 +177,11 @@ export function DocumentViewer({ document: doc }: DocumentViewerProps) {
       {/* Header (non-fullscreen) */}
       {!fullscreen && (
         <div className="flex items-center gap-3 mb-4 flex-shrink-0">
-          <motion.div whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}><Button variant="ghost" size="icon" onClick={goBack} className="flex-shrink-0 hover:bg-emerald-50 dark:hover:bg-emerald-950/20"><ChevronLeft className="h-5 w-5" /></Button></motion.div>
+          <motion.div whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}><Button variant="ghost" size="icon" onClick={goBack} className="flex-shrink-0 hover:bg-emerald-50 dark:hover:bg-emerald-950/20"><ChevronLeft className="h-5 w-5 rtl:-scale-x-100" /></Button></motion.div>
           <div className="flex-1 min-w-0">
             <h1 data-qa="document-viewer-title" className="text-lg font-semibold text-gray-900 dark:text-white truncate">{doc.title || doc.fileName}</h1>
             <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-              <Badge className={`text-xs rounded-full ${getCategoryColor(doc.category)}`}>{doc.category}</Badge>
+              <Badge className={`text-xs rounded-full ${getCategoryColor(doc.category)}`}>{tCategory(doc.category)}</Badge>
               <span className="text-xs text-muted-foreground">{formatFileSize(doc.fileSize)}</span>
               <span className="text-xs text-muted-foreground">{formatDateTime(doc.scannedAt)}</span>
             </div>
@@ -194,15 +196,15 @@ export function DocumentViewer({ document: doc }: DocumentViewerProps) {
             <AnimatePresence>
               {zoom !== 1 && (
                 <motion.div initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.8 }}>
-                  <Button variant="ghost" size="sm" onClick={resetZoom} className="text-xs tabular-nums h-7 px-2 text-emerald-600"><RotateCcw className="h-3 w-3 mr-1" />{Math.round(zoom * 100)}%</Button>
+                  <Button variant="ghost" size="sm" onClick={resetZoom} className="text-xs tabular-nums h-7 px-2 text-emerald-600"><RotateCcw className="h-3 w-3 me-1" />{Math.round(zoom * 100)}%</Button>
                 </motion.div>
               )}
             </AnimatePresence>
             <motion.div whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}><Button variant="ghost" size="icon" onClick={zoomOut} className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20" disabled={zoom <= 0.25}><ZoomOut className="h-4 w-4" /></Button></motion.div>
             <motion.div whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}><Button variant="ghost" size="icon" onClick={zoomIn} className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20" disabled={zoom >= 3}><ZoomIn className="h-4 w-4" /></Button></motion.div>
-            <motion.div whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}><Button variant="ghost" size="icon" onClick={handleDownload} title="Download" className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20 hover:text-emerald-600"><Download className="h-4 w-4" /></Button></motion.div>
-            <motion.div whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}><Button variant="ghost" size="icon" onClick={handlePrint} title="Print" className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20 hover:text-emerald-600"><Printer className="h-4 w-4" /></Button></motion.div>
-            <motion.div whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}><Button variant="ghost" size="icon" onClick={() => setFullscreen(true)} title="Fullscreen" className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20 hover:text-emerald-600"><Maximize2 className="h-4 w-4" /></Button></motion.div>
+            <motion.div whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}><Button variant="ghost" size="icon" onClick={handleDownload} title={t('documents.download')} className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20 hover:text-emerald-600"><Download className="h-4 w-4" /></Button></motion.div>
+            <motion.div whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}><Button data-qa="viewer-print" variant="ghost" size="icon" onClick={handlePrint} title={t('viewer.print')} className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20 hover:text-emerald-600"><Printer className="h-4 w-4" /></Button></motion.div>
+            <motion.div whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}><Button variant="ghost" size="icon" onClick={() => setFullscreen(true)} title={t('viewer.fullscreen')} className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20 hover:text-emerald-600"><Maximize2 className="h-4 w-4" /></Button></motion.div>
           </div>
         </div>
       )}
@@ -249,7 +251,7 @@ export function DocumentViewer({ document: doc }: DocumentViewerProps) {
                   animate={{ opacity: [0.4, 1, 0.4] }}
                   transition={{ type: 'tween', duration: 1.5, repeat: Infinity }}
                 >
-                  Loading document...
+                  {t('viewer.loadingDocument')}
                 </motion.p>
               </div>
             </motion.div>
@@ -262,7 +264,7 @@ export function DocumentViewer({ document: doc }: DocumentViewerProps) {
             {fullscreen && !loading && (
               <div className="absolute bottom-3 left-1/2 -translate-x-1/2 glass rounded-full px-3 py-1.5 flex items-center gap-2 pointer-events-none">
                 <FileSearch className="h-3.5 w-3.5 text-muted-foreground" />
-                <span className="text-xs text-muted-foreground">PDF Document</span>
+                <span className="text-xs text-muted-foreground">{t('viewer.pdfDocument')}</span>
               </div>
             )}
           </div>
@@ -280,7 +282,7 @@ export function DocumentViewer({ document: doc }: DocumentViewerProps) {
         <AnimatePresence>
           {fullscreen && annotationsOpen && (
             <motion.div
-              className="absolute top-14 left-0 z-10 w-80 glass-strong border-r border-gray-200/50 dark:border-gray-700/50 overflow-y-auto"
+              className="absolute top-14 start-0 z-10 w-80 glass-strong border-s border-gray-200/50 dark:border-gray-700/50 overflow-y-auto"
               initial={{ x: -320, opacity: 0 }}
               animate={{ x: 0, opacity: 1 }}
               exit={{ x: -320, opacity: 0 }}
@@ -289,7 +291,7 @@ export function DocumentViewer({ document: doc }: DocumentViewerProps) {
               <div className="p-4">
                 <h3 className="font-semibold text-sm text-gray-900 dark:text-white flex items-center gap-2 mb-3">
                   <MessageSquare className="h-4 w-4 text-emerald-600" />
-                  Annotations
+                  {t('viewer.annotations')}
                 </h3>
                 <DocumentAnnotations documentId={doc.id} />
               </div>

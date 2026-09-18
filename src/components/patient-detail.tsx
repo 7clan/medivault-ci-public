@@ -72,6 +72,7 @@ import { ClinicalNotes } from './clinical-notes'
 import { PatientTimeline } from './patient-timeline'
 import { cn } from '@/lib/utils'
 import JSZip from 'jszip'
+import { useI18n } from '@/i18n'
 
 interface PatientDetailProps {
   patient: PatientInfo
@@ -79,13 +80,13 @@ interface PatientDetailProps {
 
 type SortOption = 'newest' | 'oldest' | 'name-asc' | 'name-desc' | 'largest' | 'smallest'
 
-const SORT_OPTIONS: { value: SortOption; label: string }[] = [
-  { value: 'newest', label: 'Newest First' },
-  { value: 'oldest', label: 'Oldest First' },
-  { value: 'name-asc', label: 'Name A–Z' },
-  { value: 'name-desc', label: 'Name Z–A' },
-  { value: 'largest', label: 'Largest First' },
-  { value: 'smallest', label: 'Smallest First' },
+const SORT_OPTIONS: { value: SortOption; labelKey: string }[] = [
+  { value: 'newest', labelKey: 'patients.sort.newest' },
+  { value: 'oldest', labelKey: 'patients.sort.oldest' },
+  { value: 'name-asc', labelKey: 'patients.sort.nameAsc' },
+  { value: 'name-desc', labelKey: 'patients.sort.nameDesc' },
+  { value: 'largest', labelKey: 'patients.sort.largest' },
+  { value: 'smallest', labelKey: 'patients.sort.smallest' },
 ]
 
 const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
@@ -94,19 +95,20 @@ function isImageFile(mimeType: string): boolean {
   return IMAGE_TYPES.includes(mimeType)
 }
 
-// Category color map for left border bars
+// Category color map for start-side border bars (RTL-safe logical border)
 function getCategoryBorderColor(category: string): string {
   const map: Record<string, string> = {
-    'Lab Results': 'border-l-emerald-500',
-    'Prescription': 'border-l-teal-500',
-    'Imaging': 'border-l-amber-500',
-    'Insurance': 'border-l-purple-500',
-    'General': 'border-l-gray-400 dark:border-l-gray-500',
+    'Lab Results': 'border-s-emerald-500',
+    'Prescription': 'border-s-teal-500',
+    'Imaging': 'border-s-amber-500',
+    'Insurance': 'border-s-purple-500',
+    'General': 'border-s-gray-400 dark:border-s-gray-500',
   }
-  return map[category] || 'border-l-teal-500'
+  return map[category] || 'border-s-teal-500'
 }
 
 export function PatientDetail({ patient }: PatientDetailProps) {
+  const { t, tCategory } = useI18n()
   const { toast } = useToast()
   const {
     selectDocument,
@@ -334,12 +336,12 @@ export function PatientDetail({ patient }: PatientDetailProps) {
       const res = await fetch(`/api/documents/${doc.id}`, { method: 'DELETE' })
       if (res.ok) {
         setDocuments((prev) => prev.filter((d) => d.id !== doc.id))
-        toast({ title: 'Document Deleted', description: `"${doc.title || doc.fileName}" has been removed.` })
+        toast({ title: t('documents.docDeletedTitle'), description: t('documents.docDeletedDesc', { name: doc.title || doc.fileName }) })
       } else {
-        toast({ title: 'Delete Failed', variant: 'destructive' })
+        toast({ title: t('documents.deleteFailedTitle'), variant: 'destructive' })
       }
     } catch {
-      toast({ title: 'Error', description: 'Failed to delete document.', variant: 'destructive' })
+      toast({ title: t('auth.toast.errorTitle'), description: t('errors.deleteDocFailed'), variant: 'destructive' })
     }
     setDeletingDocId(null)
     setDeleteDocConfirm(null)
@@ -356,7 +358,7 @@ export function PatientDetail({ patient }: PatientDetailProps) {
     }
     if (deleted > 0) {
       setDocuments((prev) => prev.filter((d) => !selectedIds.has(d.id)))
-      toast({ title: `${deleted} document${deleted > 1 ? 's' : ''} deleted.` })
+      toast({ title: deleted === 1 ? t('documents.oneDeleted') : t('documents.batchDeleted', { count: deleted }) })
     }
     setBatchDeleting(false)
     setBatchDeleteConfirm(false)
@@ -389,9 +391,9 @@ export function PatientDetail({ patient }: PatientDetailProps) {
       document.body.removeChild(a)
       URL.revokeObjectURL(url)
 
-      toast({ title: 'Export Complete', description: `${docsToExport.length} document${docsToExport.length > 1 ? 's' : ''} exported as ZIP.` })
+      toast({ title: t('documents.exportCompleteTitle'), description: docsToExport.length === 1 ? t('documents.oneExported') : t('documents.exportCompleteDesc', { count: docsToExport.length }) })
     } catch {
-      toast({ title: 'Export Failed', description: 'Failed to export documents.', variant: 'destructive' })
+      toast({ title: t('documents.exportFailedTitle'), description: t('documents.exportFailedDesc'), variant: 'destructive' })
     }
     setExporting(false)
   }
@@ -410,7 +412,7 @@ export function PatientDetail({ patient }: PatientDetailProps) {
       document.body.removeChild(a)
       URL.revokeObjectURL(url)
     } catch {
-      toast({ title: 'Download Failed', variant: 'destructive' })
+      toast({ title: t('documents.downloadFailedTitle'), variant: 'destructive' })
     }
   }
 
@@ -424,16 +426,16 @@ export function PatientDetail({ patient }: PatientDetailProps) {
       const res = await fetch(`/api/patients/${patient.id}`, { method: 'DELETE' })
       if (res.ok) {
         toast({
-          title: 'Patient Deleted',
-          description: `${getPatientDisplayName(patient)} and all their documents have been removed.`,
+          title: t('patients.deletedTitle'),
+          description: t('patients.deletedDesc', { name: getPatientDisplayName(patient) }),
         })
         clearPatient()
         goBack()
       } else {
-        toast({ title: 'Delete Failed', variant: 'destructive' })
+        toast({ title: t('documents.deleteFailedTitle'), variant: 'destructive' })
       }
     } catch {
-      toast({ title: 'Error', description: 'Failed to delete patient.', variant: 'destructive' })
+      toast({ title: t('auth.toast.errorTitle'), description: t('errors.deletePatientFailed'), variant: 'destructive' })
     }
     setDeletingPatient(false)
   }
@@ -465,7 +467,7 @@ export function PatientDetail({ patient }: PatientDetailProps) {
         let uploaded = 0
         for (const file of files) {
           if (file.size > 50 * 1024 * 1024) {
-            toast({ title: 'File Too Large', description: `${file.name} exceeds the 50 MiB upload limit.`, variant: 'destructive' })
+            toast({ title: t('documents.fileTooLargeTitle'), description: t('documents.fileTooLargeDesc', { name: file.name }), variant: 'destructive' })
             continue
           }
           const formData = new FormData()
@@ -480,13 +482,13 @@ export function PatientDetail({ patient }: PatientDetailProps) {
             })
             if (res.ok) uploaded++
             else if (res.status === 413) {
-              toast({ title: 'File Too Large', description: `${file.name} exceeds the 50 MiB upload limit.`, variant: 'destructive' })
+              toast({ title: t('documents.fileTooLargeTitle'), description: t('documents.fileTooLargeDesc', { name: file.name }), variant: 'destructive' })
             }
           } catch { /* skip */ }
         }
         loadDocuments()
         if (uploaded > 0) {
-          toast({ title: `${uploaded} file${uploaded > 1 ? 's' : ''} uploaded successfully.` })
+          toast({ title: uploaded === 1 ? t('documents.oneUploaded') : t('documents.uploadedCount', { count: uploaded }) })
         }
       } finally {
         cleanup()
@@ -504,6 +506,7 @@ export function PatientDetail({ patient }: PatientDetailProps) {
     >
       {/* Patient Header with Mesh Gradient Background */}
       <motion.div
+        data-qa="patient-detail-header"
         className="relative rounded-2xl overflow-hidden patient-header-mesh p-5 sm:p-6 text-white shadow-lg shadow-emerald-200/40 dark:shadow-emerald-900/30"
         initial={{ opacity: 0, y: -10 }}
         animate={{ opacity: 1, y: 0 }}
@@ -541,7 +544,7 @@ export function PatientDetail({ patient }: PatientDetailProps) {
             onClick={goBack}
             className="mt-1 flex-shrink-0 text-white/80 hover:text-white hover:bg-white/20 btn-press"
           >
-            <ArrowLeft className="h-5 w-5" />
+            <ArrowLeft className="h-5 w-5 rtl:-scale-x-100" />
           </Button>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-4 flex-wrap">
@@ -570,7 +573,7 @@ export function PatientDetail({ patient }: PatientDetailProps) {
                     <span className="flex items-center gap-1"><Mail className="h-3.5 w-3.5" />{patient.email}</span>
                   )}
                   {patient.dateOfBirth && (
-                    <span className="flex items-center gap-1"><Calendar className="h-3.5 w-3.5" />DOB: {patient.dateOfBirth} <Badge variant="secondary" className="text-xs font-normal bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400 ml-1">{formatAge(patient.dateOfBirth)}</Badge></span>
+                    <span className="flex items-center gap-1"><Calendar className="h-3.5 w-3.5" />{t('patients.dob')}: {patient.dateOfBirth} <Badge variant="secondary" className="text-xs font-normal bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400 ms-1">{formatAge(patient.dateOfBirth)}</Badge></span>
                   )}
                 </div>
               </div>
@@ -578,10 +581,11 @@ export function PatientDetail({ patient }: PatientDetailProps) {
           </div>
           <div className="flex gap-1.5 flex-shrink-0">
             <Button
+              data-qa="patient-detail-report"
               variant="ghost"
               size="icon"
               onClick={() => setReportOpen(true)}
-              title="Generate Report"
+              title={t('patients.generateReport')}
               className="text-white/80 hover:text-white hover:bg-white/20 btn-press"
             >
               <FileBarChart className="h-4 w-4" />
@@ -590,7 +594,7 @@ export function PatientDetail({ patient }: PatientDetailProps) {
               variant="ghost"
               size="icon"
               onClick={() => setEditPatientDialogOpen(true)}
-              title="Edit Patient"
+              title={t('patients.editPatient')}
               className="text-white/80 hover:text-white hover:bg-white/20 btn-press"
             >
               <Edit3 className="h-4 w-4" />
@@ -600,7 +604,7 @@ export function PatientDetail({ patient }: PatientDetailProps) {
               size="icon"
               className="text-white/80 hover:text-red-200 hover:bg-red-500/20 btn-press"
               onClick={() => setDeletePatientConfirm(true)}
-              title="Delete Patient"
+              title={t('patients.deletePatient')}
             >
               <Trash2 className="h-4 w-4" />
             </Button>
@@ -621,7 +625,7 @@ export function PatientDetail({ patient }: PatientDetailProps) {
               <div className="w-8 h-8 rounded-lg bg-emerald-100 dark:bg-emerald-900/40 flex items-center justify-center mx-auto mb-2">
                 <Phone className="h-4 w-4 text-emerald-600" />
               </div>
-              <p className="text-xs text-muted-foreground mb-0.5">Phone</p>
+              <p className="text-xs text-muted-foreground mb-0.5">{t('patients.phone')}</p>
               <p className="text-sm font-semibold text-gray-900 dark:text-white">{patient.phone}</p>
             </div>
           </motion.div>
@@ -637,7 +641,7 @@ export function PatientDetail({ patient }: PatientDetailProps) {
               <div className="w-8 h-8 rounded-lg bg-teal-100 dark:bg-teal-900/40 flex items-center justify-center mx-auto mb-2">
                 <Mail className="h-4 w-4 text-teal-600" />
               </div>
-              <p className="text-xs text-muted-foreground mb-0.5">Email</p>
+              <p className="text-xs text-muted-foreground mb-0.5">{t('patients.email')}</p>
               <p className="text-sm font-semibold text-gray-900 dark:text-white truncate">{patient.email}</p>
             </div>
           </motion.div>
@@ -653,7 +657,7 @@ export function PatientDetail({ patient }: PatientDetailProps) {
               <div className="w-8 h-8 rounded-lg bg-amber-100 dark:bg-amber-900/40 flex items-center justify-center mx-auto mb-2">
                 <Calendar className="h-4 w-4 text-amber-600" />
               </div>
-              <p className="text-xs text-muted-foreground mb-0.5">Age / DOB</p>
+              <p className="text-xs text-muted-foreground mb-0.5">{t('patients.ageDob')}</p>
               <p className="text-sm font-semibold text-gray-900 dark:text-white">{formatAge(patient.dateOfBirth)}</p>
               <p className="text-[10px] text-muted-foreground">{patient.dateOfBirth}</p>
             </div>
@@ -670,7 +674,7 @@ export function PatientDetail({ patient }: PatientDetailProps) {
               <div className="w-8 h-8 rounded-lg bg-rose-100 dark:bg-rose-900/40 flex items-center justify-center mx-auto mb-2">
                 <MapPin className="h-4 w-4 text-rose-600" />
               </div>
-              <p className="text-xs text-muted-foreground mb-0.5">Address</p>
+              <p className="text-xs text-muted-foreground mb-0.5">{t('patients.address')}</p>
               <p className="text-sm font-semibold text-gray-900 dark:text-white truncate">{patient.address}</p>
             </div>
           </motion.div>
@@ -689,7 +693,7 @@ export function PatientDetail({ patient }: PatientDetailProps) {
                   <StickyNote className="h-4 w-4 text-purple-600" />
                 </div>
                 <div className="min-w-0">
-                  <p className="text-xs text-muted-foreground mb-0.5">Notes</p>
+                  <p className="text-xs text-muted-foreground mb-0.5">{t('patients.notes')}</p>
                   <p className="text-sm text-gray-700 dark:text-gray-300">{patient.notes}</p>
                 </div>
               </div>
@@ -704,10 +708,10 @@ export function PatientDetail({ patient }: PatientDetailProps) {
             className="sm:col-span-2 lg:col-span-4"
           >
             <div className="glass-card rounded-xl p-6 text-center">
-              <p className="text-sm text-muted-foreground">No contact information added yet.</p>
+              <p className="text-sm text-muted-foreground">{t('patients.noContact')}</p>
               <Button variant="link" size="sm" className="mt-1 text-emerald-600" onClick={() => setEditPatientDialogOpen(true)}>
-                <Edit3 className="h-3.5 w-3.5 mr-1" />
-                Add patient details
+                <Edit3 className="h-3.5 w-3.5 me-1" />
+                {t('patients.addDetails')}
               </Button>
             </div>
           </motion.div>
@@ -719,7 +723,7 @@ export function PatientDetail({ patient }: PatientDetailProps) {
       {!loading && <PatientHealthSummary patient={patient} documents={documents} />}
 
       {/* Visit History */}
-      <Card className="card-hover-lift-enhanced">
+      <Card data-qa="patient-detail-visits" className="card-hover-lift-enhanced">
         <CardContent className="p-4">
           <VisitHistory
             patientId={patient.id}
@@ -745,10 +749,10 @@ export function PatientDetail({ patient }: PatientDetailProps) {
               : 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:border-emerald-300 dark:hover:border-emerald-700 hover:text-emerald-600'
           )}
         >
-          <Activity className="h-3.5 w-3.5 mr-1.5" />
-          Timeline
+          <Activity className="h-3.5 w-3.5 me-1.5" />
+          {t('patients.timeline')}
           {timelineCount > 0 && (
-            <Badge variant="secondary" className="ml-1.5 text-[10px] bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-400">
+            <Badge variant="secondary" className="ms-1.5 text-[10px] bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-400">
               {timelineCount}
             </Badge>
           )}
@@ -769,7 +773,7 @@ export function PatientDetail({ patient }: PatientDetailProps) {
               <CardContent className="p-4">
                 <div className="flex items-center gap-2 mb-4">
                   <Activity className="h-4 w-4 text-emerald-600" />
-                  <h3 className="text-base font-semibold text-gray-900 dark:text-white">Patient Timeline</h3>
+                  <h3 className="text-base font-semibold text-gray-900 dark:text-white">{t('patients.patientTimeline')}</h3>
                 </div>
                 <PatientTimeline patientId={patient.id} />
               </CardContent>
@@ -779,12 +783,12 @@ export function PatientDetail({ patient }: PatientDetailProps) {
       </AnimatePresence>
 
       {/* Prescriptions */}
-      <Card className="card-hover-lift-enhanced">
+      <Card data-qa="patient-detail-prescriptions" className="card-hover-lift-enhanced">
         <CardContent className="p-4">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-base font-semibold text-gray-900 dark:text-white flex items-center gap-2">
               <Pill className="h-4 w-4 text-emerald-600" />
-              Prescriptions
+              {t('prescriptions.title')}
               <Badge variant="secondary" className="text-xs bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400">
                 {prescriptions.length}
               </Badge>
@@ -794,8 +798,8 @@ export function PatientDetail({ patient }: PatientDetailProps) {
               onClick={() => { setPrescriptionVisitId(null); setPrescriptionGenOpen(true) }}
               className="bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-teal-600 text-white"
             >
-              <Pill className="h-3.5 w-3.5 mr-1.5" />
-              New Prescription
+              <Pill className="h-3.5 w-3.5 me-1.5" />
+              {t('prescriptions.new')}
             </Button>
           </div>
           {prescriptionsLoading ? (
@@ -811,14 +815,14 @@ export function PatientDetail({ patient }: PatientDetailProps) {
               >
                 <Pill className="h-7 w-7 text-emerald-400" />
               </motion.div>
-              <p className="text-sm text-muted-foreground">No prescriptions yet</p>
+              <p className="text-sm text-muted-foreground">{t('prescriptions.empty')}</p>
               <Button
                 variant="link"
                 size="sm"
                 className="text-emerald-600"
                 onClick={() => { setPrescriptionVisitId(null); setPrescriptionGenOpen(true) }}
               >
-                Create first prescription
+                {t('prescriptions.createFirst')}
               </Button>
             </div>
           ) : (
@@ -845,11 +849,11 @@ export function PatientDetail({ patient }: PatientDetailProps) {
       </Card>
 
       {/* Clinical Notes */}
-      <Card className="card-hover-lift-enhanced">
+      <Card data-qa="patient-detail-clinical-notes" className="card-hover-lift-enhanced">
         <CardContent className="p-4">
           <div className="flex items-center gap-2 mb-4">
             <StickyNote className="h-4 w-4 text-emerald-600" />
-            <h3 className="text-base font-semibold text-gray-900 dark:text-white">Clinical Notes</h3>
+            <h3 className="text-base font-semibold text-gray-900 dark:text-white">{t('clinical.title')}</h3>
           </div>
           <ClinicalNotes patientId={patient.id} />
         </CardContent>
@@ -858,15 +862,15 @@ export function PatientDetail({ patient }: PatientDetailProps) {
       {/* Action Buttons */}
       <div className="flex gap-2 flex-wrap">
         <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
-          <Button onClick={handleUploadDocument} className="bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-teal-600 text-white shadow-md shadow-emerald-200/30 dark:shadow-emerald-900/20 group">
-            <Upload className="h-4 w-4 mr-2 transition-transform group-hover:rotate-180 duration-300" />
-            Upload Files
+          <Button data-qa="patient-detail-upload" onClick={handleUploadDocument} className="bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-teal-600 text-white shadow-md shadow-emerald-200/30 dark:shadow-emerald-900/20 group">
+            <Upload className="h-4 w-4 me-2 transition-transform group-hover:rotate-180 duration-300" />
+            {t('documents.uploadFiles')}
           </Button>
         </motion.div>
         <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
           <Button variant="outline" onClick={handleScanDocument} className="border-emerald-200 dark:border-emerald-800 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/20 group">
-            <ScanLine className="h-4 w-4 mr-2 transition-transform group-hover:rotate-180 duration-300" />
-            Scan with Camera
+            <ScanLine className="h-4 w-4 me-2 transition-transform group-hover:rotate-180 duration-300" />
+            {t('documents.scanWithCamera')}
           </Button>
         </motion.div>
         <AnimatePresence>
@@ -883,8 +887,8 @@ export function PatientDetail({ patient }: PatientDetailProps) {
                 onClick={() => setSelectMode(true)}
                 className="border-emerald-200 dark:border-emerald-800 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/20"
               >
-                <CheckSquare className="h-4 w-4 mr-1.5" />
-                Select
+                <CheckSquare className="h-4 w-4 me-1.5" />
+                {t('common.select')}
               </Button>
             </motion.div>
           )}
@@ -920,7 +924,7 @@ export function PatientDetail({ patient }: PatientDetailProps) {
                       }`}
                       onClick={() => setCategoryFilter(cat)}
                     >
-                      {cat}
+                      {cat === 'All' ? t('documents.allCategories') : tCategory(cat)}
                       <span className={`text-[10px] leading-none px-1.5 py-0.5 rounded-full ${
                         isActive
                           ? 'bg-white/20 text-white'
@@ -937,9 +941,9 @@ export function PatientDetail({ patient }: PatientDetailProps) {
         </div>
 
         {/* Sort and Document Count Row */}
-        <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div data-qa="patient-detail-documents" className="flex items-center justify-between gap-3 flex-wrap">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
-            Documents ({filteredAndSortedDocuments.length})
+            {t('documents.count', { count: filteredAndSortedDocuments.length })}
           </h2>
           <div className="flex items-center gap-2">
             <ArrowUpDown className="h-4 w-4 text-muted-foreground flex-shrink-0" />
@@ -953,7 +957,7 @@ export function PatientDetail({ patient }: PatientDetailProps) {
               <SelectContent>
                 {SORT_OPTIONS.map((opt) => (
                   <SelectItem key={opt.value} value={opt.value}>
-                    {opt.label}
+                    {t(opt.labelKey)}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -992,21 +996,21 @@ export function PatientDetail({ patient }: PatientDetailProps) {
                     <ArrowRight className="h-3.5 w-3.5 text-white -rotate-45" />
                   </motion.div>
                 </motion.div>
-                <h3 className="text-lg font-medium text-muted-foreground">No documents yet</h3>
+                <h3 className="text-lg font-medium text-muted-foreground">{t('documents.noDocumentsYet')}</h3>
                 <p className="text-sm text-muted-foreground mt-1 text-center max-w-sm">
-                  Upload or scan documents for this patient to get started
+                  {t('documents.uploadOrScan')}
                 </p>
                 <div className="flex gap-2 mt-4">
                   <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
                     <Button onClick={handleUploadDocument} className="bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-white">
-                      <Upload className="h-4 w-4 mr-2" />
-                      Upload Your First Document
+                      <Upload className="h-4 w-4 me-2" />
+                      {t('documents.uploadFirst')}
                     </Button>
                   </motion.div>
                   <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
                     <Button variant="outline" onClick={handleScanDocument} className="border-emerald-200 dark:border-emerald-800 text-emerald-600">
-                      <ScanLine className="h-4 w-4 mr-2" />
-                      Scan
+                      <ScanLine className="h-4 w-4 me-2" />
+                      {t('nav.scan')}
                     </Button>
                   </motion.div>
                 </div>
@@ -1029,14 +1033,14 @@ export function PatientDetail({ patient }: PatientDetailProps) {
                     layout
                   >
                     <Card
-                      className={`group relative border-l-[3px] ${getCategoryBorderColor(doc.category)} hover:shadow-md transition-all duration-200 card-hover-lift ${
+                      className={`group relative border-s-[3px] ${getCategoryBorderColor(doc.category)} hover:shadow-md transition-all duration-200 card-hover-lift ${
                         isSelected
-                          ? 'ring-2 ring-emerald-500 border-l-emerald-500'
+                          ? 'ring-2 ring-emerald-500 border-s-emerald-500'
                           : ''
                       }`}
                     >
-                      {/* File type icon badge - top right */}
-                      <div className="absolute top-2 right-2 z-10">
+                      {/* File type icon badge - top end */}
+                      <div className="absolute top-2 end-2 z-10">
                         <div className={`w-6 h-6 rounded-md flex items-center justify-center shadow-sm ${
                           isImg
                             ? 'bg-gradient-to-br from-sky-400 to-sky-500'
@@ -1056,7 +1060,7 @@ export function PatientDetail({ patient }: PatientDetailProps) {
                       {/* Quick-view overlay on hover */}
                       <div className="doc-hover-overlay rounded-lg">
                         <Eye className="h-5 w-5 text-white" />
-                        <span className="text-[10px] text-white font-medium">Quick View</span>
+                        <span className="text-[10px] text-white font-medium">{t('documents.quickView')}</span>
                       </div>
                       <CardContent className="p-4">
                         <div className="flex items-center gap-3 sm:gap-4">
@@ -1080,7 +1084,7 @@ export function PatientDetail({ patient }: PatientDetailProps) {
                           </AnimatePresence>
                           <button
                             onClick={() => selectDocument(doc)}
-                            className="flex items-center gap-3 sm:gap-4 flex-1 min-w-0 text-left"
+                            className="flex items-center gap-3 sm:gap-4 flex-1 min-w-0 text-start"
                           >
                             {/* Thumbnail or Icon with zoom on hover */}
                             <motion.div
@@ -1115,7 +1119,7 @@ export function PatientDetail({ patient }: PatientDetailProps) {
                                   doc.category === 'Insurance' ? 'from-teal-100 to-teal-50 dark:from-teal-900 dark:to-teal-950/50 text-teal-700 dark:text-teal-300' :
                                   'from-gray-100 to-gray-50 dark:from-gray-800 dark:to-gray-900/50 text-gray-700 dark:text-gray-300'
                                 }`}>
-                                  {doc.category}
+                                  {tCategory(doc.category)}
                                 </Badge>
                                 <span className="text-xs text-muted-foreground">{formatFileSize(doc.fileSize)}</span>
                                 <span className="text-xs text-muted-foreground hidden sm:inline">{formatDateTime(doc.scannedAt)}</span>
@@ -1138,7 +1142,7 @@ export function PatientDetail({ patient }: PatientDetailProps) {
                               size="icon"
                               className="h-9 w-9 hover:bg-emerald-50 dark:hover:bg-emerald-950/20"
                               onClick={() => setEditingDoc(doc)}
-                              title="Edit Document"
+                              title={t('documents.editDocument')}
                             >
                               <Edit3 className="h-4 w-4" />
                             </Button>
@@ -1147,7 +1151,7 @@ export function PatientDetail({ patient }: PatientDetailProps) {
                               size="icon"
                               className="h-9 w-9 hover:bg-emerald-50 dark:hover:bg-emerald-950/20"
                               onClick={() => handleDownloadDocument(doc)}
-                              title="Download"
+                              title={t('documents.download')}
                             >
                               <Download className="h-4 w-4" />
                             </Button>
@@ -1157,7 +1161,7 @@ export function PatientDetail({ patient }: PatientDetailProps) {
                               className="h-9 w-9 text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/50"
                               onClick={() => setDeleteDocConfirm(doc)}
                               disabled={deletingDocId === doc.id}
-                              title="Delete"
+                              title={t('common.delete')}
                             >
                               {deletingDocId === doc.id ? (
                                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -1183,21 +1187,21 @@ export function PatientDetail({ patient }: PatientDetailProps) {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <AlertTriangle className="h-5 w-5 text-red-500" />
-              Delete Document
+              {t('documents.deleteDocument')}
             </DialogTitle>
             <DialogDescription>
-              Are you sure you want to delete &quot;{deleteDocConfirm?.title || deleteDocConfirm?.fileName}&quot;? This action cannot be undone.
+              {t('documents.deleteConfirm', { name: deleteDocConfirm?.title || deleteDocConfirm?.fileName || '' })}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteDocConfirm(null)}>Cancel</Button>
+            <Button variant="outline" onClick={() => setDeleteDocConfirm(null)}>{t('common.cancel')}</Button>
             <Button
               variant="destructive"
               onClick={() => deleteDocConfirm && handleDeleteDocument(deleteDocConfirm)}
               disabled={!!deletingDocId}
             >
-              {deletingDocId ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-              Delete
+              {deletingDocId ? <Loader2 className="h-4 w-4 animate-spin me-2" /> : null}
+              {t('common.delete')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1209,21 +1213,21 @@ export function PatientDetail({ patient }: PatientDetailProps) {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <AlertTriangle className="h-5 w-5 text-red-500" />
-              Delete Selected Documents
+              {t('documents.deleteSelectedTitle')}
             </DialogTitle>
             <DialogDescription>
-              Are you sure you want to delete {selectedIds.size} selected document{selectedIds.size !== 1 ? 's' : ''}? This action cannot be undone.
+              {t('documents.deleteSelectedConfirm', { count: selectedIds.size })}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setBatchDeleteConfirm(false)}>Cancel</Button>
+            <Button variant="outline" onClick={() => setBatchDeleteConfirm(false)}>{t('common.cancel')}</Button>
             <Button
               variant="destructive"
               onClick={handleBatchDelete}
               disabled={batchDeleting}
             >
-              {batchDeleting ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-              Delete {selectedIds.size} Document{selectedIds.size !== 1 ? 's' : ''}
+              {batchDeleting ? <Loader2 className="h-4 w-4 animate-spin me-2" /> : null}
+              {t('documents.deleteCountAction', { count: selectedIds.size })}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1235,21 +1239,21 @@ export function PatientDetail({ patient }: PatientDetailProps) {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-red-600">
               <UserRoundX className="h-5 w-5" />
-              Delete Patient
+              {t('patients.deletePatient')}
             </DialogTitle>
             <DialogDescription>
-              Are you sure you want to delete <strong>{getPatientDisplayName(patient)}</strong> and all their {documents.length} document{documents.length !== 1 ? 's' : ''}? This action cannot be undone.
+              {t('patients.deleteConfirmPrefix')} <strong>{getPatientDisplayName(patient)}</strong> {t('patients.deleteConfirmSuffix', { count: documents.length })}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeletePatientConfirm(false)}>Cancel</Button>
+            <Button variant="outline" onClick={() => setDeletePatientConfirm(false)}>{t('common.cancel')}</Button>
             <Button
               variant="destructive"
               onClick={handleDeletePatient}
               disabled={deletingPatient}
             >
-              {deletingPatient ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-              Delete Patient & All Documents
+              {deletingPatient ? <Loader2 className="h-4 w-4 animate-spin me-2" /> : null}
+              {t('patients.deleteAllAction')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1313,8 +1317,8 @@ export function PatientDetail({ patient }: PatientDetailProps) {
                     onClick={exitSelectMode}
                     className="flex-shrink-0 text-muted-foreground hover:text-foreground"
                   >
-                    <X className="h-4 w-4 mr-1" />
-                    Close
+                    <X className="h-4 w-4 me-1" />
+                    {t('common.close')}
                   </Button>
                   <div className="h-4 w-px bg-border flex-shrink-0" />
                   <Button
@@ -1324,11 +1328,11 @@ export function PatientDetail({ patient }: PatientDetailProps) {
                     className="flex-shrink-0 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/20"
                   >
                     {allSelected ? (
-                      <Square className="h-4 w-4 mr-1.5" />
+                      <Square className="h-4 w-4 me-1.5" />
                     ) : (
-                      <CheckSquare className="h-4 w-4 mr-1.5" />
+                      <CheckSquare className="h-4 w-4 me-1.5" />
                     )}
-                    {allSelected ? 'Deselect All' : 'Select All'}
+                    {allSelected ? t('common.deselectAll') : t('common.selectAll')}
                   </Button>
                   <Badge
                     variant="secondary"
@@ -1338,7 +1342,7 @@ export function PatientDetail({ patient }: PatientDetailProps) {
                         : ''
                     }`}
                   >
-                    {selectedIds.size} selected
+                    {t('documents.selectedCount', { count: selectedIds.size })}
                   </Badge>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
@@ -1350,11 +1354,11 @@ export function PatientDetail({ patient }: PatientDetailProps) {
                     className="border-emerald-200 dark:border-emerald-800 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/20"
                   >
                     {exporting ? (
-                      <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
+                      <Loader2 className="h-4 w-4 animate-spin me-1.5" />
                     ) : (
-                      <Archive className="h-4 w-4 mr-1.5" />
+                      <Archive className="h-4 w-4 me-1.5" />
                     )}
-                    <span className="hidden sm:inline">Export</span>
+                    <span className="hidden sm:inline">{t('common.export')}</span>
                   </Button>
                   <Button
                     size="sm"
@@ -1363,8 +1367,8 @@ export function PatientDetail({ patient }: PatientDetailProps) {
                     disabled={selectedIds.size === 0}
                     className="bg-red-600 hover:bg-red-700 text-white"
                   >
-                    <Trash2 className="h-4 w-4 mr-1.5" />
-                    <span className="hidden sm:inline">Delete</span>
+                    <Trash2 className="h-4 w-4 me-1.5" />
+                    <span className="hidden sm:inline">{t('common.delete')}</span>
                   </Button>
                 </div>
               </div>

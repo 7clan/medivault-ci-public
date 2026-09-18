@@ -31,9 +31,11 @@ import {
 } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
+import { useI18n } from '@/i18n'
 
 export function ScanCapture() {
   const { toast } = useToast()
+  const { t, tCategory, formatTime } = useI18n()
   const { goBack, scanTargetPatientId, setCurrentView } = useAppStore()
   const [patients, setPatients] = useState<PatientInfo[]>([])
   const [selectedPatientId, setSelectedPatientId] = useState(scanTargetPatientId || '')
@@ -93,7 +95,7 @@ export function ScanCapture() {
       setCameraActive(true)
     } catch (err) {
       console.error('Camera error:', err)
-      toast({ title: 'Camera Access Denied', description: 'Please allow camera access to scan documents.', variant: 'destructive' })
+      toast({ title: t('scan.cameraDeniedTitle'), description: t('scan.cameraDeniedDesc'), variant: 'destructive' })
     }
   }
 
@@ -122,8 +124,8 @@ export function ScanCapture() {
           const file = new File([blob], `scan_${Date.now()}.jpg`, { type: 'image/jpeg' })
           setCapturedImages((prev) => [...prev, file])
           setUploadedFiles((prev) => [...prev, file])
-          toast({ title: 'Captured!', description: 'Document page captured.' })
-          const newEntry = { name: `Scan ${new Date().toLocaleTimeString()}`, time: new Date().toISOString() }
+          toast({ title: t('scan.capturedTitle'), description: t('scan.capturedDesc') })
+          const newEntry = { name: t('scan.recentEntry', { time: formatTime(new Date()) }), time: new Date().toISOString() }
           setRecentlyScanned((prev) => {
             const updated = [newEntry, ...prev].slice(0, 5)
             try { localStorage.setItem('medivault-recently-scanned', JSON.stringify(updated)) } catch { /* ignore */ }
@@ -148,7 +150,7 @@ export function ScanCapture() {
     const newFiles = Array.from(files)
     const oversized = newFiles.filter(f => f.size > MAX_FILE_SIZE)
     if (oversized.length > 0) {
-      toast({ title: 'File Too Large', description: `${oversized.map(f => f.name).join(', ')} exceed the 50 MiB upload limit.`, variant: 'destructive' })
+      toast({ title: t('documents.fileTooLargeTitle'), description: t('scan.fileTooLargeListDesc', { names: oversized.map(f => f.name).join(', ') }), variant: 'destructive' })
     }
     setUploadedFiles((prev) => [...prev, ...newFiles.filter(f => f.size <= MAX_FILE_SIZE)])
     if (!title && newFiles.length === 1) { setTitle(newFiles[0].name.replace(/\.[^/.]+$/, '')) }
@@ -169,7 +171,7 @@ export function ScanCapture() {
     const files = Array.from(e.dataTransfer.files)
     const oversized = files.filter(f => f.size > MAX_FILE_SIZE)
     if (oversized.length > 0) {
-      toast({ title: 'File Too Large', description: `${oversized.map(f => f.name).join(', ')} exceed the 50 MiB upload limit.`, variant: 'destructive' })
+      toast({ title: t('documents.fileTooLargeTitle'), description: t('scan.fileTooLargeListDesc', { names: oversized.map(f => f.name).join(', ') }), variant: 'destructive' })
     }
     setUploadedFiles((prev) => [...prev, ...files.filter(f => f.size <= MAX_FILE_SIZE)])
     if (!title && files.length === 1) { setTitle(files[0].name.replace(/\.[^/.]+$/, '')) }
@@ -178,8 +180,8 @@ export function ScanCapture() {
   const removeFile = (index: number) => { setUploadedFiles((prev) => prev.filter((_, i) => i !== index)) }
 
   const handleUpload = async () => {
-    if (!selectedPatientId) { toast({ title: 'Select Patient', description: 'Please select a patient first.', variant: 'destructive' }); return }
-    if (uploadedFiles.length === 0) { toast({ title: 'No Files', description: 'Please capture or upload at least one file.', variant: 'destructive' }); return }
+    if (!selectedPatientId) { toast({ title: t('scan.selectPatientTitle'), description: t('scan.selectPatientDesc'), variant: 'destructive' }); return }
+    if (uploadedFiles.length === 0) { toast({ title: t('scan.noFilesTitle'), description: t('scan.noFilesDesc'), variant: 'destructive' }); return }
     setUploading(true)
     let successCount = 0
     let failCount = 0
@@ -196,7 +198,7 @@ export function ScanCapture() {
         } else {
           failCount++
           if (res.status === 413) {
-            toast({ title: 'File Too Large', description: `${file.name} exceeds the 50 MiB upload limit.`, variant: 'destructive' })
+            toast({ title: t('documents.fileTooLargeTitle'), description: t('documents.fileTooLargeDesc', { name: file.name }), variant: 'destructive' })
           }
         }
       } catch { failCount++ }
@@ -204,44 +206,44 @@ export function ScanCapture() {
     stopCamera()
     setUploading(false)
     if (failCount === 0) {
-      toast({ title: 'Upload Complete!', description: `${successCount} document${successCount > 1 ? 's' : ''} saved successfully.` })
+      toast({ title: t('scan.uploadCompleteTitle'), description: successCount === 1 ? t('scan.savedOne') : t('scan.savedCount', { count: successCount }) })
       goBack()
     } else {
-      toast({ title: 'Partial Upload', description: `${successCount} succeeded, ${failCount} failed.`, variant: 'destructive' })
+      toast({ title: t('scan.partialUploadTitle'), description: t('scan.partialUploadDesc', { succeeded: successCount, failed: failCount }), variant: 'destructive' })
     }
   }
 
   const totalSize = uploadedFiles.reduce((sum, f) => sum + f.size, 0)
 
   return (
-    <motion.div className="max-w-3xl mx-auto px-4 md:px-6 py-6 space-y-6" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.3 }}>
+    <motion.div data-qa="scan-capture-root" className="max-w-3xl mx-auto px-4 md:px-6 py-6 space-y-6" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.3 }}>
       {/* Header with scanned count badge */}
       <div className="flex items-center gap-3">
-        <Button variant="ghost" size="icon" onClick={() => { stopCamera(); goBack() }}><ArrowLeft className="h-5 w-5" /></Button>
+        <Button variant="ghost" size="icon" onClick={() => { stopCamera(); goBack() }}><ArrowLeft className="h-5 w-5 rtl:-scale-x-100" /></Button>
         <div className="flex-1">
           <div className="flex items-center gap-2">
-            <h1 className="text-xl font-bold text-gray-900 dark:text-white">Scan & Upload</h1>
+            <h1 className="text-xl font-bold text-gray-900 dark:text-white">{t('scan.title')}</h1>
             <AnimatePresence>
               {uploadedFiles.length > 0 && (
                 <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} exit={{ scale: 0 }} transition={{ type: 'spring', stiffness: 500, damping: 15 }} key={uploadedFiles.length}>
                   <Badge className="bg-emerald-500 text-white border-0 shadow-sm">
-                    <ScanLine className="h-3 w-3 mr-1" />
+                    <ScanLine className="h-3 w-3 me-1" />
                     <motion.span key={`count-${uploadedFiles.length}`} initial={{ y: -10, opacity: 0 }} animate={{ y: 0, opacity: 1 }} className="tabular-nums">{uploadedFiles.length}</motion.span>
                   </Badge>
                 </motion.div>
               )}
             </AnimatePresence>
           </div>
-          <p className="text-sm text-muted-foreground">Capture or upload documents for a patient</p>
+          <p className="text-sm text-muted-foreground">{t('scan.subtitle')}</p>
         </div>
       </div>
 
       {/* Patient Selection */}
       {!scanTargetPatientId && (
         <motion.div className="space-y-2" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
-          <Label>Select Patient *</Label>
+          <Label>{t('scan.selectPatient')}</Label>
           <Select value={selectedPatientId} onValueChange={setSelectedPatientId}>
-            <SelectTrigger className="transition-all duration-200 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400"><SelectValue placeholder="Choose a patient..." /></SelectTrigger>
+            <SelectTrigger className="transition-all duration-200 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400"><SelectValue placeholder={t('scan.choosePatientPlaceholder')} /></SelectTrigger>
             <SelectContent>{patients.map((p) => (<SelectItem key={p.id} value={p.id}>{p.firstName} {p.lastName}</SelectItem>))}</SelectContent>
           </Select>
         </motion.div>
@@ -251,12 +253,12 @@ export function ScanCapture() {
       <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }}>
         <Card className="shadow-md"><CardContent className="p-4 space-y-4">
           <div className="flex items-center justify-between">
-            <h3 className="font-semibold flex items-center gap-2"><Camera className="h-4 w-4 text-emerald-600" />Camera Capture</h3>
+            <h3 className="font-semibold flex items-center gap-2"><Camera className="h-4 w-4 text-emerald-600" />{t('scan.cameraCapture')}</h3>
             <div className="flex gap-2">
               {cameraActive && (
                 <AnimatePresence>
                   <motion.div key="switch" initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.8 }}>
-                    <Button variant="outline" size="icon" onClick={toggleCamera} title="Switch Camera" className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20"><SwitchCamera className="h-4 w-4" /></Button>
+                    <Button variant="outline" size="icon" onClick={toggleCamera} title={t('scan.switchCamera')} className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20"><SwitchCamera className="h-4 w-4" /></Button>
                   </motion.div>
                   <motion.div key="close" initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.8 }}>
                     <Button variant="outline" size="icon" onClick={stopCamera} className="hover:bg-red-50 dark:hover:bg-red-950/20 hover:text-red-600"><X className="h-4 w-4" /></Button>
@@ -274,8 +276,8 @@ export function ScanCapture() {
                 <Aperture className="h-8 w-8 text-emerald-600" />
               </motion.div>
               <div className="text-center relative z-10">
-                <p className="font-medium text-gray-900 dark:text-white">Open Camera</p>
-                <p className="text-sm text-muted-foreground">Use your device camera to scan documents</p>
+                <p className="font-medium text-gray-900 dark:text-white">{t('scan.openCamera')}</p>
+                <p className="text-sm text-muted-foreground">{t('scan.cameraHint')}</p>
               </div>
             </motion.button>
           ) : (
@@ -304,19 +306,19 @@ export function ScanCapture() {
                   </motion.button>
                 </div>
               </div>
-              <motion.div whileTap={{ scale: 0.98 }}><Button onClick={captureFrame} className="w-full bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-teal-600 text-white shadow-md shadow-emerald-200/30 dark:shadow-emerald-900/20"><Camera className="h-4 w-4 mr-2" />Capture Document</Button></motion.div>
+              <motion.div whileTap={{ scale: 0.98 }}><Button onClick={captureFrame} className="w-full bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-teal-600 text-white shadow-md shadow-emerald-200/30 dark:shadow-emerald-900/20"><Camera className="h-4 w-4 me-2" />{t('scan.captureDocument')}</Button></motion.div>
             </div>
           )}
 
           <AnimatePresence>
             {capturedImages.length > 0 && (
               <motion.div className="space-y-2" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.3 }}>
-                <p className="text-sm font-medium text-muted-foreground">Captured: {capturedImages.length} page{capturedImages.length > 1 ? 's' : ''}</p>
+                <p className="text-sm font-medium text-muted-foreground">{capturedImages.length === 1 ? t('scan.capturedOnePage') : t('scan.capturedPages', { count: capturedImages.length })}</p>
                 <div className="grid grid-cols-3 gap-2">
                   {capturedImages.map((img, i) => (
                     <motion.div key={i} className="relative aspect-[3/4] rounded-lg overflow-hidden bg-gray-100 dark:bg-gray-800 ring-1 ring-emerald-200/50 dark:ring-emerald-800/50" initial={{ opacity: 0, scale: 0.8, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} transition={{ delay: i * 0.1, type: 'spring' }}>
-                      <img src={URL.createObjectURL(img)} alt={`Page ${i + 1}`} className="w-full h-full object-cover" />
-                      <Badge className="absolute top-1 left-1 text-xs bg-emerald-600 text-white rounded-md">Page {i + 1}</Badge>
+                      <img src={URL.createObjectURL(img)} alt={t('scan.page', { number: i + 1 })} className="w-full h-full object-cover" />
+                      <Badge className="absolute top-1 start-1 text-xs bg-emerald-600 text-white rounded-md">{t('scan.page', { number: i + 1 })}</Badge>
                     </motion.div>
                   ))}
                 </div>
@@ -329,22 +331,22 @@ export function ScanCapture() {
       {/* File Upload Section */}
       <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
         <Card className="shadow-md"><CardContent className="p-4 space-y-4">
-          <h3 className="font-semibold flex items-center gap-2"><Upload className="h-4 w-4 text-emerald-600" />File Upload</h3>
+          <h3 className="font-semibold flex items-center gap-2"><Upload className="h-4 w-4 text-emerald-600" />{t('scan.fileUpload')}</h3>
           <motion.div className={`relative rounded-xl p-8 text-center cursor-pointer transition-all duration-300 overflow-hidden ${isDragging ? 'bg-emerald-50 dark:bg-emerald-950/20 border-2 border-emerald-400 dark:border-emerald-600 scale-[1.01]' : 'bg-gradient-to-br from-gray-50/50 to-white dark:from-gray-800/50 dark:to-gray-900/50'}`} onClick={() => document.getElementById('file-upload')?.click()} onDrop={handleDrop} onDragOver={(e) => { e.preventDefault(); setIsDragging(true) }} onDragLeave={() => setIsDragging(false)} whileHover={{ scale: 1.005 }} whileTap={{ scale: 0.995 }}>
             <div className="absolute inset-0 rounded-xl animated-dashed-border pointer-events-none" />
             <div className="relative z-10">
               <motion.div animate={isDragging ? { scale: 1.15, y: -4 } : { scale: 1, y: 0 }} transition={{ type: 'spring', stiffness: 300 }}>
                 <FileUp className={`h-10 w-10 mx-auto mb-3 transition-colors duration-300 ${isDragging ? 'text-emerald-500' : 'text-emerald-600'}`} />
               </motion.div>
-              <p className="font-medium text-gray-900 dark:text-white">{isDragging ? 'Drop files here!' : 'Drop files here or click to browse'}</p>
-              <p className="text-sm text-muted-foreground mt-1">PDF, JPG, PNG, HEIC, TIFF supported · Max 50 MiB per file</p>
+              <p className="font-medium text-gray-900 dark:text-white">{isDragging ? t('scan.dropHere') : t('scan.dropOrBrowse')}</p>
+              <p className="text-sm text-muted-foreground mt-1">{t('scan.formatsHint')}</p>
             </div>
             <input id="file-upload" type="file" className="hidden" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,.heif,.bmp,.tiff,.tif" multiple onChange={handleFileUpload} />
           </motion.div>
           <AnimatePresence>
             {uploadedFiles.length > 0 && (
               <motion.div className="space-y-2" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-                <p className="text-sm font-medium text-muted-foreground">{uploadedFiles.length} file{uploadedFiles.length !== 1 ? 's' : ''} selected ({(totalSize / 1024 / 1024).toFixed(1)} MB)</p>
+                <p className="text-sm font-medium text-muted-foreground">{uploadedFiles.length === 1 ? t('scan.fileSelectedOne', { size: (totalSize / 1024 / 1024).toFixed(1) }) : t('scan.filesSelected', { count: uploadedFiles.length, size: (totalSize / 1024 / 1024).toFixed(1) })}</p>
                 <div className="space-y-2 max-h-48 overflow-y-auto">
                   {uploadedFiles.map((file, i) => (
                     <motion.div key={`${file.name}-${i}`} className="flex items-center gap-3 p-2.5 rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-100 dark:border-gray-700 group hover:bg-emerald-50/50 dark:hover:bg-emerald-950/10 transition-colors" initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20, height: 0 }} transition={{ duration: 0.2, delay: i * 0.05 }} layout>
@@ -363,17 +365,17 @@ export function ScanCapture() {
       {/* Document Details */}
       <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25 }}>
         <Card className="shadow-md"><CardContent className="p-4 space-y-4">
-          <h3 className="font-semibold">Document Details</h3>
-          <div className="space-y-2"><Label>Title</Label><Input placeholder="Document title (e.g. Lab Results - Blood Work)" value={title} onChange={(e) => setTitle(e.target.value)} className="transition-all duration-200 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400" /></div>
-          <div className="space-y-2"><Label>Category</Label><Select value={category} onValueChange={setCategory}><SelectTrigger className="transition-all duration-200 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400"><SelectValue /></SelectTrigger><SelectContent>{DOCUMENT_CATEGORIES.map((cat) => (<SelectItem key={cat} value={cat}>{cat}</SelectItem>))}</SelectContent></Select></div>
-          <div className="space-y-2"><Label>Notes</Label><Textarea placeholder="Any additional notes about this document..." value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} className="transition-all duration-200 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400" /></div>
+          <h3 className="font-semibold">{t('scan.documentDetails')}</h3>
+          <div className="space-y-2"><Label>{t('documents.titleLabel')}</Label><Input placeholder={t('documents.titlePlaceholder')} value={title} onChange={(e) => setTitle(e.target.value)} className="transition-all duration-200 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400" /></div>
+          <div className="space-y-2"><Label>{t('documents.categories')}</Label><Select value={category} onValueChange={setCategory}><SelectTrigger className="transition-all duration-200 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400"><SelectValue /></SelectTrigger><SelectContent>{DOCUMENT_CATEGORIES.map((cat) => (<SelectItem key={cat} value={cat}>{tCategory(cat)}</SelectItem>))}</SelectContent></Select></div>
+          <div className="space-y-2"><Label>{t('patients.notes')}</Label><Textarea placeholder={t('documents.docNotesPlaceholder')} value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} className="transition-all duration-200 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400" /></div>
         </CardContent></Card>
       </motion.div>
 
       {/* Upload Button */}
       <motion.div whileTap={{ scale: 0.98 }}>
         <Button className="w-full bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-teal-600 text-white h-12 text-base shadow-md shadow-emerald-200/30 dark:shadow-emerald-900/20 transition-all duration-300 hover:shadow-lg disabled:opacity-50" disabled={uploading || uploadedFiles.length === 0 || !selectedPatientId} onClick={handleUpload}>
-          {uploading ? (<><Loader2 className="h-5 w-5 mr-2 animate-spin" />Uploading {uploadedFiles.length} file{uploadedFiles.length !== 1 ? 's' : ''}...</>) : (<><Upload className="h-5 w-5 mr-2" />Upload {uploadedFiles.length} Document{uploadedFiles.length !== 1 ? 's' : ''}</>)}
+          {uploading ? (<><Loader2 className="h-5 w-5 me-2 animate-spin" />{uploadedFiles.length === 1 ? t('scan.uploadingOne') : t('scan.uploadingCount', { count: uploadedFiles.length })}</>) : (<><Upload className="h-5 w-5 me-2" />{uploadedFiles.length === 1 ? t('scan.uploadOne') : t('scan.uploadCount', { count: uploadedFiles.length })}</>)}
         </Button>
       </motion.div>
 
@@ -382,7 +384,7 @@ export function ScanCapture() {
         {recentlyScanned.length > 0 && (
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 20 }} transition={{ delay: 0.3 }}>
             <Card className="shadow-sm"><CardContent className="p-3">
-              <div className="flex items-center gap-2 mb-2"><ScanLine className="h-3.5 w-3.5 text-muted-foreground" /><span className="text-xs font-medium text-muted-foreground">Recently Scanned</span></div>
+              <div className="flex items-center gap-2 mb-2"><ScanLine className="h-3.5 w-3.5 text-muted-foreground" /><span className="text-xs font-medium text-muted-foreground">{t('scan.recentlyScanned')}</span></div>
               <div className="flex gap-2 overflow-x-auto scrollbar-none">
                 {recentlyScanned.map((item, i) => (
                   <motion.div key={`${item.time}-${i}`} className="flex-shrink-0 px-3 py-2 rounded-lg bg-gray-50 dark:bg-gray-800/50 border border-gray-100 dark:border-gray-700/50 min-w-[120px]" initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.05 }}>
@@ -390,7 +392,7 @@ export function ScanCapture() {
                       <div className="w-5 h-5 rounded bg-emerald-100 dark:bg-emerald-900/40 flex items-center justify-center flex-shrink-0"><FileUp className="h-3 w-3 text-emerald-600" /></div>
                       <p className="text-xs text-gray-700 dark:text-gray-300 truncate font-medium">{item.name}</p>
                     </div>
-                    <p className="text-[10px] text-muted-foreground mt-0.5 pl-[26px]">{new Date(item.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+                    <p className="text-[10px] text-muted-foreground mt-0.5 ps-[26px]">{formatTime(item.time)}</p>
                   </motion.div>
                 ))}
               </div>

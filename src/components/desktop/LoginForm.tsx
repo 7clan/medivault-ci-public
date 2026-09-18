@@ -10,10 +10,13 @@ import { Separator } from '@/components/ui/separator'
 import { Stethoscope, Loader2, Wifi, WifiOff, KeyRound, ShieldCheck } from 'lucide-react'
 import { login, testServerConnection, changePassword, getDeviceStatus, friendlyMessage } from '@/lib/desktop/api'
 import { useDesktopStore } from '@/lib/desktop/store'
+import { useI18n } from '@/i18n'
+import { LanguageToggle } from '@/components/language-switcher'
 
 type LoginPhase = 'login' | 'change-password' | 'enrollment'
 
 export function DesktopLoginForm() {
+  const { t } = useI18n()
   const { serverUrl, setServerUrl, setAuthenticated, updateSettings } = useDesktopStore()
 
   // Form state
@@ -99,11 +102,11 @@ export function DesktopLoginForm() {
   const handleChangePassword = useCallback(async (e: FormEvent) => {
     e.preventDefault()
     if (newPassword !== confirmPassword) {
-      setError('Passwords do not match.')
+      setError(t('auth.error.passwordMismatch'))
       return
     }
     if (newPassword.length < 12) {
-      setError('Password must be at least 12 characters.')
+      setError(t('desktop.changePassword.error12'))
       return
     }
     setLoading(true)
@@ -131,7 +134,7 @@ export function DesktopLoginForm() {
     } finally {
       setLoading(false)
     }
-  }, [password, newPassword, confirmPassword])
+  }, [password, newPassword, confirmPassword, t])
 
   // --- Enrollment redirect ---
   const handleEnrollmentComplete = useCallback(() => {
@@ -151,23 +154,26 @@ export function DesktopLoginForm() {
             <Stethoscope className="w-8 h-8 text-white" />
           </div>
           <h1 className="text-2xl font-bold text-gradient-emerald">MediVault</h1>
-          <p className="text-sm text-muted-foreground">Secure Medical Document Management</p>
+          <p className="text-sm text-muted-foreground">{t('common.appTagline')}</p>
+          <div className="flex justify-center pt-1">
+            <LanguageToggle />
+          </div>
         </div>
 
         {/* ---- LOGIN PHASE ---- */}
         {phase === 'login' && (
           <Card className="border-0 shadow-xl">
             <CardHeader className="text-center pb-4">
-              <CardTitle className="text-xl">Sign In</CardTitle>
+              <CardTitle className="text-xl">{t('auth.signIn.title')}</CardTitle>
               <CardDescription>
-                Enter your credentials to access the desktop app.
+                {t('desktop.login.description')}
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <form onSubmit={handleLogin} className="space-y-4" aria-label="Sign in form">
+              <form onSubmit={handleLogin} className="space-y-4" aria-label={t('desktop.login.signInForm')}>
                 {/* Server URL */}
                 <div className="space-y-2">
-                  <Label htmlFor="server-url">Server URL</Label>
+                  <Label htmlFor="server-url">{t('desktop.login.serverUrl')}</Label>
                   <div className="flex gap-2">
                     <Input
                       id="server-url"
@@ -175,7 +181,7 @@ export function DesktopLoginForm() {
                       placeholder="https://medivault.local"
                       value={urlInput}
                       onChange={(e) => setUrlInput(e.target.value)}
-                      aria-label="Server URL"
+                      aria-label={t('desktop.login.serverUrl')}
                     />
                     <Button
                       type="button"
@@ -183,7 +189,7 @@ export function DesktopLoginForm() {
                       size="icon"
                       onClick={handleTestConnection}
                       disabled={testingConn || !urlInput}
-                      aria-label="Test server connection"
+                      aria-label={t('desktop.login.testConnection')}
                     >
                       {testingConn ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
@@ -197,7 +203,7 @@ export function DesktopLoginForm() {
                     </Button>
                   </div>
                   {connStatus === 'success' && (
-                    <p className="text-xs text-emerald-600 dark:text-emerald-400">Connected successfully</p>
+                    <p className="text-xs text-emerald-600 dark:text-emerald-400">{t('desktop.login.connected')}</p>
                   )}
                 </div>
 
@@ -205,7 +211,7 @@ export function DesktopLoginForm() {
 
                 {/* Email */}
                 <div className="space-y-2">
-                  <Label htmlFor="email">Email</Label>
+                  <Label htmlFor="email">{t('auth.email')}</Label>
                   <Input
                     id="email"
                     type="email"
@@ -220,11 +226,11 @@ export function DesktopLoginForm() {
 
                 {/* Password */}
                 <div className="space-y-2">
-                  <Label htmlFor="password">Password</Label>
+                  <Label htmlFor="password">{t('auth.password')}</Label>
                   <Input
                     id="password"
                     type="password"
-                    placeholder="Enter your password"
+                    placeholder={t('desktop.login.passwordPlaceholder')}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     required
@@ -244,11 +250,11 @@ export function DesktopLoginForm() {
                 <Button type="submit" className="w-full" disabled={loading || !email || !password}>
                   {loading ? (
                     <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Signing in…
+                      <Loader2 className="me-2 h-4 w-4 animate-spin" />
+                      {t('auth.signingIn')}
                     </>
                   ) : (
-                    'Sign In'
+                    t('auth.signIn.title')
                   )}
                 </Button>
               </form>
@@ -263,19 +269,19 @@ export function DesktopLoginForm() {
               <div className="w-12 h-12 mx-auto rounded-full bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center mb-2">
                 <KeyRound className="w-6 h-6 text-amber-600 dark:text-amber-400" />
               </div>
-              <CardTitle className="text-xl">Change Password</CardTitle>
+              <CardTitle className="text-xl">{t('desktop.changePassword.title')}</CardTitle>
               <CardDescription>
-                Your administrator requires you to set a new password before continuing.
+                {t('desktop.changePassword.description')}
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <form onSubmit={handleChangePassword} className="space-y-4" aria-label="Change password form">
+              <form onSubmit={handleChangePassword} className="space-y-4" aria-label={t('desktop.changePassword.form')}>
                 <div className="space-y-2">
-                  <Label htmlFor="new-password">New Password</Label>
+                  <Label htmlFor="new-password">{t('desktop.changePassword.new')}</Label>
                   <Input
                     id="new-password"
                     type="password"
-                    placeholder="Minimum 12 characters"
+                    placeholder={t('desktop.changePassword.minPlaceholder')}
                     value={newPassword}
                     onChange={(e) => setNewPassword(e.target.value)}
                     required
@@ -285,11 +291,11 @@ export function DesktopLoginForm() {
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="confirm-password">Confirm Password</Label>
+                  <Label htmlFor="confirm-password">{t('desktop.changePassword.confirm')}</Label>
                   <Input
                     id="confirm-password"
                     type="password"
-                    placeholder="Re-enter new password"
+                    placeholder={t('desktop.changePassword.confirmPlaceholder')}
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
                     required
@@ -305,11 +311,11 @@ export function DesktopLoginForm() {
                 <Button type="submit" className="w-full" disabled={loading || !newPassword || !confirmPassword}>
                   {loading ? (
                     <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Updating…
+                      <Loader2 className="me-2 h-4 w-4 animate-spin" />
+                      {t('desktop.changePassword.updating')}
                     </>
                   ) : (
-                    'Update Password'
+                    t('desktop.changePassword.submit')
                   )}
                 </Button>
               </form>
@@ -334,15 +340,16 @@ export function DesktopLoginForm() {
 import { DeviceEnrollment } from './DeviceEnrollment'
 
 function DeviceEnrollmentInline({ onComplete }: { onComplete: () => void }) {
+  const { t } = useI18n()
   return (
     <Card className="border-0 shadow-xl">
       <CardHeader className="text-center pb-4">
         <div className="w-12 h-12 mx-auto rounded-full bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center mb-2">
           <ShieldCheck className="w-6 h-6 text-emerald-600 dark:text-emerald-400" />
         </div>
-        <CardTitle className="text-xl">Device Enrollment</CardTitle>
+        <CardTitle className="text-xl">{t('desktop.enrollment.title')}</CardTitle>
         <CardDescription>
-          This device needs to be enrolled before you can use the desktop app.
+          {t('desktop.enrollment.description')}
         </CardDescription>
       </CardHeader>
       <CardContent>

@@ -31,6 +31,7 @@ import {
   MessageSquare,
 } from 'lucide-react'
 import { formatFileSize, formatAge } from '@/lib/utils-helpers'
+import { useI18n } from '@/i18n'
 import type { PatientInfo } from '@/store/app-store'
 
 interface PatientSummaryReportProps {
@@ -81,6 +82,7 @@ const cardVariants: Variants = {
 
 export function PatientSummaryReport({ patient, open, onOpenChange }: PatientSummaryReportProps) {
   const { toast } = useToast()
+  const { t, formatDate, formatDateTime } = useI18n()
   const [rawReport, setRawReport] = useState<ReportData | null>(null)
   const loading = open && rawReport === null
   const report = open ? rawReport : null
@@ -107,17 +109,17 @@ export function PatientSummaryReport({ patient, open, onOpenChange }: PatientSum
           const data = await res.json()
           setRawReport(data)
         } else {
-          toast({ title: 'Error', description: 'Failed to generate report', variant: 'destructive' })
+          toast({ title: t('auth.toast.errorTitle'), description: t('report.generateFailed'), variant: 'destructive' })
         }
       } catch (err: unknown) {
         if (!(err instanceof DOMException) || err.name !== 'AbortError') {
-          toast({ title: 'Error', description: 'Network error', variant: 'destructive' })
+          toast({ title: t('auth.toast.errorTitle'), description: t('errors.networkError'), variant: 'destructive' })
         }
       }
     }
     void fetchReport()
     return () => { controller.abort() }
-  }, [open, patient.id, toast])
+  }, [open, patient.id, toast, t])
 
   const handlePrint = () => {
     window.print()
@@ -137,10 +139,10 @@ export function PatientSummaryReport({ patient, open, onOpenChange }: PatientSum
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-500 to-teal-500 flex items-center justify-center">
               <FileText className="h-4 w-4 text-white" />
             </div>
-            Patient Summary Report
+            {t('report.title')}
           </DialogTitle>
           <DialogDescription>
-            Comprehensive overview for {patient.firstName} {patient.lastName}
+            {t('report.description', { name: `${patient.firstName} ${patient.lastName}` })}
           </DialogDescription>
         </DialogHeader>
 
@@ -148,19 +150,19 @@ export function PatientSummaryReport({ patient, open, onOpenChange }: PatientSum
           {/* Action buttons */}
           <div className="flex gap-2 mb-6 no-print">
             <Button onClick={handlePrint} variant="outline" className="border-emerald-200 text-emerald-700 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-400 dark:hover:bg-emerald-950/20">
-              <Printer className="h-4 w-4 mr-2" />
-              Print Report
+              <Printer className="h-4 w-4 me-2" />
+              {t('report.print')}
             </Button>
             <Button onClick={handleDownloadPdf} className="bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-white">
-              <Download className="h-4 w-4 mr-2" />
-              Download as PDF
+              <Download className="h-4 w-4 me-2" />
+              {t('report.downloadPdf')}
             </Button>
           </div>
 
           {loading ? (
             <div className="flex flex-col items-center justify-center py-16 gap-3">
               <Loader2 className="h-8 w-8 text-emerald-500 animate-spin" />
-              <p className="text-sm text-muted-foreground">Generating report...</p>
+              <p className="text-sm text-muted-foreground">{t('report.generating')}</p>
             </div>
           ) : report ? (
             <div className="space-y-4" id="report-content">
@@ -174,49 +176,49 @@ export function PatientSummaryReport({ patient, open, onOpenChange }: PatientSum
                     <h1 className="text-2xl font-bold text-gray-900">MediVault</h1>
                     <p className="text-sm text-gray-500">Patient Summary Report</p>
                   </div>
-                  <div className="ml-auto text-right text-sm text-gray-500">
-                    <p>Generated: {new Date(report.generatedAt).toLocaleDateString()}</p>
-                    <p>Doctor: {report.doctor.name}</p>
+                  <div className="ms-auto text-end text-sm text-gray-500">
+                    <p>{t('report.generated')}: {formatDate(report.generatedAt)}</p>
+                    <p>{t('common.doctor')}: {report.doctor.name}</p>
                   </div>
                 </div>
               </div>
 
               {/* Patient Info Card */}
               <motion.div custom={0} variants={cardVariants} initial="hidden" animate="visible">
-                <Card className="border-l-4 border-l-emerald-500">
+                <Card className="border-s-4 border-s-emerald-500">
                   <CardHeader className="pb-3">
                     <CardTitle className="text-base flex items-center gap-2">
                       <User className="h-4 w-4 text-emerald-600" />
-                      Patient Information
+                      {t('report.patientInformation')}
                     </CardTitle>
                   </CardHeader>
                   <CardContent>
                     <div className="grid grid-cols-2 gap-3 text-sm">
                       <div>
-                        <p className="text-muted-foreground text-xs">Full Name</p>
+                        <p className="text-muted-foreground text-xs">{t('patients.fullName')}</p>
                         <p className="font-medium">{report.patient.firstName} {report.patient.lastName}</p>
                       </div>
                       {report.patient.dateOfBirth && (
                         <div>
-                          <p className="text-muted-foreground text-xs">Age</p>
+                          <p className="text-muted-foreground text-xs">{t('patients.age')}</p>
                           <p className="font-medium">{formatAge(report.patient.dateOfBirth)}</p>
                         </div>
                       )}
                       {report.patient.phone && (
                         <div>
-                          <p className="text-muted-foreground text-xs flex items-center gap-1"><Phone className="h-3 w-3" />Phone</p>
+                          <p className="text-muted-foreground text-xs flex items-center gap-1"><Phone className="h-3 w-3" />{t('patients.phone')}</p>
                           <p className="font-medium">{report.patient.phone}</p>
                         </div>
                       )}
                       {report.patient.email && (
                         <div>
-                          <p className="text-muted-foreground text-xs flex items-center gap-1"><Mail className="h-3 w-3" />Email</p>
+                          <p className="text-muted-foreground text-xs flex items-center gap-1"><Mail className="h-3 w-3" />{t('patients.email')}</p>
                           <p className="font-medium">{report.patient.email}</p>
                         </div>
                       )}
                       {report.patient.address && (
                         <div className="col-span-2">
-                          <p className="text-muted-foreground text-xs flex items-center gap-1"><MapPin className="h-3 w-3" />Address</p>
+                          <p className="text-muted-foreground text-xs flex items-center gap-1"><MapPin className="h-3 w-3" />{t('patients.address')}</p>
                           <p className="font-medium">{report.patient.address}</p>
                         </div>
                       )}
@@ -227,26 +229,26 @@ export function PatientSummaryReport({ patient, open, onOpenChange }: PatientSum
 
               {/* Document Summary Card */}
               <motion.div custom={1} variants={cardVariants} initial="hidden" animate="visible">
-                <Card className="border-l-4 border-l-teal-500">
+                <Card className="border-s-4 border-s-teal-500">
                   <CardHeader className="pb-3">
                     <CardTitle className="text-base flex items-center gap-2">
                       <FileText className="h-4 w-4 text-teal-600" />
-                      Document Summary
+                      {t('report.documentSummary')}
                     </CardTitle>
                   </CardHeader>
                   <CardContent>
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
                       <div className="text-center p-3 bg-teal-50 dark:bg-teal-950/30 rounded-lg">
                         <p className="text-2xl font-bold text-teal-700 dark:text-teal-400">{report.documents.total}</p>
-                        <p className="text-xs text-muted-foreground mt-1">Total Documents</p>
+                        <p className="text-xs text-muted-foreground mt-1">{t('report.totalDocuments')}</p>
                       </div>
                       <div className="text-center p-3 bg-emerald-50 dark:bg-emerald-950/30 rounded-lg">
                         <p className="text-2xl font-bold text-emerald-700 dark:text-emerald-400">{report.documents.byCategory ? Object.keys(report.documents.byCategory).length : 0}</p>
-                        <p className="text-xs text-muted-foreground mt-1">Categories</p>
+                        <p className="text-xs text-muted-foreground mt-1">{t('report.categories')}</p>
                       </div>
                       <div className="text-center p-3 bg-amber-50 dark:bg-amber-950/30 rounded-lg">
                         <p className="text-2xl font-bold text-amber-700 dark:text-amber-400">{formatFileSize(report.documents.totalStorage)}</p>
-                        <p className="text-xs text-muted-foreground mt-1">Total Storage</p>
+                        <p className="text-xs text-muted-foreground mt-1">{t('health.totalStorage')}</p>
                       </div>
                     </div>
                     {report.documents.byCategory && Object.keys(report.documents.byCategory).length > 0 && (
@@ -264,34 +266,34 @@ export function PatientSummaryReport({ patient, open, onOpenChange }: PatientSum
 
               {/* Visit Summary Card */}
               <motion.div custom={2} variants={cardVariants} initial="hidden" animate="visible">
-                <Card className="border-l-4 border-l-emerald-500">
+                <Card className="border-s-4 border-s-emerald-500">
                   <CardHeader className="pb-3">
                     <CardTitle className="text-base flex items-center gap-2">
                       <Calendar className="h-4 w-4 text-emerald-600" />
-                      Visit Summary
+                      {t('report.visitSummary')}
                     </CardTitle>
                   </CardHeader>
                   <CardContent>
                     <div className="grid grid-cols-3 gap-4">
                       <div className="text-center p-3 bg-emerald-50 dark:bg-emerald-950/30 rounded-lg">
                         <p className="text-2xl font-bold text-emerald-700 dark:text-emerald-400">{report.visits.total}</p>
-                        <p className="text-xs text-muted-foreground mt-1">Total Visits</p>
+                        <p className="text-xs text-muted-foreground mt-1">{t('report.totalVisits')}</p>
                       </div>
                       <div className="text-center p-3 bg-teal-50 dark:bg-teal-950/30 rounded-lg">
                         <p className="text-2xl font-bold text-teal-700 dark:text-teal-400">{report.visits.upcoming}</p>
-                        <p className="text-xs text-muted-foreground mt-1">Upcoming</p>
+                        <p className="text-xs text-muted-foreground mt-1">{t('report.upcoming')}</p>
                       </div>
                       <div className="text-center p-3 bg-purple-50 dark:bg-purple-950/30 rounded-lg">
                         <p className="text-2xl font-bold text-purple-700 dark:text-purple-400">{report.visits.byStatus?.completed || 0}</p>
-                        <p className="text-xs text-muted-foreground mt-1">Completed</p>
+                        <p className="text-xs text-muted-foreground mt-1">{t('report.completed')}</p>
                       </div>
                     </div>
                     {report.visits.nextUpcoming && (
                       <div className="mt-3 flex items-center gap-2 text-sm bg-emerald-50 dark:bg-emerald-950/30 rounded-lg p-3">
                         <Clock className="h-4 w-4 text-emerald-600" />
-                        <span className="text-muted-foreground">Next:</span>
+                        <span className="text-muted-foreground">{t('overview.next')}:</span>
                         <span className="font-medium text-emerald-700 dark:text-emerald-400">
-                          {new Date(report.visits.nextUpcoming.visitDate).toLocaleDateString()} - {report.visits.nextUpcoming.visitType}
+                          {formatDate(report.visits.nextUpcoming.visitDate)} - {report.visits.nextUpcoming.visitType}
                         </span>
                       </div>
                     )}
@@ -302,36 +304,36 @@ export function PatientSummaryReport({ patient, open, onOpenChange }: PatientSum
               {/* Prescriptions & Notes Row */}
               <div className="grid grid-cols-2 gap-4">
                 <motion.div custom={3} variants={cardVariants} initial="hidden" animate="visible">
-                  <Card className="border-l-4 border-l-amber-500">
+                  <Card className="border-s-4 border-s-amber-500">
                     <CardHeader className="pb-3">
                       <CardTitle className="text-base flex items-center gap-2">
                         <Pill className="h-4 w-4 text-amber-600" />
-                        Prescriptions
+                        {t('prescriptions.title')}
                       </CardTitle>
                     </CardHeader>
                     <CardContent>
                       <div className="text-center py-2">
                         <p className="text-3xl font-bold text-amber-700 dark:text-amber-400">{report.prescriptions.active}</p>
-                        <p className="text-xs text-muted-foreground mt-1">Active Prescriptions</p>
-                        <p className="text-xs text-muted-foreground mt-0.5">of {report.prescriptions.total} total</p>
+                        <p className="text-xs text-muted-foreground mt-1">{t('report.activePrescriptions')}</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">{t('report.ofTotal', { count: report.prescriptions.total })}</p>
                       </div>
                     </CardContent>
                   </Card>
                 </motion.div>
 
                 <motion.div custom={4} variants={cardVariants} initial="hidden" animate="visible">
-                  <Card className="border-l-4 border-l-purple-500">
+                  <Card className="border-s-4 border-s-purple-500">
                     <CardHeader className="pb-3">
                       <CardTitle className="text-base flex items-center gap-2">
                         <StickyNote className="h-4 w-4 text-purple-600" />
-                        Clinical Notes
+                        {t('clinical.title')}
                       </CardTitle>
                     </CardHeader>
                     <CardContent>
                       <div className="text-center py-2">
                         <p className="text-3xl font-bold text-purple-700 dark:text-purple-400">{report.clinicalNotes.pinned}</p>
-                        <p className="text-xs text-muted-foreground mt-1">Pinned Notes</p>
-                        <p className="text-xs text-muted-foreground mt-0.5">of {report.clinicalNotes.total} total</p>
+                        <p className="text-xs text-muted-foreground mt-1">{t('report.pinnedNotes')}</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">{t('report.ofTotal', { count: report.clinicalNotes.total })}</p>
                       </div>
                     </CardContent>
                   </Card>
@@ -341,11 +343,11 @@ export function PatientSummaryReport({ patient, open, onOpenChange }: PatientSum
               {/* Recent Activity Card */}
               {report.recentActivity.length > 0 && (
                 <motion.div custom={5} variants={cardVariants} initial="hidden" animate="visible">
-                  <Card className="border-l-4 border-l-rose-500">
+                  <Card className="border-s-4 border-s-rose-500">
                     <CardHeader className="pb-3">
                       <CardTitle className="text-base flex items-center gap-2">
                         <Activity className="h-4 w-4 text-rose-600" />
-                        Recent Annotations
+                        {t('report.recentAnnotations')}
                       </CardTitle>
                     </CardHeader>
                     <CardContent>
@@ -355,10 +357,10 @@ export function PatientSummaryReport({ patient, open, onOpenChange }: PatientSum
                             <MessageSquare className="h-4 w-4 text-emerald-500 mt-0.5 flex-shrink-0" />
                             <div className="min-w-0 flex-1">
                               <p className="text-gray-900 dark:text-white truncate">{activity.content}</p>
-                              <p className="text-xs text-muted-foreground">on {activity.documentName}</p>
+                              <p className="text-xs text-muted-foreground">{t('report.onDocument', { name: activity.documentName })}</p>
                             </div>
                             <span className="text-xs text-muted-foreground flex-shrink-0">
-                              {new Date(activity.createdAt).toLocaleDateString()}
+                              {formatDate(activity.createdAt)}
                             </span>
                           </div>
                         ))}
@@ -372,8 +374,8 @@ export function PatientSummaryReport({ patient, open, onOpenChange }: PatientSum
               <div className="print-only mt-8 pt-6 border-t-2 border-gray-300">
                 <div className="flex justify-between items-end">
                   <div>
-                    <p className="text-sm text-gray-600">Report generated on {new Date(report.generatedAt).toLocaleString()}</p>
-                    <p className="text-sm text-gray-600">MediVault Medical Document Management</p>
+                    <p className="text-sm text-gray-600">{t('report.generatedOn', { date: formatDateTime(report.generatedAt) })}</p>
+                    <p className="text-sm text-gray-600">{t('common.appTagline')}</p>
                   </div>
                   <div className="text-center">
                     <div className="border-b-2 border-gray-900 w-48 mb-1" />

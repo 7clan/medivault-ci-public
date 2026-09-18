@@ -15,11 +15,12 @@ import {
   Zap,
 } from 'lucide-react'
 import { useAppStore } from '@/store/app-store'
+import { useT } from '@/i18n'
 
 interface TipStep {
   icon: typeof UserPlus
-  title: string
-  description: string
+  titleKey: string
+  descriptionKey: string
   action: string
   color: string
   gradient: string
@@ -29,8 +30,8 @@ interface TipStep {
 const tips: TipStep[] = [
   {
     icon: UserPlus,
-    title: 'Add Your First Patient',
-    description: 'Create patient profiles to start organizing their medical documents',
+    titleKey: 'welcome.tip1.title',
+    descriptionKey: 'welcome.tip1.description',
     action: 'add-patient',
     color: 'emerald',
     gradient: 'from-emerald-500/10 via-teal-500/5 to-transparent',
@@ -38,8 +39,8 @@ const tips: TipStep[] = [
   },
   {
     icon: Camera,
-    title: 'Scan Documents with Camera',
-    description: 'Use your device camera to capture prescriptions, lab results, and more',
+    titleKey: 'welcome.tip2.title',
+    descriptionKey: 'welcome.tip2.description',
     action: 'scan-capture',
     color: 'teal',
     gradient: 'from-teal-500/10 via-cyan-500/5 to-transparent',
@@ -47,8 +48,8 @@ const tips: TipStep[] = [
   },
   {
     icon: Upload,
-    title: 'Upload Existing Files',
-    description: 'Import PDFs, images, and other medical documents from your device',
+    titleKey: 'welcome.tip3.title',
+    descriptionKey: 'welcome.tip3.description',
     action: 'add-patient',
     color: 'amber',
     gradient: 'from-amber-500/10 via-orange-500/5 to-transparent',
@@ -56,8 +57,8 @@ const tips: TipStep[] = [
   },
   {
     icon: Download,
-    title: 'Create Regular Backups',
-    description: 'Export all data as ZIP for USB/CD storage and disaster recovery',
+    titleKey: 'welcome.tip4.title',
+    descriptionKey: 'welcome.tip4.description',
     action: 'backup',
     color: 'purple',
     gradient: 'from-purple-500/10 via-violet-500/5 to-transparent',
@@ -86,6 +87,7 @@ function getIconAnimation(color: string) {
 }
 
 export function WelcomeBanner() {
+  const t = useT()
   const [dismissed, setDismissed] = useState(() => {
     if (typeof window === 'undefined') return false
     return localStorage.getItem('medivault-welcome-dismissed') === 'true'
@@ -170,7 +172,7 @@ export function WelcomeBanner() {
                 <div className="flex items-center gap-2 mb-0.5">
                   <Sparkles className={`h-3.5 w-3.5 ${colors.text}`} />
                   <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                    Getting Started — Tip {currentStep + 1} of {tips.length}
+                    {t('welcome.header', { current: currentStep + 1, total: tips.length })}
                   </span>
                 </div>
                 <AnimatePresence mode="wait">
@@ -182,7 +184,7 @@ export function WelcomeBanner() {
                     exit={{ opacity: 0, x: -10 }}
                     transition={{ duration: 0.25 }}
                   >
-                    {step.title}
+                    {t(step.titleKey)}
                   </motion.h3>
                 </AnimatePresence>
                 <AnimatePresence mode="wait">
@@ -194,7 +196,7 @@ export function WelcomeBanner() {
                     exit={{ opacity: 0, x: -10 }}
                     transition={{ duration: 0.25, delay: 0.05 }}
                   >
-                    {step.description}
+                    {t(step.descriptionKey)}
                   </motion.p>
                 </AnimatePresence>
                 <div className="flex items-center gap-2 mt-3">
@@ -254,24 +256,24 @@ export function WelcomeBanner() {
                   onClick={() => { triggerSparkle(); handleAction(step.action) }}
                   className={`${colors.text} hover:bg-white/60 dark:hover:bg-white/10 transition-colors duration-200 relative overflow-hidden`}
                 >
-                  {step.action === 'add-patient' ? 'Add Patient' : step.action === 'scan-capture' ? 'Start Scanning' : 'Go to Settings'}
-                  <Zap className="h-3 w-3 ml-1" />
+                  {step.action === 'add-patient' ? t('patients.addPatient') : step.action === 'scan-capture' ? t('welcome.startScanning') : t('welcome.goToSettings')}
+                  <Zap className="h-3 w-3 ms-1" />
                 </Button>
                 <Button
                   variant="ghost"
                   size="icon"
                   onClick={() => { setCurrentStep((currentStep + 1) % tips.length); setTimerKey((k) => k + 1) }}
                   className="text-muted-foreground hover:text-foreground h-8 w-8"
-                  title="Next tip"
+                  title={t('welcome.nextTip')}
                 >
-                  <ChevronRight className="h-4 w-4" />
+                  <ChevronRight className="h-4 w-4 rtl:-scale-x-100" />
                 </Button>
                 <Button
                   variant="ghost"
                   size="icon"
                   onClick={handleDismiss}
                   className="text-muted-foreground hover:text-foreground h-8 w-8"
-                  title="Dismiss"
+                  title={t('common.dismiss')}
                 >
                   <X className="h-4 w-4" />
                 </Button>

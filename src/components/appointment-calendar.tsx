@@ -24,6 +24,7 @@ import { cn } from '@/lib/utils'
 import { getPatientDisplayName } from '@/lib/utils-helpers'
 import { useAppStore } from '@/store/app-store'
 import { useToast } from '@/hooks/use-toast'
+import { useI18n, type Locale } from '@/i18n'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   ChevronLeft,
@@ -111,11 +112,11 @@ const VISIT_TYPE_CONFIG: Record<string, { color: string; bg: string; border: str
   },
 }
 
-const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
-  scheduled: { label: 'Scheduled', color: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300' },
-  completed: { label: 'Completed', color: 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400' },
-  cancelled: { label: 'Cancelled', color: 'bg-rose-100 text-rose-600 dark:bg-rose-900/50 dark:text-rose-400' },
-  'no-show': { label: 'No Show', color: 'bg-amber-100 text-amber-600 dark:bg-amber-900/50 dark:text-amber-400' },
+const STATUS_CONFIG: Record<string, { color: string }> = {
+  scheduled: { color: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300' },
+  completed: { color: 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400' },
+  cancelled: { color: 'bg-rose-100 text-rose-600 dark:bg-rose-900/50 dark:text-rose-400' },
+  'no-show': { color: 'bg-amber-100 text-amber-600 dark:bg-amber-900/50 dark:text-amber-400' },
 }
 
 const VISIT_TYPE_ICONS: Record<string, typeof Stethoscope> = {
@@ -126,12 +127,19 @@ const VISIT_TYPE_ICONS: Record<string, typeof Stethoscope> = {
   'Procedure': FlaskConical,
 }
 
-const WEEKDAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-const WEEKDAY_FULL = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-const MONTH_NAMES = [
-  'January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December',
-]
+// Weekday/month labels are LOCALE-AWARE (FEATURE D): computed via
+// Intl with the active locale instead of hardcoded English arrays.
+// Monday-first ordering (2024-01-01 is a Monday).
+function weekdayShortNames(locale: string): string[] {
+  const fmt = new Intl.DateTimeFormat(locale, { weekday: 'short' })
+  return Array.from({ length: 7 }, (_, i) => fmt.format(new Date(2024, 0, 1 + i)))
+}
+
+/** Locale-aware i18n tag matching src/i18n/index.tsx's date locale. */
+function dateLocale(locale: Locale): string {
+  return locale === 'ar' ? 'ar-u-nu-latn' : 'en-US'
+}
+
 const TIME_SLOTS = Array.from({ length: 11 }, (_, i) => i + 8) // 8:00 - 18:00
 
 // ---------- Helpers ----------
@@ -190,12 +198,11 @@ function getWeekDays(date: Date): Date[] {
   return days
 }
 
-function formatTime12(time: string | null): string {
+function formatTime12(time: string | null, locale: string): string {
   if (!time) return ''
   const [h, m] = time.split(':').map(Number)
-  const ampm = h >= 12 ? 'PM' : 'AM'
-  const hour = h % 12 || 12
-  return `${hour}:${String(m).padStart(2, '0')} ${ampm}`
+  return new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit' })
+    .format(new Date(2000, 0, 1, h, m))
 }
 
 function getHourFromTime(time: string | null): number {
@@ -239,8 +246,19 @@ export function AppointmentCalendar() {
   const [actionLoading, setActionLoading] = useState(false)
   const [direction, setDirection] = useState<1 | -1>(1)
   const { toast } = useToast()
+  const { t, formatDate } = useI18n()
   const { selectPatient } = useAppStore()
   const slideKey = useRef(0)
+  // Visit types/statuses are STORED DATA — display localizes via the catalog,
+  // unknown custom values pass through verbatim (same contract as tCategory).
+  const tVisitType = (value: string) => {
+    const label = t(`visits.type.${value}`)
+    return label.startsWith('visits.type.') ? value : label
+  }
+  const tVisitStatus = (value: string) => {
+    const label = t(`visits.status.${value}`)
+    return label.startsWith('visits.status.') ? value : label
+  }
 
   // Fetch visits for visible date range
   const fetchVisits = useCallback(async (start: Date, end: Date) => {
@@ -341,13 +359,13 @@ export function AppointmentCalendar() {
         body: JSON.stringify({ status: 'completed' }),
       })
       if (res.ok) {
-        toast({ title: 'Visit marked as completed', description: `${getPatientDisplayName(actionVisit.patient)}'s visit completed.` })
+        toast({ title: t('visits.visitCompleted'), description: t('calendar.patientVisitCompleted', { name: getPatientDisplayName(actionVisit.patient) }) })
         fetchVisits(rangeStart, rangeEnd)
       } else {
-        toast({ title: 'Error', description: 'Failed to update visit status.', variant: 'destructive' })
+        toast({ title: t('auth.toast.errorTitle'), description: t('errors.updateVisitStatusFailed'), variant: 'destructive' })
       }
     } catch {
-      toast({ title: 'Error', description: 'Network error.', variant: 'destructive' })
+      toast({ title: t('auth.toast.errorTitle'), description: t('errors.networkError'), variant: 'destructive' })
     } finally {
       setActionLoading(false)
       setActionDialogOpen(false)
@@ -365,13 +383,13 @@ export function AppointmentCalendar() {
         body: JSON.stringify({ status: 'cancelled' }),
       })
       if (res.ok) {
-        toast({ title: 'Visit cancelled', description: `${getPatientDisplayName(actionVisit.patient)}'s visit has been cancelled.` })
+        toast({ title: t('visits.visitCancelled'), description: t('calendar.patientVisitCancelled', { name: getPatientDisplayName(actionVisit.patient) }) })
         fetchVisits(rangeStart, rangeEnd)
       } else {
-        toast({ title: 'Error', description: 'Failed to cancel visit.', variant: 'destructive' })
+        toast({ title: t('auth.toast.errorTitle'), description: t('errors.cancelVisitFailed'), variant: 'destructive' })
       }
     } catch {
-      toast({ title: 'Error', description: 'Network error.', variant: 'destructive' })
+      toast({ title: t('auth.toast.errorTitle'), description: t('errors.networkError'), variant: 'destructive' })
     } finally {
       setActionLoading(false)
       setActionDialogOpen(false)
@@ -401,23 +419,23 @@ export function AppointmentCalendar() {
     setActionDialogOpen(true)
   }
 
-  // Header label
+  // Header label (locale-aware month/week range)
   const headerLabel = useMemo(() => {
     if (mode === 'month') {
-      return `${MONTH_NAMES[currentDate.getMonth()]} ${currentDate.getFullYear()}`
+      return formatDate(currentDate, { month: 'long', year: 'numeric' })
     } else {
       const weekDays = getWeekDays(currentDate)
       const start = weekDays[0]
       const end = weekDays[6]
       if (start.getMonth() === end.getMonth()) {
-        return `${MONTH_NAMES[start.getMonth()]} ${start.getDate()} - ${end.getDate()}, ${start.getFullYear()}`
+        return `${formatDate(start, { month: 'long' })} ${start.getDate()} - ${end.getDate()}, ${start.getFullYear()}`
       } else if (start.getFullYear() === end.getFullYear()) {
-        return `${MONTH_NAMES[start.getMonth()].slice(0, 3)} ${start.getDate()} - ${MONTH_NAMES[end.getMonth()].slice(0, 3)} ${end.getDate()}, ${start.getFullYear()}`
+        return `${formatDate(start, { month: 'short' })} ${start.getDate()} - ${formatDate(end, { month: 'short' })} ${end.getDate()}, ${start.getFullYear()}`
       } else {
-        return `${MONTH_NAMES[start.getMonth()].slice(0, 3)} ${start.getDate()}, ${start.getFullYear()} - ${MONTH_NAMES[end.getMonth()].slice(0, 3)} ${end.getDate()}, ${end.getFullYear()}`
+        return `${formatDate(start, { month: 'short' })} ${start.getDate()}, ${start.getFullYear()} - ${formatDate(end, { month: 'short' })} ${end.getDate()}, ${end.getFullYear()}`
       }
     }
-  }, [mode, currentDate])
+  }, [mode, currentDate, formatDate])
 
   // Total visits in visible range
   const totalVisits = useMemo(() => {
@@ -441,9 +459,9 @@ export function AppointmentCalendar() {
                 <CalendarIcon className="w-5 h-5" />
               </div>
               <div>
-                <h2 className="text-lg font-bold text-gray-900 dark:text-white">Appointment Calendar</h2>
+                <h2 className="text-lg font-bold text-gray-900 dark:text-white">{t('calendar.title')}</h2>
                 <p className="text-xs text-muted-foreground">
-                  {totalVisits} visit{totalVisits !== 1 ? 's' : ''} in view
+                  {totalVisits === 1 ? t('calendar.oneVisitInView') : t('calendar.visitsInView', { count: totalVisits })}
                 </p>
               </div>
             </div>
@@ -461,7 +479,7 @@ export function AppointmentCalendar() {
                   )}
                 >
                   <CalendarDays className="w-3.5 h-3.5" />
-                  Month
+                  {t('calendar.month')}
                 </button>
                 <button
                   onClick={() => setMode('week')}
@@ -473,7 +491,7 @@ export function AppointmentCalendar() {
                   )}
                 >
                   <CalendarRange className="w-3.5 h-3.5" />
-                  Week
+                  {t('calendar.week')}
                 </button>
               </div>
 
@@ -482,13 +500,13 @@ export function AppointmentCalendar() {
               {/* Navigation */}
               <div className="flex items-center gap-1">
                 <Button variant="ghost" size="icon" className="h-8 w-8" onClick={goToPrev}>
-                  <ChevronLeft className="w-4 h-4" />
+                  <ChevronLeft className="w-4 h-4 rtl:-scale-x-100" />
                 </Button>
                 <Button variant="ghost" size="sm" className="h-8 px-2.5 text-xs font-semibold" onClick={goToToday}>
-                  Today
+                  {t('common.today')}
                 </Button>
                 <Button variant="ghost" size="icon" className="h-8 w-8" onClick={goToNext}>
-                  <ChevronRight className="w-4 h-4" />
+                  <ChevronRight className="w-4 h-4 rtl:-scale-x-100" />
                 </Button>
               </div>
             </div>
@@ -514,7 +532,7 @@ export function AppointmentCalendar() {
           {loading ? (
             <div className="flex items-center justify-center py-16">
               <Loader2 className="w-6 h-6 text-emerald-500 animate-spin" />
-              <span className="ml-2 text-sm text-muted-foreground">Loading visits...</span>
+              <span className="ms-2 text-sm text-muted-foreground">{t('calendar.loadingVisits')}</span>
             </div>
           ) : (
             <AnimatePresence mode="wait">
@@ -554,24 +572,24 @@ export function AppointmentCalendar() {
           {/* Legend */}
           <div className="px-4 sm:px-6 py-3 border-t border-gray-100 dark:border-gray-800">
             <div className="flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
-              <span className="font-medium text-gray-500 dark:text-gray-400">Visit Types:</span>
+              <span className="font-medium text-gray-500 dark:text-gray-400">{t('calendar.visitTypes')}</span>
               {Object.entries(VISIT_TYPE_CONFIG).map(([type, config]) => {
                 const Icon = VISIT_TYPE_ICONS[type] || Stethoscope
                 return (
                   <div key={type} className="flex items-center gap-1.5">
                     <span className={cn('w-2 h-2 rounded-full', config.dot)} />
-                    <span>{type}</span>
+                    <span>{tVisitType(type)}</span>
                   </div>
                 )
               })}
               <Separator orientation="vertical" className="h-3" />
               <div className="flex items-center gap-1.5">
                 <span className="w-2 h-2 rounded-full bg-amber-400" />
-                <span>Today</span>
+                <span>{t('common.today')}</span>
               </div>
               <div className="flex items-center gap-1.5">
                 <span className="w-2 h-2 rounded-full bg-gray-400" />
-                <span>Completed</span>
+                <span>{t('visits.status.completed')}</span>
               </div>
             </div>
           </div>
@@ -586,11 +604,11 @@ export function AppointmentCalendar() {
               <div className="w-8 h-8 rounded-full bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center">
                 <Activity className="w-4 h-4 text-white" />
               </div>
-              Visit Actions
+              {t('calendar.visitActions')}
             </DialogTitle>
             <DialogDescription>
               {actionVisit
-                ? `${getPatientDisplayName(actionVisit.patient)} — ${actionVisit.visitType} on ${formatDateKey(new Date(actionVisit.visitDate))}`
+                ? t('calendar.visitSummary', { name: getPatientDisplayName(actionVisit.patient), type: tVisitType(actionVisit.visitType), date: formatDate(new Date(actionVisit.visitDate)) })
                 : ''}
             </DialogDescription>
           </DialogHeader>
@@ -603,7 +621,7 @@ export function AppointmentCalendar() {
                   className="bg-emerald-600 hover:bg-emerald-700 text-white justify-start gap-2"
                 >
                   {actionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-                  Mark as Completed
+                  {t('calendar.markAsCompleted')}
                 </Button>
               )}
               {actionVisit.status === 'scheduled' && (
@@ -614,7 +632,7 @@ export function AppointmentCalendar() {
                   className="border-rose-200 dark:border-rose-800 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 justify-start gap-2"
                 >
                   {actionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <XCircle className="w-4 h-4" />}
-                  Cancel Visit
+                  {t('calendar.cancelVisit')}
                 </Button>
               )}
               <Button
@@ -626,8 +644,8 @@ export function AppointmentCalendar() {
                 className="justify-start gap-2 mt-1"
               >
                 <User className="w-4 h-4" />
-                Go to Patient
-                <ArrowRight className="w-3.5 h-3.5 ml-auto" />
+                {t('calendar.goToPatient')}
+                <ArrowRight className="w-3.5 h-3.5 ms-auto rtl:-scale-x-100" />
               </Button>
             </div>
           )}
@@ -660,6 +678,8 @@ function MonthView({
   onVisitAction,
   onGoToPatient,
 }: MonthViewProps) {
+  const { locale } = useI18n()
+  const weekdayNames = useMemo(() => weekdayShortNames(dateLocale(locale)), [locale])
   const grid = useMemo(
     () => getMonthGrid(currentDate.getFullYear(), currentDate.getMonth()),
     [currentDate]
@@ -672,7 +692,7 @@ function MonthView({
     <div className="px-2 sm:px-4 pb-2">
       {/* Weekday headers */}
       <div className="grid grid-cols-7 mb-1">
-        {WEEKDAY_NAMES.map((day) => (
+        {weekdayNames.map((day) => (
           <div
             key={day}
             className="text-center text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider py-2"
@@ -766,7 +786,7 @@ function MonthView({
                         )
                       })}
                       {extraCount > 0 && (
-                        <span className="text-[9px] font-medium text-gray-500 dark:text-gray-400 ml-0.5">
+                        <span className="text-[9px] font-medium text-gray-500 dark:text-gray-400 ms-0.5">
                           +{extraCount}
                         </span>
                       )}
@@ -815,6 +835,13 @@ interface WeekViewProps {
 }
 
 function WeekView({ currentDate, visitsByDate, onVisitAction, onGoToPatient }: WeekViewProps) {
+  const { t, locale } = useI18n()
+  const weekdayNames = useMemo(() => weekdayShortNames(dateLocale(locale)), [locale])
+  const timeTag = useMemo(() => dateLocale(locale), [locale])
+  const tVisitType = (value: string) => {
+    const label = t(`visits.type.${value}`)
+    return label.startsWith('visits.type.') ? value : label
+  }
   const weekDays = useMemo(() => getWeekDays(currentDate), [currentDate])
   const scrollRef = useRef<HTMLDivElement>(null)
   const today = new Date()
@@ -846,7 +873,7 @@ function WeekView({ currentDate, visitsByDate, onVisitAction, onGoToPatient }: W
                 'text-[10px] sm:text-xs font-medium uppercase tracking-wider',
                 todayMatch ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-400 dark:text-gray-500'
               )}>
-                {WEEKDAY_NAMES[i]}
+                {weekdayNames[i]}
               </div>
               <div className={cn(
                 'text-lg sm:text-xl font-bold mt-0.5',
@@ -866,9 +893,9 @@ function WeekView({ currentDate, visitsByDate, onVisitAction, onGoToPatient }: W
         {TIME_SLOTS.map((hour) => (
           <div key={hour} className="grid grid-cols-8 min-h-[3rem]">
             {/* Time label */}
-            <div className="w-14 sm:w-16 shrink-0 pr-2 text-right">
+            <div className="w-14 sm:w-16 shrink-0 pe-2 text-end">
               <span className="text-[10px] sm:text-xs text-gray-400 dark:text-gray-500 font-medium">
-                {hour === 12 ? '12 PM' : hour > 12 ? `${hour - 12} PM` : `${hour} AM`}
+                {new Intl.DateTimeFormat(timeTag, { hour: 'numeric' }).format(new Date(2000, 0, 1, hour))}
               </span>
             </div>
 
@@ -890,7 +917,7 @@ function WeekView({ currentDate, visitsByDate, onVisitAction, onGoToPatient }: W
                   )}
                 >
                   {/* Hour line indicator */}
-                  <div className="absolute top-0 left-0 right-0 h-px bg-gray-100 dark:bg-gray-800" />
+                  <div className="absolute top-0 inset-x-0 h-px bg-gray-100 dark:bg-gray-800" />
 
                   {/* Visit blocks */}
                   {hourVisits.length > 0 && (
@@ -915,7 +942,7 @@ function WeekView({ currentDate, visitsByDate, onVisitAction, onGoToPatient }: W
                                   onVisitAction(visit)
                                 }}
                                 className={cn(
-                                  'w-full text-left rounded-md px-1.5 py-1 text-[10px] sm:text-xs font-medium transition-all duration-200 hover:shadow-md hover:scale-[1.02] active:scale-[0.98] border cursor-pointer truncate',
+                                  'w-full text-start rounded-md px-1.5 py-1 text-[10px] sm:text-xs font-medium transition-all duration-200 hover:shadow-md hover:scale-[1.02] active:scale-[0.98] border cursor-pointer truncate',
                                   config.bg,
                                   config.border,
                                   config.color,
@@ -933,14 +960,14 @@ function WeekView({ currentDate, visitsByDate, onVisitAction, onGoToPatient }: W
                                 {visit.visitTime && (
                                   <div className="text-[9px] opacity-70 flex items-center gap-0.5 mt-0.5">
                                     <Clock className="w-2.5 h-2.5" />
-                                    {formatTime12(visit.visitTime)}
+                                    {formatTime12(visit.visitTime, timeTag)}
                                   </div>
                                 )}
                               </motion.button>
                             </TooltipTrigger>
                             <TooltipContent side="top" className="glass-strong text-xs max-w-[200px]">
                               <div className="font-semibold">{getPatientDisplayName(visit.patient)}</div>
-                              <div className="text-muted-foreground">{visit.visitType} • {formatTime12(visit.visitTime)}</div>
+                              <div className="text-muted-foreground">{tVisitType(visit.visitType)} • {formatTime12(visit.visitTime, timeTag)}</div>
                               {visit.chiefComplaint && (
                                 <div className="text-muted-foreground mt-0.5 truncate">{visit.chiefComplaint}</div>
                               )}
@@ -970,6 +997,16 @@ interface VisitDayListProps {
 }
 
 function VisitDayList({ date, visits, onVisitAction, onGoToPatient }: VisitDayListProps) {
+  const { t, locale, formatDate } = useI18n()
+  const tVisitType = (value: string) => {
+    const label = t(`visits.type.${value}`)
+    return label.startsWith('visits.type.') ? value : label
+  }
+  const tVisitStatus = (value: string) => {
+    const label = t(`visits.status.${value}`)
+    return label.startsWith('visits.status.') ? value : label
+  }
+  const timeTag = dateLocale(locale)
   const scheduledVisits = visits.filter((v) => v.status === 'scheduled')
   const completedVisits = visits.filter((v) => v.status !== 'scheduled')
 
@@ -980,14 +1017,14 @@ function VisitDayList({ date, visits, onVisitAction, onGoToPatient }: VisitDayLi
         <div className="flex items-center justify-between">
           <div>
             <p className="text-sm font-bold text-gray-900 dark:text-white">
-              {WEEKDAY_FULL[date.getDay() === 0 ? 6 : date.getDay() - 1]}
+              {formatDate(date, { weekday: 'long' })}
             </p>
             <p className="text-xs text-muted-foreground">
-              {MONTH_NAMES[date.getMonth()]} {date.getDate()}, {date.getFullYear()}
+              {formatDate(date, { month: 'long', day: 'numeric', year: 'numeric' })}
             </p>
           </div>
           <Badge variant="secondary" className="bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300">
-            {visits.length} visit{visits.length !== 1 ? 's' : ''}
+            {visits.length === 1 ? t('calendar.oneVisit') : t('calendar.visitCount', { count: visits.length })}
           </Badge>
         </div>
       </div>
@@ -1031,16 +1068,16 @@ function VisitDayList({ date, visits, onVisitAction, onGoToPatient }: VisitDayLi
                       </p>
                       <div className="flex items-center gap-2 mt-0.5">
                         <Badge variant="secondary" className={cn('text-[10px] px-1.5 py-0 h-4', statusConfig.color)}>
-                          {statusConfig.label}
+                          {tVisitStatus(visit.status)}
                         </Badge>
                         <Badge variant="outline" className={cn('text-[10px] px-1.5 py-0 h-4 border-current/20', config.color)}>
-                          {visit.visitType}
+                          {tVisitType(visit.visitType)}
                         </Badge>
                       </div>
                       {visit.visitTime && (
                         <div className="flex items-center gap-1 mt-1 text-xs text-muted-foreground">
                           <Clock className="w-3 h-3" />
-                          {formatTime12(visit.visitTime)}
+                          {formatTime12(visit.visitTime, timeTag)}
                         </div>
                       )}
                       {visit.chiefComplaint && (
@@ -1063,7 +1100,7 @@ function VisitDayList({ date, visits, onVisitAction, onGoToPatient }: VisitDayLi
                       className="flex items-center gap-1 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 px-1.5 py-0.5 rounded hover:bg-emerald-100/50 dark:hover:bg-emerald-900/30 transition-colors"
                     >
                       <CheckCircle2 className="w-3 h-3" />
-                      Complete
+                      {t('calendar.complete')}
                     </button>
                   )}
                   {visit.status === 'scheduled' && (
@@ -1075,7 +1112,7 @@ function VisitDayList({ date, visits, onVisitAction, onGoToPatient }: VisitDayLi
                       className="flex items-center gap-1 text-[10px] font-medium text-rose-500 dark:text-rose-400 hover:text-rose-600 dark:hover:text-rose-300 px-1.5 py-0.5 rounded hover:bg-rose-100/50 dark:hover:bg-rose-900/30 transition-colors"
                     >
                       <XCircle className="w-3 h-3" />
-                      Cancel
+                      {t('common.cancel')}
                     </button>
                   )}
                   <button
@@ -1083,11 +1120,11 @@ function VisitDayList({ date, visits, onVisitAction, onGoToPatient }: VisitDayLi
                       e.stopPropagation()
                       onGoToPatient(visit)
                     }}
-                    className={cn('flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded hover:bg-black/5 dark:hover:bg-white/5 transition-colors ml-auto', config.color)}
+                    className={cn('flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded hover:bg-black/5 dark:hover:bg-white/5 transition-colors ms-auto', config.color)}
                   >
                     <User className="w-3 h-3" />
-                    Patient
-                    <ArrowRight className="w-2.5 h-2.5" />
+                    {t('patients.title')}
+                    <ArrowRight className="w-2.5 h-2.5 rtl:-scale-x-100" />
                   </button>
                 </div>
               </motion.div>
@@ -1097,7 +1134,7 @@ function VisitDayList({ date, visits, onVisitAction, onGoToPatient }: VisitDayLi
           {visits.length === 0 && (
             <div className="text-center py-6">
               <CalendarIcon className="w-8 h-8 text-gray-300 dark:text-gray-600 mx-auto mb-2" />
-              <p className="text-sm text-muted-foreground">No visits scheduled</p>
+              <p className="text-sm text-muted-foreground">{t('calendar.noVisitsScheduled')}</p>
             </div>
           )}
         </div>

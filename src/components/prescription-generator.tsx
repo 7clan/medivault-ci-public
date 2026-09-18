@@ -40,6 +40,7 @@ import {
   LayoutTemplate,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useI18n } from '@/i18n'
 
 export interface MedicationEntry {
   name: string
@@ -277,6 +278,22 @@ export function PrescriptionGenerator({
   onSaved,
 }: PrescriptionGeneratorProps) {
   const { toast } = useToast()
+  const { t } = useI18n()
+  // Frequency/duration/category values are STORED DATA (saved inside the
+  // prescription JSON); display localizes via the catalog and unknown custom
+  // values pass through verbatim (same contract as tCategory).
+  const tFreq = (value: string) => {
+    const label = t(`prescriptions.freq.${value}`)
+    return label.startsWith('prescriptions.freq.') ? value : label
+  }
+  const tDuration = (value: string) => {
+    const label = t(`prescriptions.duration.${value}`)
+    return label.startsWith('prescriptions.duration.') ? value : label
+  }
+  const tMedCategory = (value: string) => {
+    const label = t(`prescriptions.category.${value}`)
+    return label.startsWith('prescriptions.category.') ? value : label
+  }
   const [medications, setMedications] = useState<MedicationEntry[]>([emptyMedication()])
   const [notes, setNotes] = useState('')
   const [saving, setSaving] = useState(false)
@@ -356,15 +373,15 @@ export function PrescriptionGenerator({
       ])
     }
     toast({
-      title: `${template.name} ${template.dosage} applied`,
-      description: `Filled from ${template.category} template`,
+      title: t('prescriptions.templateApplied', { name: template.name, dosage: template.dosage }),
+      description: t('prescriptions.templateFrom', { category: tMedCategory(template.category) }),
     })
   }
 
   const handleSave = async () => {
     const validMeds = medications.filter((m) => m.name.trim() !== '')
     if (validMeds.length === 0) {
-      toast({ title: 'Please add at least one medication', variant: 'destructive' })
+      toast({ title: t('prescriptions.addOneMed'), variant: 'destructive' })
       return
     }
 
@@ -382,15 +399,15 @@ export function PrescriptionGenerator({
       })
       if (res.ok) {
         const saved = await res.json()
-        toast({ title: 'Prescription Created' })
+        toast({ title: t('prescriptions.createdTitle') })
         onOpenChange(false)
         onSaved?.(saved)
       } else {
         const err = await res.json()
-        toast({ title: err.error || 'Failed to create prescription', variant: 'destructive' })
+        toast({ title: err.error || t('errors.createRxFailed'), variant: 'destructive' })
       }
     } catch {
-      toast({ title: 'Error creating prescription', variant: 'destructive' })
+      toast({ title: t('prescriptions.errorCreate'), variant: 'destructive' })
     }
     setSaving(false)
   }
@@ -401,14 +418,14 @@ export function PrescriptionGenerator({
         <DialogHeader className="flex-shrink-0">
           <DialogTitle className="flex items-center gap-2">
             <Pill className="h-5 w-5 text-emerald-600" />
-            New Prescription
+            {t('prescriptions.new')}
           </DialogTitle>
           <DialogDescription>
-            Create a prescription for {patientName}
+            {t('prescriptions.generator.createFor', { name: patientName })}
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+        <div className="flex-1 overflow-y-auto space-y-4 pe-1">
           {/* Templates Section */}
           <div className="space-y-2.5">
             <div className="flex items-center justify-between">
@@ -418,8 +435,8 @@ export function PrescriptionGenerator({
                 onClick={() => setTemplatesExpanded(!templatesExpanded)}
               >
                 <LayoutTemplate className="h-4 w-4 text-emerald-600" />
-                Quick Templates
-                <span className="text-xs text-muted-foreground font-normal">({PRESCRIPTION_TEMPLATES.length} available)</span>
+                {t('prescriptions.quickTemplates')}
+                <span className="text-xs text-muted-foreground font-normal">{t('prescriptions.templatesAvailable', { count: PRESCRIPTION_TEMPLATES.length })}</span>
                 <motion.span
                   animate={{ rotate: templatesExpanded ? 180 : 0 }}
                   transition={{ duration: 0.2 }}
@@ -441,17 +458,17 @@ export function PrescriptionGenerator({
                 >
                   {/* Search */}
                   <div className="relative mb-2.5">
-                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                    <Search className="absolute start-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
                     <Input
-                      placeholder="Search templates..."
+                      placeholder={t('prescriptions.searchTemplates')}
                       value={templateSearch}
                       onChange={(e) => setTemplateSearch(e.target.value)}
-                      className="h-8 pl-8 pr-8 text-sm"
+                      className="h-8 ps-8 pe-8 text-sm"
                     />
                     {templateSearch && (
                       <button
                         type="button"
-                        className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                        className="absolute end-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                         onClick={() => setTemplateSearch('')}
                       >
                         <X className="h-3.5 w-3.5" />
@@ -471,7 +488,7 @@ export function PrescriptionGenerator({
                           : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
                       )}
                     >
-                      All
+                      {t('documents.allCategories')}
                     </button>
                     {ALL_CATEGORIES.map((cat) => {
                       const config = CATEGORY_CONFIG[cat]
@@ -489,8 +506,8 @@ export function PrescriptionGenerator({
                           )}
                         >
                           <Icon className="h-3 w-3" />
-                          <span className="hidden sm:inline">{cat}</span>
-                          <span className="sm:hidden">{cat.split('/')[0]}</span>
+                          <span className="hidden sm:inline">{tMedCategory(cat)}</span>
+                          <span className="sm:hidden">{tMedCategory(cat).split('/')[0]}</span>
                         </button>
                       )
                     })}
@@ -511,7 +528,7 @@ export function PrescriptionGenerator({
                               whileTap={{ scale: 0.98 }}
                               onClick={() => applyTemplate(template)}
                               className={cn(
-                                'flex-shrink-0 w-[200px] rounded-lg border-l-4 p-3 text-left transition-all',
+                                'flex-shrink-0 w-[200px] rounded-lg border-s-4 p-3 text-start transition-all',
                                 config.bgColor,
                                 config.darkBgColor,
                                 config.borderColor,
@@ -530,7 +547,7 @@ export function PrescriptionGenerator({
                                     {template.name}
                                   </p>
                                   <p className={cn('text-xs font-medium', config.color)}>
-                                    {template.category}
+                                    {tMedCategory(template.category)}
                                   </p>
                                 </div>
                               </div>
@@ -541,9 +558,9 @@ export function PrescriptionGenerator({
                                   </span>
                                 </div>
                                 <div className="flex items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400">
-                                  <span>{template.frequency}</span>
+                                  <span>{tFreq(template.frequency)}</span>
                                   <span className="text-gray-300 dark:text-gray-600">·</span>
-                                  <span>{template.duration}</span>
+                                  <span>{tDuration(template.duration)}</span>
                                 </div>
                               </div>
                             </motion.button>
@@ -554,8 +571,8 @@ export function PrescriptionGenerator({
                   ) : (
                     <div className="text-center py-6 text-sm text-muted-foreground">
                       <Search className="h-8 w-8 mx-auto mb-2 opacity-30" />
-                      <p>No templates match &ldquo;{templateSearch}&rdquo;</p>
-                      <p className="text-xs mt-1">Try a different search term</p>
+                      <p>{t('prescriptions.noTemplatesMatch', { query: templateSearch })}</p>
+                      <p className="text-xs mt-1">{t('prescriptions.tryDifferentSearch')}</p>
                     </div>
                   )}
                 </motion.div>
@@ -567,11 +584,11 @@ export function PrescriptionGenerator({
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300">
-                Medications ({medications.length})
+                {t('prescriptions.medicationCountLabel', { count: medications.length })}
               </h4>
               <Badge variant="outline" className="text-xs text-emerald-600 border-emerald-200 dark:border-emerald-800">
-                <Sparkles className="h-3 w-3 mr-1" />
-                {medications.filter((m) => m.name.trim() !== '').length} filled
+                <Sparkles className="h-3 w-3 me-1" />
+                {t('prescriptions.filledCount', { count: medications.filter((m) => m.name.trim() !== '').length })}
               </Badge>
             </div>
 
@@ -603,13 +620,13 @@ export function PrescriptionGenerator({
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     <Input
-                      placeholder="Medication name"
+                      placeholder={t('prescriptions.medNamePlaceholder')}
                       value={med.name}
                       onChange={(e) => updateMedication(index, 'name', e.target.value)}
                       className="h-9"
                     />
                     <Input
-                      placeholder="Dosage (e.g. 500mg)"
+                      placeholder={t('prescriptions.dosagePlaceholder')}
                       value={med.dosage}
                       onChange={(e) => updateMedication(index, 'dosage', e.target.value)}
                       className="h-9"
@@ -622,11 +639,11 @@ export function PrescriptionGenerator({
                       onValueChange={(v) => updateMedication(index, 'frequency', v)}
                     >
                       <SelectTrigger className="h-9">
-                        <SelectValue placeholder="Frequency" />
+                        <SelectValue placeholder={t('prescriptions.frequencyPlaceholder')} />
                       </SelectTrigger>
                       <SelectContent>
                         {FREQUENCY_OPTIONS.map((opt) => (
-                          <SelectItem key={opt} value={opt}>{opt}</SelectItem>
+                          <SelectItem key={opt} value={opt}>{tFreq(opt)}</SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
@@ -636,18 +653,18 @@ export function PrescriptionGenerator({
                       onValueChange={(v) => updateMedication(index, 'duration', v)}
                     >
                       <SelectTrigger className="h-9">
-                        <SelectValue placeholder="Duration" />
+                        <SelectValue placeholder={t('prescriptions.durationPlaceholder')} />
                       </SelectTrigger>
                       <SelectContent>
                         {DURATION_OPTIONS.map((opt) => (
-                          <SelectItem key={opt} value={opt}>{opt}</SelectItem>
+                          <SelectItem key={opt} value={opt}>{tDuration(opt)}</SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
                   </div>
 
                   <Textarea
-                    placeholder="Special instructions (optional)"
+                    placeholder={t('prescriptions.instructionsPlaceholder')}
                     value={med.instructions}
                     onChange={(e) => updateMedication(index, 'instructions', e.target.value)}
                     className="min-h-[60px] text-sm resize-none"
@@ -662,18 +679,18 @@ export function PrescriptionGenerator({
               onClick={addMedication}
               className="w-full border-dashed border-emerald-300 dark:border-emerald-700 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/20"
             >
-              <Plus className="h-3.5 w-3.5 mr-1.5" />
-              Add Medication
+              <Plus className="h-3.5 w-3.5 me-1.5" />
+              {t('prescriptions.addMedication')}
             </Button>
           </div>
 
           {/* Notes */}
           <div>
             <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1.5">
-              Prescription Notes
+              {t('prescriptions.notesLabel')}
             </h4>
             <Textarea
-              placeholder="Additional notes or instructions for the patient..."
+              placeholder={t('prescriptions.notesPlaceholder')}
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               className="min-h-[80px] resize-none"
@@ -683,7 +700,7 @@ export function PrescriptionGenerator({
 
         <DialogFooter className="gap-2 sm:gap-0 flex-shrink-0 pt-2 border-t border-gray-100 dark:border-gray-800">
           <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button
             onClick={handleSave}
@@ -692,13 +709,13 @@ export function PrescriptionGenerator({
           >
             {saving ? (
               <>
-                <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
-                Saving...
+                <Loader2 className="h-4 w-4 animate-spin me-1.5" />
+                {t('common.saving')}
               </>
             ) : (
               <>
-                <Pill className="h-4 w-4 mr-1.5" />
-                Create Prescription
+                <Pill className="h-4 w-4 me-1.5" />
+                {t('prescriptions.createButton')}
               </>
             )}
           </Button>

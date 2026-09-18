@@ -50,6 +50,7 @@ export const ROUTE_PERMISSIONS: RoutePermission[] = [
   { method: 'POST',   path: '/api/patients',                  permission: 'patient:create' },
   { method: 'GET',    path: '/api/patients/export',           permission: 'patient:view' },
   { method: 'POST',   path: '/api/patients/import',           permission: 'patient:create' },
+  { method: 'DELETE', path: '/api/patients/bulk',             permission: 'patient:delete' },
   { method: 'GET',    path: '/api/patients/[id]',             permission: 'patient:view' },
   { method: 'PUT',    path: '/api/patients/[id]',             permission: 'patient:edit' },
   { method: 'DELETE', path: '/api/patients/[id]',             permission: 'patient:delete' },

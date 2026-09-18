@@ -5,6 +5,7 @@ import { motion } from 'framer-motion'
 import { Card, CardContent } from '@/components/ui/card'
 import { getCategoryColor } from '@/lib/utils-helpers'
 import { BarChart3 } from 'lucide-react'
+import { useI18n } from '@/i18n'
 
 interface CategoryBreakdown {
   category: string
@@ -46,6 +47,7 @@ function getBarBgDotClass(category: string): string {
 }
 
 export function StatsCharts({ categoryBreakdown }: StatsChartsProps) {
+  const { t, tCategory } = useI18n()
   const topCategories = useMemo(
     () => (categoryBreakdown || []).slice(0, 5),
     [categoryBreakdown]
@@ -63,7 +65,7 @@ export function StatsCharts({ categoryBreakdown }: StatsChartsProps) {
         <div className="flex items-center gap-2 mb-4">
           <BarChart3 className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
           <h2 className="text-base font-semibold text-gray-900 dark:text-white">
-            Document Categories
+            {t('documents.categories')}
           </h2>
         </div>
 
@@ -73,9 +75,9 @@ export function StatsCharts({ categoryBreakdown }: StatsChartsProps) {
             return (
               <div key={cat.category} className="flex items-center gap-3">
                 {/* Label */}
-                <div className="w-28 sm:w-32 flex-shrink-0 text-right">
+                <div className="w-28 sm:w-32 flex-shrink-0 text-end">
                   <span className="text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 truncate block">
-                    {cat.category}
+                    {tCategory(cat.category)}
                   </span>
                 </div>
 
@@ -114,7 +116,7 @@ export function StatsCharts({ categoryBreakdown }: StatsChartsProps) {
 
                 {/* Count */}
                 <motion.span
-                  className="w-10 sm:w-12 flex-shrink-0 text-right text-sm font-semibold text-gray-900 dark:text-white"
+                  className="w-10 sm:w-12 flex-shrink-0 text-end text-sm font-semibold text-gray-900 dark:text-white"
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   transition={{ delay: 0.5 + index * 0.12 }}
@@ -131,7 +133,7 @@ export function StatsCharts({ categoryBreakdown }: StatsChartsProps) {
           {topCategories.map((cat) => (
             <div key={cat.category} className="flex items-center gap-1.5">
               <div className={`w-2.5 h-2.5 rounded-sm ${getCategoryColor(cat.category).split(' ')[0]}`} />
-              <span className="text-xs text-muted-foreground">{cat.category}</span>
+              <span className="text-xs text-muted-foreground">{tCategory(cat.category)}</span>
             </div>
           ))}
         </div>

@@ -14,6 +14,7 @@ import {
   Check,
   X,
 } from 'lucide-react'
+import { useI18n } from '@/i18n'
 
 const PRESET_COLORS = [
   { name: 'emerald', value: '#10b981' },
@@ -43,6 +44,7 @@ interface DocumentAnnotationsProps {
 
 export function DocumentAnnotations({ documentId }: DocumentAnnotationsProps) {
   const { toast } = useToast()
+  const { t, formatDateTime } = useI18n()
   const [annotations, setAnnotations] = useState<AnnotationData[]>([])
   const [loading, setLoading] = useState(true)
   const [newContent, setNewContent] = useState('')
@@ -94,12 +96,12 @@ export function DocumentAnnotations({ documentId }: DocumentAnnotationsProps) {
       if (res.ok) {
         setNewContent('')
         loadAnnotations()
-        toast({ title: 'Annotation Added' })
+        toast({ title: t('viewer.annotationAdded') })
       } else {
-        toast({ title: 'Error', variant: 'destructive' })
+        toast({ title: t('auth.toast.errorTitle'), variant: 'destructive' })
       }
     } catch {
-      toast({ title: 'Network Error', variant: 'destructive' })
+      toast({ title: t('errors.networkError'), variant: 'destructive' })
     }
     setSubmitting(false)
   }
@@ -115,10 +117,10 @@ export function DocumentAnnotations({ documentId }: DocumentAnnotationsProps) {
       if (res.ok) {
         setEditingId(null)
         loadAnnotations()
-        toast({ title: 'Annotation Updated' })
+        toast({ title: t('viewer.annotationUpdated') })
       }
     } catch {
-      toast({ title: 'Error', variant: 'destructive' })
+      toast({ title: t('auth.toast.errorTitle'), variant: 'destructive' })
     }
   }
 
@@ -128,10 +130,10 @@ export function DocumentAnnotations({ documentId }: DocumentAnnotationsProps) {
       if (res.ok) {
         setDeletingId(null)
         loadAnnotations()
-        toast({ title: 'Annotation Deleted' })
+        toast({ title: t('viewer.annotationDeleted') })
       }
     } catch {
-      toast({ title: 'Error', variant: 'destructive' })
+      toast({ title: t('auth.toast.errorTitle'), variant: 'destructive' })
     }
   }
 
@@ -152,11 +154,11 @@ export function DocumentAnnotations({ documentId }: DocumentAnnotationsProps) {
     <div className="flex flex-col h-full">
       <div className="p-4 border-b border-border">
         <div className="flex items-center gap-2 mb-3">
-          <span className="text-sm font-medium text-foreground">Add Annotation</span>
+          <span className="text-sm font-medium text-foreground">{t('viewer.addAnnotation')}</span>
         </div>
         <div className="flex gap-2">
           <Input
-            placeholder="Write an annotation..."
+            placeholder={t('viewer.annotationPlaceholder')}
             value={newContent}
             onChange={(e) => setNewContent(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') handleAdd() }}
@@ -178,7 +180,7 @@ export function DocumentAnnotations({ documentId }: DocumentAnnotationsProps) {
               onClick={() => setSelectedColor(c.value)}
               className={`w-5 h-5 rounded-full transition-all ${selectedColor === c.value ? 'ring-2 ring-offset-2 ring-gray-400 dark:ring-offset-gray-900 scale-110' : 'hover:scale-110'}`}
               style={{ backgroundColor: c.value }}
-              title={c.name}
+              title={t(`color.${c.name}`)}
             />
           ))}
         </div>
@@ -189,8 +191,8 @@ export function DocumentAnnotations({ documentId }: DocumentAnnotationsProps) {
             <div className="w-12 h-12 rounded-full bg-emerald-50 dark:bg-emerald-950/30 flex items-center justify-center mb-3">
               <MessageSquare className="h-5 w-5 text-emerald-400" />
             </div>
-            <p className="text-sm font-medium text-muted-foreground">No annotations yet</p>
-            <p className="text-xs text-muted-foreground mt-1">Add your first annotation above</p>
+            <p className="text-sm font-medium text-muted-foreground">{t('viewer.noAnnotations')}</p>
+            <p className="text-xs text-muted-foreground mt-1">{t('viewer.addFirstAnnotation')}</p>
           </motion.div>
         ) : (
           <div className="space-y-2">
@@ -216,7 +218,7 @@ export function DocumentAnnotations({ documentId }: DocumentAnnotationsProps) {
                       <>
                         <div className="flex-1 min-w-0">
                           <p className="text-sm text-foreground break-words">{annotation.content}</p>
-                          <p className="text-xs text-muted-foreground mt-1">{new Date(annotation.createdAt).toLocaleString()}</p>
+                          <p className="text-xs text-muted-foreground mt-1">{formatDateTime(annotation.createdAt)}</p>
                         </div>
                         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
                           <Button size="icon" variant="ghost" className="h-7 w-7 hover:bg-emerald-50 dark:hover:bg-emerald-950/20" onClick={() => startEdit(annotation)}><Pencil className="h-3 w-3" /></Button>

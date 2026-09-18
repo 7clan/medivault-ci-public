@@ -27,6 +27,7 @@ import {
   AlertTriangle,
   CloudUpload,
 } from 'lucide-react'
+import { useI18n } from '@/i18n'
 
 interface ImportResult {
   imported: number
@@ -69,6 +70,7 @@ export function ImportPatientsDialog({
   // attribute commits.
   const importInFlightRef = useRef(false)
   const { toast } = useToast()
+  const { t } = useI18n()
 
   const resetState = useCallback(() => {
     setFile(null)
@@ -118,18 +120,18 @@ export function ImportPatientsDialog({
   }, [])
 
   const validateFile = useCallback((selectedFile: File): string | null => {
-    if (!selectedFile) return 'No file selected.'
+    if (!selectedFile) return t('importExport.noFile')
     if (!selectedFile.name.endsWith('.csv')) {
-      return 'Only CSV files are accepted. Please select a .csv file.'
+      return t('importExport.csvOnly')
     }
     if (selectedFile.size === 0) {
-      return 'The selected file is empty.'
+      return t('importExport.emptyFile')
     }
     if (selectedFile.size > 10 * 1024 * 1024) {
-      return 'File size exceeds 10 MB limit.'
+      return t('importExport.tooLarge')
     }
     return null
-  }, [])
+  }, [t])
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -241,11 +243,11 @@ export function ImportPatientsDialog({
       await new Promise((resolve) => setTimeout(resolve, 400))
 
       if (!res.ok) {
-        setError(data.error || 'An unexpected error occurred during import.')
+        setError(data.error || t('importExport.unexpectedError'))
         setPhase('error')
         toast({
-          title: 'Import Failed',
-          description: data.error || 'An unexpected error occurred.',
+          title: t('importExport.importFailed'),
+          description: data.error || t('importExport.unexpectedErrorShort'),
           variant: 'destructive',
         })
         return
@@ -260,17 +262,22 @@ export function ImportPatientsDialog({
       setPhase('complete')
 
       toast({
-        title: 'Import Complete',
-        description: `Successfully imported ${data.imported} patient${data.imported !== 1 ? 's' : ''}.${data.skipped > 0 ? ` ${data.skipped} row${data.skipped !== 1 ? 's' : ''} skipped.` : ''}`,
+        title: t('importExport.importComplete'),
+        description:
+          (data.imported === 1 ? t('importExport.toastOneImported') : t('importExport.toastImportedCount', { count: data.imported })) +
+          (data.skipped > 0
+            ? ' ' + (data.skipped === 1 ? t('importExport.toastSkippedOne') : t('importExport.toastSkippedCount', { count: data.skipped }))
+            : ''),
       })
 
       if (data.errors && data.errors.length > 0) {
+        const errCount = data.totalErrors || data.errors.length
         toast({
-          title: `${data.totalErrors || data.errors.length} Error${(data.totalErrors || data.errors.length) !== 1 ? 's' : ''} During Import`,
+          title: errCount === 1 ? t('importExport.toastOneErrorTitle') : t('importExport.toastErrorCountTitle', { count: errCount }),
           description:
             data.errors.slice(0, 3).join('\n') +
             (data.errors.length > 3
-              ? `\n...and ${(data.totalErrors || data.errors.length) - 3} more`
+              ? `\n${t('importExport.andMore', { count: errCount - 3 })}`
               : ''),
           variant: 'destructive',
         })
@@ -280,10 +287,10 @@ export function ImportPatientsDialog({
     } catch {
       clearInterval(progressInterval)
       setPhase('error')
-      setError('Network error. Please check your connection and try again.')
+      setError(t('importExport.networkErrorRetry'))
       toast({
-        title: 'Import Failed',
-        description: 'Network error. Please check your connection and try again.',
+        title: t('importExport.importFailed'),
+        description: t('importExport.networkErrorRetry'),
         variant: 'destructive',
       })
     } finally {
@@ -317,10 +324,10 @@ export function ImportPatientsDialog({
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center">
               <Upload className="h-4 w-4 text-white" />
             </div>
-            Import Patients
+            {t('importExport.title')}
           </DialogTitle>
           <DialogDescription>
-            Upload a CSV file to bulk import patient records into MediVault
+            {t('importExport.description')}
           </DialogDescription>
         </DialogHeader>
 
@@ -335,14 +342,14 @@ export function ImportPatientsDialog({
             >
               <FileDown className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
               <span className="text-sm text-emerald-700 dark:text-emerald-300">
-                Need a template?
+                {t('importExport.needTemplate')}
               </span>
               <button
                 type="button"
                 onClick={handleDownloadTemplate}
-                className="text-sm font-medium text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 underline underline-offset-2 transition-colors ml-auto"
+                className="text-sm font-medium text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 underline underline-offset-2 transition-colors ms-auto"
               >
-                Download CSV template
+                {t('importExport.downloadTemplate')}
               </button>
             </motion.div>
 
@@ -430,7 +437,7 @@ export function ImportPatientsDialog({
                           className="inline-flex items-center gap-1 text-xs text-red-500 hover:text-red-600 dark:text-red-400 dark:hover:text-red-300 transition-colors"
                         >
                           <X className="h-3 w-3" />
-                          Remove file
+                          {t('importExport.removeFile')}
                         </button>
                       </motion.div>
                     ) : isDragging ? (
@@ -450,7 +457,7 @@ export function ImportPatientsDialog({
                           </motion.div>
                         </div>
                         <p className="text-sm font-medium text-emerald-600 dark:text-emerald-400">
-                          Drop your CSV file here
+                          {t('importExport.dropHere')}
                         </p>
                       </motion.div>
                     ) : (
@@ -466,10 +473,10 @@ export function ImportPatientsDialog({
                         </div>
                         <div>
                           <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                            Drag & drop your CSV file here
+                            {t('importExport.dragOrBrowse')}
                           </p>
                           <p className="text-xs text-muted-foreground mt-1">
-                            or click to browse — .csv files up to 10 MB
+                            {t('importExport.orClick')}
                           </p>
                         </div>
                       </motion.div>
@@ -497,7 +504,7 @@ export function ImportPatientsDialog({
                   </div>
                   <div>
                     <p className="text-sm font-medium text-gray-900 dark:text-white">
-                      {phase === 'uploading' ? 'Uploading file...' : 'Processing patients...'}
+                      {phase === 'uploading' ? t('importExport.uploading') : t('importExport.processing')}
                     </p>
                     <p className="text-xs text-muted-foreground mt-0.5">
                       {file?.name}
@@ -541,12 +548,12 @@ export function ImportPatientsDialog({
                       </motion.div>
                       <div>
                         <p className="text-sm font-semibold text-emerald-800 dark:text-emerald-200">
-                          Import Successful
+                          {t('importExport.successTitle')}
                         </p>
                         <p className="text-xs text-emerald-600 dark:text-emerald-400">
                           {result.imported > 0
-                            ? `${result.imported} patient${result.imported !== 1 ? 's' : ''} imported successfully`
-                            : 'No new patients were imported'}
+                            ? (result.imported === 1 ? t('importExport.oneImported') : t('importExport.importedCount', { count: result.imported }))
+                            : t('importExport.noneImported')}
                         </p>
                       </div>
                     </div>
@@ -556,7 +563,7 @@ export function ImportPatientsDialog({
                       <div className="rounded-lg bg-white dark:bg-gray-900 p-3 text-center border border-emerald-100 dark:border-emerald-900/50">
                         <div className="flex items-center justify-center gap-1.5 mb-1">
                           <Users className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
-                          <span className="text-xs text-muted-foreground">Imported</span>
+                          <span className="text-xs text-muted-foreground">{t('importExport.imported')}</span>
                         </div>
                         <motion.span
                           initial={{ opacity: 0 }}
@@ -570,7 +577,7 @@ export function ImportPatientsDialog({
                       <div className="rounded-lg bg-white dark:bg-gray-900 p-3 text-center border border-amber-100 dark:border-amber-900/50">
                         <div className="flex items-center justify-center gap-1.5 mb-1">
                           <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
-                          <span className="text-xs text-muted-foreground">Skipped</span>
+                          <span className="text-xs text-muted-foreground">{t('importExport.skipped')}</span>
                         </div>
                         <motion.span
                           initial={{ opacity: 0 }}
@@ -595,8 +602,8 @@ export function ImportPatientsDialog({
                         <AlertCircle className="h-4 w-4 text-red-500" />
                         <p className="text-sm font-medium text-red-700 dark:text-red-400">
                           {result.totalErrors > result.errors.length
-                            ? `Showing ${result.errors.length} of ${result.totalErrors} errors`
-                            : `${result.errors.length} Error${result.errors.length !== 1 ? 's' : ''}`}
+                            ? t('importExport.showingErrorsOf', { shown: result.errors.length, total: result.totalErrors })
+                            : (result.errors.length === 1 ? t('importExport.oneError') : t('importExport.errorCount', { count: result.errors.length }))}
                         </p>
                       </div>
                       <ScrollArea className="max-h-32">
@@ -644,15 +651,15 @@ export function ImportPatientsDialog({
                 className="rounded-lg bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700 p-3"
               >
                 <p className="text-xs font-medium text-muted-foreground mb-1.5">
-                  Required CSV format:
+                  {t('importExport.requiredFormat')}
                 </p>
-                <code className="text-[11px] leading-relaxed text-gray-600 dark:text-gray-400 block whitespace-pre-wrap">
+                <code className="text-[11px] leading-relaxed text-gray-600 dark:text-gray-400 block whitespace-pre-wrap ltr-embed">
                   firstName,lastName,dateOfBirth,phone,email,address,notes
                 </code>
                 <p className="text-[11px] text-muted-foreground mt-1.5">
-                  Only <span className="font-medium">firstName</span> and{' '}
-                  <span className="font-medium">lastName</span> are required.
-                  Maximum 1,000 rows per import.
+                  {t('importExport.formatHintPrefix')} <span className="font-medium">firstName</span> {t('importExport.formatHintAnd')}{' '}
+                  <span className="font-medium">lastName</span>{' '}
+                  {t('importExport.formatHintSuffix')}
                 </p>
               </motion.div>
             )}
@@ -667,15 +674,15 @@ export function ImportPatientsDialog({
                 onClick={handleReset}
                 className="flex-1 transition-all duration-200"
               >
-                <Upload className="h-4 w-4 mr-2" />
-                Import Another
+                <Upload className="h-4 w-4 me-2" />
+                {t('importExport.importAnother')}
               </Button>
               <Button
                 onClick={handleClose}
                 className="flex-1 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-teal-600 text-white shadow-md shadow-emerald-200/40 dark:shadow-emerald-900/30 transition-all duration-300"
               >
-                <CheckCircle2 className="h-4 w-4 mr-2" />
-                Done
+                <CheckCircle2 className="h-4 w-4 me-2" />
+                {t('common.done')}
               </Button>
             </div>
           ) : (
@@ -686,7 +693,7 @@ export function ImportPatientsDialog({
                 disabled={isUploading}
                 className="transition-all duration-200"
               >
-                Cancel
+                {t('common.cancel')}
               </Button>
               <motion.div whileTap={{ scale: 0.98 }}>
                 <Button
@@ -696,13 +703,13 @@ export function ImportPatientsDialog({
                 >
                   {isUploading ? (
                     <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Importing...
+                      <Loader2 className="me-2 h-4 w-4 animate-spin" />
+                      {t('importExport.importing')}
                     </>
                   ) : (
                     <>
-                      <Upload className="mr-2 h-4 w-4" />
-                      Import Patients
+                      <Upload className="me-2 h-4 w-4" />
+                      {t('importExport.title')}
                     </>
                   )}
                 </Button>

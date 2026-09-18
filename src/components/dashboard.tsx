@@ -5,6 +5,15 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Checkbox } from '@/components/ui/checkbox'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+  DialogDescription,
+} from '@/components/ui/dialog'
 import { useToast } from '@/hooks/use-toast'
 import { useAppStore, type PatientInfo } from '@/store/app-store'
 import { formatFileSize, formatDate, getPatientDisplayName, formatAge } from '@/lib/utils-helpers'
@@ -42,6 +51,11 @@ import {
   X,
   ImageIcon,
   FileSpreadsheet,
+  AlertTriangle,
+  CheckSquare,
+  ListChecks,
+  Square,
+  Trash2,
 } from 'lucide-react'
 import { AddPatientDialog } from './add-patient-dialog'
 import { ImportPatientsDialog } from './import-patients-dialog'
@@ -51,6 +65,19 @@ import { AnalyticsDashboard } from './analytics-dashboard'
 import { AppointmentCalendar } from './appointment-calendar'
 import { VisitScheduler, type VisitData } from './visit-scheduler'
 import { TodaysOverview } from './todays-overview'
+import { useI18n } from '@/i18n'
+
+// The API's bulk-delete response — per-patient truth, never an
+// aggregate-only claim (a batch with failures must report exactly
+// which patients failed).
+interface BulkDeleteResult {
+  success: boolean
+  requestedCount: number
+  deletedCount: number
+  failedCount: number
+  deleted: Array<{ id: string; name: string }>
+  failed: Array<{ id: string; error: string }>
+}
 
 interface RecentPatient {
   id: string
@@ -159,7 +186,8 @@ function Sparkline({ data, color, gradientEnd = 'rgba(255,255,255,0.05)' }: { da
 
 export function Dashboard() {
   const { toast } = useToast()
-  const { selectPatient, selectDocument, setCurrentView, setScanTargetPatientId, searchQuery, setSearchQuery } =
+  const { t, formatDate: fmtDate } = useI18n()
+  const { selectPatient, selectDocument, setCurrentView, setScanTargetPatientId, searchQuery, setSearchQuery, removeFromRecentlyViewed } =
     useAppStore()
   const [stats, setStats] = useState<Stats | null>(null)
   const [patients, setPatients] = useState<PatientInfo[]>([])
@@ -173,6 +201,14 @@ export function Dashboard() {
   const [showCalendar, setShowCalendar] = useState(false)
   const [upcomingVisits, setUpcomingVisits] = useState<VisitData[]>([])
   const [visitSchedulerOpen, setVisitSchedulerOpen] = useState(false)
+
+  // Select Patients mode — bulk patient management. The selection is
+  // always an explicit set of patient IDs; there is deliberately no
+  // blanket delete-everything action.
+  const [selectMode, setSelectMode] = useState(false)
+  const [selectedPatientIds, setSelectedPatientIds] = useState<Set<string>>(new Set())
+  const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false)
+  const [bulkDeleting, setBulkDeleting] = useState(false)
 
   const loadStats = useCallback(async () => {
     try {
@@ -261,6 +297,52 @@ export function Dashboard() {
     return () => clearTimeout(timer)
   }, [searchQuery])
 
+  // The visible/filtered patient set — the Select Patients mode operates on
+  // exactly what the doctor sees (search-filtered results while searching,
+  // otherwise the loaded patient list).
+  const displayPatients = searchQuery.trim() ? searchResults : patients
+
+  // ─── Select Patients mode (bulk patient management) ──────
+  // The selection is always an explicit set of patient IDs; "Select All"
+  // only ever applies to the visible / filtered patients, and the
+  // selection resets whenever the visible set changes underneath it.
+  useEffect(() => {
+    setSelectedPatientIds(new Set())
+  }, [searchQuery])
+
+  useEffect(() => {
+    if (selectMode && displayPatients.length === 0) {
+      setSelectMode(false)
+      setSelectedPatientIds(new Set())
+    }
+  }, [selectMode, displayPatients])
+
+  const togglePatientSelection = (patientId: string) => {
+    setSelectedPatientIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(patientId)) {
+        next.delete(patientId)
+      } else {
+        next.add(patientId)
+      }
+      return next
+    })
+  }
+
+  const allVisibleSelected = displayPatients.length > 0
+    && displayPatients.every((p) => selectedPatientIds.has(p.id))
+
+  const toggleSelectAllVisible = () => {
+    setSelectedPatientIds(allVisibleSelected ? new Set() : new Set(displayPatients.map((p) => p.id)))
+  }
+
+  const exitSelectMode = () => {
+    setSelectMode(false)
+    setSelectedPatientIds(new Set())
+  }
+
+  const selectedPatients = displayPatients.filter((p) => selectedPatientIds.has(p.id))
+
   const handleImportComplete = () => {
     loadRecentPatients()
     loadStats()
@@ -272,7 +354,7 @@ export function Dashboard() {
     loadRecentPatients()
     loadStats()
     loadUpcomingVisits()
-    toast({ title: 'Patient Added', description: `${getPatientDisplayName(patient)} has been added.` })
+    toast({ title: t('dashboard.patientAddedTitle'), description: t('dashboard.patientAddedDesc', { name: getPatientDisplayName(patient) }) })
   }
 
   const handleScanDocument = () => {
@@ -301,9 +383,99 @@ export function Dashboard() {
       a.click()
       document.body.removeChild(a)
       URL.revokeObjectURL(url)
-      toast({ title: 'Export Started', description: 'Your patient CSV is being downloaded.' })
+      toast({ title: t('dashboard.exportStartedTitle'), description: t('dashboard.exportStartedDesc') })
     } catch {
-      toast({ title: 'Export Failed', description: 'The CSV could not be exported.', variant: 'destructive' })
+      toast({ title: t('dashboard.exportFailedTitle'), description: t('dashboard.exportFailedDesc'), variant: 'destructive' })
+    }
+  }
+
+  // Re-verify after a bulk change: the patient list, dashboard counts,
+  // upcoming visits AND (while searching) the search results are all
+  // re-fetched from the server so the UI reflects the post-delete truth —
+  // non-selected patients untouched, counts and recents correct.
+  const refreshAfterBulkChange = useCallback(async () => {
+    const q = searchQuery.trim()
+    const jobs: Array<Promise<unknown>> = [loadRecentPatients(), loadStats(), loadUpcomingVisits()]
+    if (q) {
+      jobs.push(
+        (async () => {
+          try {
+            const res = await fetch(`/api/patients?search=${encodeURIComponent(q)}&limit=20`, { credentials: 'include' })
+            if (res.ok) {
+              const data = await res.json()
+              setSearchResults(data.patients)
+            }
+          } catch {
+            // Best-effort — the full list refresh above is the source of truth.
+          }
+        })(),
+      )
+    }
+    await Promise.all(jobs)
+  }, [searchQuery, loadRecentPatients, loadStats, loadUpcomingVisits])
+
+  // Bulk delete — sends the EXPLICIT selection to the bulk API. The API
+  // deletes inside one transaction and answers with per-patient results;
+  // a partial failure is reported exactly (never "all done") and the
+  // failed patients stay selected so the doctor can retry.
+  const handleBulkDeletePatients = async () => {
+    if (selectedPatientIds.size === 0) return
+    setBulkDeleting(true)
+    const nameById = new Map(displayPatients.map((p) => [p.id, getPatientDisplayName(p)]))
+    try {
+      const res = await fetch('/api/patients/bulk', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ patientIds: [...selectedPatientIds] }),
+      })
+      if (!res.ok) {
+        // Total failure — nothing was deleted (the API rolls the whole
+        // batch back). Re-verify against the server, keep the selection.
+        toast({
+          title: t('patients.bulk.failedTitle'),
+          description: t('patients.bulk.failedDesc'),
+          variant: 'destructive',
+        })
+        await refreshAfterBulkChange()
+        return
+      }
+      const result = (await res.json()) as BulkDeleteResult
+      if (result.deleted && result.deleted.length > 0) {
+        removeFromRecentlyViewed(result.deleted.map((p) => p.id))
+      }
+      // Re-verify: the refreshed server state is the truth, not the
+      // optimistic response alone.
+      await refreshAfterBulkChange()
+      if (result.failedCount > 0) {
+        const failedNames = result.failed.map((f) => nameById.get(f.id) || t('patients.bulk.unknownPatient'))
+        const shown = failedNames.slice(0, 5).join(', ')
+        const extra = failedNames.length > 5 ? ` ${t('patients.bulk.moreCount', { count: failedNames.length - 5 })}` : ''
+        toast({
+          title: t('patients.bulk.partialFailureTitle', { deleted: result.deletedCount, failed: result.failedCount }),
+          description: t('patients.bulk.partialFailureDesc', { names: `${shown}${extra}` }),
+          variant: 'destructive',
+        })
+        setSelectedPatientIds(new Set(result.failed.map((f) => f.id)))
+        return
+      }
+      toast({
+        title: t('patients.bulk.successTitle'),
+        description: result.deletedCount === 1
+          ? t('patients.bulk.successDescOne', { count: result.deletedCount })
+          : t('patients.bulk.successDescOther', { count: result.deletedCount }),
+      })
+      exitSelectMode()
+    } catch {
+      toast({
+        title: t('patients.bulk.failedTitle'),
+        description: t('patients.bulk.networkFailedDesc'),
+        variant: 'destructive',
+      })
+      await refreshAfterBulkChange()
+    } finally {
+      setBulkDeleting(false)
+      setBulkDeleteConfirm(false)
     }
   }
 
@@ -320,33 +492,31 @@ export function Dashboard() {
           animate={{ opacity: 1 }}
         >
           <Loader2 className="h-10 w-10 animate-spin text-emerald-600 mx-auto mb-3" />
-          <p className="text-sm text-muted-foreground">Loading your clinic data...</p>
+          <p className="text-sm text-muted-foreground">{t('dashboard.loading')}</p>
         </motion.div>
       </div>
     )
   }
-
-  const displayPatients = searchQuery.trim() ? searchResults : patients
 
   // Get category-based accent bar color
   const getCategoryAccent = (patient: PatientInfo) => {
     if (patient.documents && patient.documents.length > 0) {
       const lastDoc = patient.documents[0]
       const cat = (lastDoc.category || '').toLowerCase()
-      if (cat.includes('lab')) return 'border-l-purple-500'
-      if (cat.includes('prescription')) return 'border-l-emerald-500'
-      if (cat.includes('x-ray') || cat.includes('xray')) return 'border-l-blue-500'
-      if (cat.includes('mri') || cat.includes('ct')) return 'border-l-red-500'
-      if (cat.includes('referral')) return 'border-l-amber-500'
-      if (cat.includes('insurance')) return 'border-l-teal-500'
-      if (cat.includes('identity')) return 'border-l-orange-500'
-      if (cat.includes('consent')) return 'border-l-yellow-500'
+      if (cat.includes('lab')) return 'border-s-purple-500'
+      if (cat.includes('prescription')) return 'border-s-emerald-500'
+      if (cat.includes('x-ray') || cat.includes('xray')) return 'border-s-blue-500'
+      if (cat.includes('mri') || cat.includes('ct')) return 'border-s-red-500'
+      if (cat.includes('referral')) return 'border-s-amber-500'
+      if (cat.includes('insurance')) return 'border-s-teal-500'
+      if (cat.includes('identity')) return 'border-s-orange-500'
+      if (cat.includes('consent')) return 'border-s-yellow-500'
     }
     const count = patient._count?.documents || 0
-    if (count >= 10) return 'border-l-emerald-500'
-    if (count >= 5) return 'border-l-teal-500'
-    if (count >= 2) return 'border-l-amber-500'
-    return 'border-l-gray-300 dark:border-l-gray-600'
+    if (count >= 10) return 'border-s-emerald-500'
+    if (count >= 5) return 'border-s-teal-500'
+    if (count >= 2) return 'border-s-amber-500'
+    return 'border-s-gray-300 dark:border-s-gray-600'
   }
 
   // Get name-based avatar ring color
@@ -403,20 +573,21 @@ export function Dashboard() {
 
   return (
     <motion.div
-      className="max-w-7xl mx-auto px-4 md:px-6 py-6 space-y-6"
+      data-qa="dashboard-root"
+      className={`max-w-7xl mx-auto px-4 md:px-6 py-6 space-y-6 ${selectMode ? 'pb-28' : ''}`}
       variants={containerVariants}
       initial="hidden"
       animate="show"
     >
       {/* Welcome Header */}
-      <motion.div variants={itemVariants} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+      <motion.div data-qa="dashboard-welcome" variants={itemVariants} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
-            Good {new Date().getHours() < 12 ? 'Morning' : new Date().getHours() < 18 ? 'Afternoon' : 'Evening'},{' '}
-            <span className="bg-gradient-to-r from-emerald-600 to-teal-600 bg-clip-text text-transparent">{useAppStore.getState().doctorName || 'Doctor'}</span>
+            {new Date().getHours() < 12 ? t('dashboard.greeting.morning') : new Date().getHours() < 18 ? t('dashboard.greeting.afternoon') : t('dashboard.greeting.evening')},{' '}
+            <span className="bg-gradient-to-r from-emerald-600 to-teal-600 bg-clip-text text-transparent">{useAppStore.getState().doctorName || t('common.doctor')}</span>
           </h1>
           <p className="text-muted-foreground mt-1">
-            {new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+            {fmtDate(new Date(), { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -425,52 +596,54 @@ export function Dashboard() {
             onClick={() => { setShowAnalytics(!showAnalytics); if (showCalendar) setShowCalendar(false) }}
             className={`transition-all duration-200 ${showAnalytics ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800'}`}
           >
-            <BarChart3 className="h-4 w-4 mr-1.5" />
-            Analytics
+            <BarChart3 className="h-4 w-4 me-1.5" />
+            {t('dashboard.analytics')}
             <motion.div
               animate={{ rotate: showAnalytics ? 180 : 0 }}
               transition={{ duration: 0.2 }}
             >
-              <ChevronDown className="h-3.5 w-3.5 ml-1" />
+              <ChevronDown className="h-3.5 w-3.5 ms-1" />
             </motion.div>
           </Button>
           <Button
+            data-qa="dashboard-calendar-toggle"
             variant={showCalendar ? 'default' : 'outline'}
             onClick={() => { setShowCalendar(!showCalendar); if (showAnalytics) setShowAnalytics(false) }}
             className={`transition-all duration-200 ${showCalendar ? 'bg-teal-600 hover:bg-teal-700 text-white' : 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800'}`}
           >
-            <CalendarPlus className="h-4 w-4 mr-1.5" />
-            Calendar
+            <CalendarPlus className="h-4 w-4 me-1.5" />
+            {t('dashboard.calendar')}
             <motion.div
               animate={{ rotate: showCalendar ? 180 : 0 }}
               transition={{ duration: 0.2 }}
             >
-              <ChevronDown className="h-3.5 w-3.5 ml-1" />
+              <ChevronDown className="h-3.5 w-3.5 ms-1" />
             </motion.div>
           </Button>
-          <Button onClick={() => setAddPatientOpen(true)} className="bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white shadow-md shadow-emerald-200/50 dark:shadow-emerald-900/40 transition-all duration-300 hover:shadow-lg">
-            <UserPlus className="h-4 w-4 mr-2" />
-            Add Patient
+          <Button data-qa="dashboard-add-patient" onClick={() => setAddPatientOpen(true)} className="bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white shadow-md shadow-emerald-200/50 dark:shadow-emerald-900/40 transition-all duration-300 hover:shadow-lg">
+            <UserPlus className="h-4 w-4 me-2" />
+            {t('patients.addPatient')}
           </Button>
-          <Button variant="outline" onClick={handleScanDocument} className="border-emerald-200 dark:border-emerald-800 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/20 transition-all duration-200">
-            <ScanLine className="h-4 w-4 mr-2" />
-            Scan Document
+          <Button data-qa="dashboard-scan" variant="outline" onClick={handleScanDocument} className="border-emerald-200 dark:border-emerald-800 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/20 transition-all duration-200">
+            <ScanLine className="h-4 w-4 me-2" />
+            {t('documents.scanDocument')}
           </Button>
           <Button
             variant="outline"
             onClick={() => setImportPatientsOpen(true)}
             className="border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-all duration-200"
           >
-            <Upload className="h-4 w-4 mr-2" />
-            Import CSV
+            <Upload className="h-4 w-4 me-2" />
+            {t('importExport.importCsv')}
           </Button>
           <Button
+            data-qa="dashboard-export-csv"
             variant="outline"
             onClick={handleExportCsv}
             className="border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-all duration-200"
           >
-            <Download className="h-4 w-4 mr-2" />
-            Export CSV
+            <Download className="h-4 w-4 me-2" />
+            {t('importExport.exportCsv')}
           </Button>
         </div>
       </motion.div>
@@ -520,7 +693,7 @@ export function Dashboard() {
       </motion.div>
 
       {/* Stats Cards - Enhanced with gradient border, inner shadow, spring hover, sparkline overlay */}
-      <motion.div variants={itemVariants} className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+      <motion.div data-qa="dashboard-stats" variants={itemVariants} className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
         <motion.div whileHover={{ scale: 1.02 }} transition={{ type: 'spring', stiffness: 400, damping: 25 }}>
           <Card className="gradient-border border-0 shadow-lg shadow-emerald-200/40 dark:shadow-none bg-gradient-to-br from-emerald-500 to-emerald-600 text-white overflow-hidden relative group glow-shadow-hover transition-shadow duration-300 shadow-inner-subtle">
             <div className="absolute top-0 right-0 w-24 h-24 bg-white/10 rounded-full -translate-y-8 translate-x-8" />
@@ -528,7 +701,7 @@ export function Dashboard() {
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm text-emerald-100 font-medium">Patients</p>
+                  <p className="text-sm text-emerald-100 font-medium">{t('dashboard.patients')}</p>
                   <p className="text-2xl font-bold tabular-nums">{animatedPatients}</p>
                 </div>
                 <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center group-hover:scale-110 transition-transform">
@@ -545,7 +718,7 @@ export function Dashboard() {
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm text-teal-100 font-medium">Documents</p>
+                  <p className="text-sm text-teal-100 font-medium">{t('dashboard.documents')}</p>
                   <p className="text-2xl font-bold tabular-nums">{animatedDocuments}</p>
                 </div>
                 <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center group-hover:scale-110 transition-transform">
@@ -562,7 +735,7 @@ export function Dashboard() {
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm text-amber-100 font-medium">Storage Used</p>
+                  <p className="text-sm text-amber-100 font-medium">{t('dashboard.storageUsed')}</p>
                   <p className="text-2xl font-bold">{formatFileSize(stats?.totalStorage || 0)}</p>
                 </div>
                 <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center group-hover:scale-110 transition-transform">
@@ -579,9 +752,9 @@ export function Dashboard() {
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm text-rose-100 font-medium">Recent Uploads</p>
+                  <p className="text-sm text-rose-100 font-medium">{t('dashboard.recentUploads')}</p>
                   <p className="text-2xl font-bold">{stats?.recentDocuments?.length || 0}</p>
-                  <p className="text-xs text-rose-200">documents today</p>
+                  <p className="text-xs text-rose-200">{t('dashboard.documentsToday')}</p>
                 </div>
                 <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center group-hover:scale-110 transition-transform">
                   <Activity className="h-5 w-5" />
@@ -601,7 +774,7 @@ export function Dashboard() {
 
       {/* Search Bar - Enhanced with animated results counter */}
       <motion.div variants={itemVariants} className="relative">
-        <Search className={`absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground transition-all duration-300 z-10 ${searchFocused ? 'text-emerald-500 scale-110' : ''}`} />
+        <Search className={`absolute start-4 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground transition-all duration-300 z-10 ${searchFocused ? 'text-emerald-500 scale-110' : ''}`} />
         <motion.div
           animate={{
             scale: searchFocused ? 1.01 : 1,
@@ -613,18 +786,19 @@ export function Dashboard() {
           className="relative"
         >
           <Input
-            placeholder="Search patients by name, phone, or email..."
+            data-qa="dashboard-search-input"
+            placeholder={t('dashboard.searchPlaceholder')}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             onFocus={() => setSearchFocused(true)}
             onBlur={() => setSearchFocused(false)}
-            className={`pl-12 pr-20 h-12 text-base rounded-xl border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 transition-all duration-300 ${
+            className={`ps-12 pe-20 h-12 text-base rounded-xl border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 transition-all duration-300 ${
               searchFocused
                 ? 'border-emerald-400 dark:border-emerald-600 ring-2 ring-emerald-500/20'
                 : 'hover:border-gray-300 dark:hover:border-gray-600'
             }`}
           />
-          <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1">
+          <div className="absolute end-3 top-1/2 -translate-y-1/2 flex items-center gap-1">
             {searchQuery.trim() && !isSearching && (
               <motion.button
                 type="button"
@@ -633,7 +807,7 @@ export function Dashboard() {
                 exit={{ opacity: 0, scale: 0.8 }}
                 onClick={() => { setSearchQuery('') }}
                 className="h-5 w-5 flex items-center justify-center rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 text-muted-foreground hover:text-foreground transition-colors duration-150"
-                aria-label="Clear search"
+                aria-label={t('dashboard.clearSearch')}
               >
                 <X className="h-3 w-3" />
               </motion.button>
@@ -670,13 +844,15 @@ export function Dashboard() {
                       {searchResults.length}
                     </motion.span>
                     <span className="text-sm text-muted-foreground">
-                      result{searchResults.length !== 1 ? 's' : ''} found
+                      {searchResults.length === 1
+                        ? t('dashboard.oneResultFound')
+                        : t('dashboard.resultsFound', { count: searchResults.length })}
                     </span>
                   </>
                 ) : (
                   <>
                     <CircleDot className="h-4 w-4 text-muted-foreground" />
-                    <span className="text-sm text-muted-foreground">No results found</span>
+                    <span className="text-sm text-muted-foreground">{t('dashboard.noResults')}</span>
                   </>
                 )}
               </div>
@@ -695,15 +871,15 @@ export function Dashboard() {
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
             <CalendarPlus className="h-5 w-5 text-emerald-600" />
-            Upcoming Visits
+            {t('dashboard.upcomingVisits')}
           </h2>
           <Button
             size="sm"
             onClick={() => setVisitSchedulerOpen(true)}
             className="bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-teal-600 text-white"
           >
-            <CalendarPlus className="h-3.5 w-3.5 mr-1.5" />
-            Schedule Visit
+            <CalendarPlus className="h-3.5 w-3.5 me-1.5" />
+            {t('dashboard.scheduleVisit')}
           </Button>
         </div>
         {upcomingVisits.length === 0 ? (
@@ -712,14 +888,14 @@ export function Dashboard() {
               <div className="w-14 h-14 rounded-full bg-emerald-50 dark:bg-emerald-950/30 flex items-center justify-center mb-3">
                 <CalendarPlus className="h-7 w-7 text-emerald-400" />
               </div>
-              <p className="text-sm text-muted-foreground">No upcoming visits</p>
+              <p className="text-sm text-muted-foreground">{t('dashboard.noUpcomingVisits')}</p>
               <Button
                 variant="link"
                 size="sm"
                 className="text-emerald-600 mt-1"
                 onClick={() => setVisitSchedulerOpen(true)}
               >
-                Schedule your first visit
+                {t('dashboard.scheduleFirstVisit')}
               </Button>
             </CardContent>
           </Card>
@@ -739,7 +915,7 @@ export function Dashboard() {
                     layout
                   >
                     <Card
-                      className="cursor-pointer border-l-[3px] border-l-sky-500 hover:border-l-emerald-500 transition-all duration-200 hover:shadow-md group"
+                      className="cursor-pointer border-s-[3px] border-s-sky-500 hover:border-s-emerald-500 transition-all duration-200 hover:shadow-md group"
                       onClick={() => {
                         if (visit.patient) {
                           selectPatient({
@@ -771,14 +947,14 @@ export function Dashboard() {
                                   <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
                                 </span>
                                 <h3 className="font-medium text-gray-900 dark:text-white truncate text-sm">
-                                  {visit.patient ? `${visit.patient.firstName} ${visit.patient.lastName}` : 'Unknown Patient'}
+                                  {visit.patient ? `${visit.patient.firstName} ${visit.patient.lastName}` : t('dashboard.unknownPatient')}
                                 </h3>
                               </div>
                               <div className="flex items-center gap-3 mt-0.5 flex-wrap">
                                 <span className="text-xs text-muted-foreground flex items-center gap-1">
                                   <Clock className="h-3 w-3" />
                                   {formatDate(visit.visitDate)}
-                                  {visit.visitTime ? ` at ${visit.visitTime}` : ''}
+                                  {visit.visitTime ? ` ${t('dashboard.timeAt', { time: visit.visitTime })}` : ''}
                                 </span>
                                 <Badge variant="secondary" className="text-xs bg-sky-50 dark:bg-sky-900/30 text-sky-700 dark:text-sky-300">
                                   {visit.visitType}
@@ -789,7 +965,7 @@ export function Dashboard() {
                               )}
                             </div>
                           </div>
-                          <ChevronRight className="h-4 w-4 text-muted-foreground group-hover:text-emerald-600 group-hover:translate-x-0.5 transition-all flex-shrink-0" />
+                          <ChevronRight className="h-4 w-4 text-muted-foreground group-hover:text-emerald-600 group-hover:translate-x-0.5 rtl:group-hover:-translate-x-0.5 transition-all flex-shrink-0" />
                         </div>
                       </CardContent>
                     </Card>
@@ -802,23 +978,36 @@ export function Dashboard() {
       </motion.div>
 
       {/* Patient List - Enhanced with category accent, name-based avatar, staggered entrance */}
-      <motion.div variants={itemVariants}>
+      <motion.div data-qa="dashboard-patient-list" variants={itemVariants}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
             <Users className="h-5 w-5 text-emerald-600" />
-            {searchQuery.trim() ? 'Search Results' : 'Recent Patients'}
+            {searchQuery.trim() ? t('dashboard.searchResults') : t('dashboard.recentPatients')}
           </h2>
-          <Badge variant="secondary" className="text-xs bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800/50">
-            <motion.span
-              key={`badge-${displayPatients.length}`}
-              initial={{ scale: 1.15 }}
-              animate={{ scale: 1 }}
-              className="inline-block tabular-nums"
-            >
-              {displayPatients.length}
-            </motion.span>
-            {' '}patient{displayPatients.length !== 1 ? 's' : ''}
-          </Badge>
+          <div className="flex items-center gap-2">
+            <Badge variant="secondary" className="text-xs bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800/50">
+              <motion.span
+                key={`badge-${displayPatients.length}`}
+                initial={{ scale: 1.15 }}
+                animate={{ scale: 1 }}
+                className="inline-block tabular-nums"
+              >
+                {displayPatients.length}
+              </motion.span>
+              {' '}{displayPatients.length === 1 ? t('dashboard.patientSingular') : t('dashboard.patientPlural')}
+            </Badge>
+            {displayPatients.length > 0 && !selectMode && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setSelectMode(true)}
+                className="h-8 border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-all duration-200"
+              >
+                <ListChecks className="h-4 w-4 me-1.5" />
+                {t('patients.bulk.selectPatients')}
+              </Button>
+            )}
+          </div>
         </div>
 
         <AnimatePresence mode="popLayout">
@@ -841,9 +1030,9 @@ export function Dashboard() {
                       >
                         <FileSearch className="h-10 w-10 text-gray-400" />
                       </motion.div>
-                      <h3 className="text-lg font-medium text-muted-foreground">No patients found</h3>
+                      <h3 className="text-lg font-medium text-muted-foreground">{t('dashboard.noPatientsFound')}</h3>
                       <p className="text-sm text-muted-foreground mt-1 text-center max-w-sm">
-                        Try adjusting your search terms or check the spelling
+                        {t('dashboard.tryAdjusting')}
                       </p>
                     </>
                   ) : (
@@ -903,18 +1092,18 @@ export function Dashboard() {
                         <motion.circle cx="30" cy="35" r="3" fill="oklch(0.696 0.17 162.48 / 30%)" animate={{ cy: [35, 30, 35] }} transition={{ type: 'tween', duration: 2.5, repeat: Infinity, ease: 'easeInOut' }} />
                         <motion.circle cx="85" cy="80" r="2" fill="oklch(0.6 0.118 184.704 / 30%)" animate={{ cx: [85, 90, 85] }} transition={{ type: 'tween', duration: 3, repeat: Infinity, ease: 'easeInOut' }} />
                       </motion.svg>
-                      <h3 className="text-lg font-medium text-muted-foreground">No patients yet</h3>
+                      <h3 className="text-lg font-medium text-muted-foreground">{t('dashboard.noPatientsYet')}</h3>
                       <p className="text-sm text-muted-foreground mt-1 text-center max-w-sm">
-                        Add your first patient to start managing their medical documents
+                        {t('dashboard.addFirstPatient')}
                       </p>
                       <motion.div whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}>
                         <Button
                           onClick={() => setAddPatientOpen(true)}
                           className="mt-4 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-white shadow-md shadow-emerald-200/30 dark:shadow-emerald-900/20 transition-all duration-300"
                         >
-                          <UserPlus className="h-4 w-4 mr-2" />
-                          Get Started
-                          <ArrowRight className="h-4 w-4 ml-1" />
+                          <UserPlus className="h-4 w-4 me-2" />
+                          {t('dashboard.getStarted')}
+                          <ArrowRight className="h-4 w-4 ms-1 rtl:-scale-x-100" />
                         </Button>
                       </motion.div>
                     </>
@@ -924,7 +1113,9 @@ export function Dashboard() {
             </motion.div>
           ) : (
             <div className="grid gap-3">
-              {displayPatients.map((patient, index) => (
+              {displayPatients.map((patient, index) => {
+                const isSelected = selectedPatientIds.has(patient.id)
+                return (
                 <motion.div
                   key={patient.id}
                   layout
@@ -938,12 +1129,31 @@ export function Dashboard() {
                   }}
                 >
                   <Card
-                    className={`cursor-pointer border-l-[3px] ${getCategoryAccent(patient)} hover:border-l-emerald-500 transition-all duration-200 hover:shadow-md card-hover-lift group`}
-                    onClick={() => selectPatient(patient)}
+                    className={`cursor-pointer border-s-[3px] ${getCategoryAccent(patient)} hover:border-s-emerald-500 transition-all duration-200 hover:shadow-md card-hover-lift group ${
+                      selectMode && isSelected
+                        ? 'ring-2 ring-emerald-500 bg-emerald-50/50 dark:bg-emerald-950/20'
+                        : ''
+                    }`}
+                    onClick={() => {
+                      if (selectMode) {
+                        togglePatientSelection(patient.id)
+                      } else {
+                        selectPatient(patient)
+                      }
+                    }}
                   >
                     <CardContent className="p-4">
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-3 sm:gap-4 min-w-0">
+                          {selectMode && (
+                            <Checkbox
+                              checked={isSelected}
+                              onCheckedChange={() => togglePatientSelection(patient.id)}
+                              onClick={(e) => e.stopPropagation()}
+                              aria-label={t('patients.bulk.selectPatientAria', { name: getPatientDisplayName(patient) })}
+                              className="flex-shrink-0"
+                            />
+                          )}
                           <motion.div
                             className={`w-12 h-12 rounded-full bg-gradient-to-br ${getAvatarGradient(patient.firstName)} flex items-center justify-center flex-shrink-0 ring-2 ${getAvatarRingColor(patient.firstName)} group-hover:ring-emerald-400 dark:group-hover:ring-emerald-600 transition-all`}
                             whileHover={{ scale: 1.08 }}
@@ -969,7 +1179,7 @@ export function Dashboard() {
                               )}
                               {patient.dateOfBirth && (
                                 <span className="text-xs text-muted-foreground hidden sm:inline">
-                                  DOB: {patient.dateOfBirth}
+                                  {t('patients.dob')}: {patient.dateOfBirth}
                                 </span>
                               )}
                               {patient.dateOfBirth && (
@@ -980,16 +1190,19 @@ export function Dashboard() {
                             </div>
                             <div className="flex items-center gap-2 mt-1">
                               <Badge variant="secondary" className="text-xs">
-                                <FileText className="h-3 w-3 mr-1" />
-                                {patient._count?.documents || 0} doc{(patient._count?.documents || 0) !== 1 ? 's' : ''}
+                                <FileText className="h-3 w-3 me-1" />
+                                {(patient._count?.documents || 0) === 1
+                                  ? t('dashboard.docSingular', { count: 1 })
+                                  : t('dashboard.docPlural', { count: patient._count?.documents || 0 })}
                               </Badge>
                               {patient.documents && patient.documents[0] && (
                                 <span className="text-xs text-muted-foreground">
-                                  Last: {formatDate(patient.documents[0].scannedAt)}
+                                  {t('dashboard.lastScan')}: {formatDate(patient.documents[0].scannedAt)}
                                 </span>
                               )}
                             </div>
-                            {/* Quick action row - appears on hover */}
+                            {/* Quick action row - appears on hover (hidden in Select Patients mode) */}
+                            {!selectMode && (
                             <div className="quick-action-row border-t border-gray-100 dark:border-gray-800 mt-2 flex items-center gap-1">
                               {patient.phone && (
                                 <motion.button
@@ -998,7 +1211,7 @@ export function Dashboard() {
                                   onClick={(e) => { e.stopPropagation() }}
                                 >
                                   <Phone className="h-3 w-3" />
-                                  <span className="hidden sm:inline">Call</span>
+                                  <span className="hidden sm:inline">{t('common.call')}</span>
                                 </motion.button>
                               )}
                               {patient.email && (
@@ -1008,7 +1221,7 @@ export function Dashboard() {
                                   onClick={(e) => { e.stopPropagation() }}
                                 >
                                   <Mail className="h-3 w-3" />
-                                  <span className="hidden sm:inline">Email</span>
+                                  <span className="hidden sm:inline">{t('common.emailAction')}</span>
                                 </motion.button>
                               )}
                               <motion.button
@@ -1017,17 +1230,19 @@ export function Dashboard() {
                                 onClick={(e) => { e.stopPropagation(); selectPatient(patient) }}
                               >
                                 <Eye className="h-3 w-3" />
-                                <span className="hidden sm:inline">View</span>
+                                <span className="hidden sm:inline">{t('common.view')}</span>
                               </motion.button>
                             </div>
+                            )}
                           </div>
                         </div>
-                        <ChevronRight className="h-5 w-5 text-muted-foreground group-hover:text-emerald-600 group-hover:translate-x-0.5 transition-all flex-shrink-0" />
+                        <ChevronRight className="h-5 w-5 text-muted-foreground group-hover:text-emerald-600 group-hover:translate-x-0.5 rtl:group-hover:-translate-x-0.5 transition-all flex-shrink-0" />
                       </div>
                     </CardContent>
                   </Card>
                 </motion.div>
-              ))}
+                )
+              })}
             </div>
           )}
         </AnimatePresence>
@@ -1038,7 +1253,7 @@ export function Dashboard() {
         <motion.div variants={itemVariants}>
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
             <Activity className="h-5 w-5 text-emerald-600" />
-            Recent Documents
+            {t('dashboard.recentDocuments')}
           </h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {stats.recentDocuments.map((doc: any) => {
@@ -1112,6 +1327,105 @@ export function Dashboard() {
           <ActivityTimeline />
         </motion.div>
       )}
+
+      {/* Select Patients — floating bulk action bar */}
+      <AnimatePresence>
+        {selectMode && (
+          <motion.div
+            initial={{ y: 100, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 100, opacity: 0 }}
+            transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+            className="fixed bottom-0 left-0 right-0 z-40 md:left-1/2 md:-translate-x-1/2 md:max-w-2xl md:px-6"
+          >
+            <div className="mx-3 mb-3 md:mx-0 rounded-2xl border border-emerald-200 dark:border-emerald-800 bg-white dark:bg-gray-900 shadow-2xl shadow-emerald-900/10 dark:shadow-emerald-500/5 backdrop-blur-lg px-4 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={toggleSelectAllVisible}
+                    className="h-8 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/30"
+                  >
+                    {allVisibleSelected ? <Square className="h-4 w-4 me-1.5" /> : <CheckSquare className="h-4 w-4 me-1.5" />}
+                    {allVisibleSelected ? t('patients.bulk.deselectAll') : t('patients.bulk.selectAll')}
+                  </Button>
+                  <Badge variant="secondary" className="text-xs bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800/50 flex-shrink-0">
+                    <span className="inline-block tabular-nums">{selectedPatientIds.size}</span>{' '}{t('patients.bulk.selectedCount')}
+                  </Badge>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button variant="outline" size="sm" onClick={exitSelectMode} className="h-8">
+                    <X className="h-4 w-4 me-1.5" />
+                    {t('patients.bulk.cancel')}
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={() => setBulkDeleteConfirm(true)}
+                    disabled={selectedPatientIds.size === 0 || bulkDeleting}
+                    className="h-8 bg-red-600 hover:bg-red-700 text-white"
+                  >
+                    <Trash2 className="h-4 w-4 me-1.5" />
+                    {t('patients.bulk.deleteSelected')}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Bulk Delete Patients — strong confirmation (count + identifying list, explicit confirm) */}
+      <Dialog open={bulkDeleteConfirm} onOpenChange={setBulkDeleteConfirm}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-600">
+              <AlertTriangle className="h-5 w-5" />
+              {selectedPatients.length === 1
+                ? t('patients.bulk.confirmTitleOne', { count: selectedPatients.length })
+                : t('patients.bulk.confirmTitleOther', { count: selectedPatients.length })}
+            </DialogTitle>
+            <DialogDescription asChild>
+              <div className="space-y-1">
+                <p className="text-sm">
+                  {t('patients.bulk.confirmWarningIntro')}{' '}
+                  <strong>{selectedPatients.length === 1
+                    ? t('patients.bulk.confirmCountOne', { count: selectedPatients.length })
+                    : t('patients.bulk.confirmCountOther', { count: selectedPatients.length })}</strong>{' '}
+                  {t('patients.bulk.confirmWarning')}
+                </p>
+                <p className="text-xs">{t('patients.bulk.confirmReview')}</p>
+              </div>
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-56 overflow-y-auto rounded-lg border border-red-200 dark:border-red-800/50 bg-red-50/30 dark:bg-red-950/10 p-3 space-y-1.5">
+            {selectedPatients.map((patient) => (
+              <div key={patient.id} className="flex items-center justify-between gap-3 text-sm">
+                <span className="font-medium text-gray-900 dark:text-white truncate">{getPatientDisplayName(patient)}</span>
+                <span className="text-xs text-muted-foreground flex-shrink-0">
+                  {[patient.dateOfBirth ? t('patients.bulk.dobLabel', { value: patient.dateOfBirth }) : null, patient.phone]
+                    .filter(Boolean)
+                    .join(' · ') || t('patients.bulk.noIdentifiers')}
+                </span>
+              </div>
+            ))}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBulkDeleteConfirm(false)}>{t('patients.bulk.cancel')}</Button>
+            <Button
+              variant="destructive"
+              onClick={handleBulkDeletePatients}
+              disabled={bulkDeleting || selectedPatients.length === 0}
+            >
+              {bulkDeleting ? <Loader2 className="h-4 w-4 animate-spin me-2" /> : null}
+              {selectedPatients.length === 1
+                ? t('patients.bulk.confirmDeleteOne', { count: selectedPatients.length })
+                : t('patients.bulk.confirmDeleteOther', { count: selectedPatients.length })}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Add Patient Dialog */}
       <AddPatientDialog open={addPatientOpen} onOpenChange={setAddPatientOpen} onCreated={handlePatientCreated} />

@@ -10,8 +10,11 @@ import { useToast } from '@/hooks/use-toast'
 import { useAppStore } from '@/store/app-store'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Shield, Mail, Lock, Loader2, Stethoscope, Heart, FileText, ScanLine, Check, Eye, EyeOff } from 'lucide-react'
+import { useI18n } from '@/i18n'
+import { LanguageToggle } from '@/components/language-switcher'
 
 export function LoginForm() {
+  const { t } = useI18n()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
@@ -57,22 +60,22 @@ export function LoginForm() {
         }
         setCurrentView('dashboard')
         toast({
-          title: 'Welcome back!',
-          description: 'You have successfully logged in.',
+          title: t('auth.toast.welcomeTitle'),
+          description: t('auth.toast.welcomeDesc'),
         })
       } else {
-        setError('Invalid email or password. Please try again.')
+        setError(t('auth.error.invalid'))
         toast({
-          title: 'Login Failed',
-          description: 'Please check your credentials and try again.',
+          title: t('auth.toast.loginFailedTitle'),
+          description: t('auth.toast.loginFailedDesc'),
           variant: 'destructive',
         })
       }
     } catch {
-      setError('An error occurred. Please try again.')
+      setError(t('auth.error.generic'))
       toast({
-        title: 'Error',
-        description: 'Something went wrong. Please try again.',
+        title: t('auth.toast.errorTitle'),
+        description: t('auth.toast.errorDesc'),
         variant: 'destructive',
       })
     } finally {
@@ -191,8 +194,13 @@ export function LoginForm() {
             animate={{ opacity: 1 }}
             transition={{ delay: 0.3 }}
           >
-            Secure Medical Document Management
+            {t('common.appTagline')}
           </motion.p>
+        </div>
+
+        {/* FEATURE D — language choice before sign-in */}
+        <div className="flex justify-center mb-4">
+          <LanguageToggle />
         </div>
 
         <motion.div
@@ -205,9 +213,9 @@ export function LoginForm() {
             <div className="absolute top-0 left-0 right-0 h-[3px] bg-gradient-to-r from-emerald-500 via-teal-400 to-emerald-600" />
             
             <CardHeader className="text-center pb-2 pt-6">
-              <CardTitle className="text-xl">Sign In</CardTitle>
+              <CardTitle className="text-xl">{t('auth.signIn.title')}</CardTitle>
               <CardDescription>
-                Access your patient documents securely
+                {t('auth.signIn.description')}
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -227,38 +235,38 @@ export function LoginForm() {
 
                 <div className="space-y-2">
                   <div className="floating-label-group">
-                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground z-[5] transition-colors duration-300" />
+                    <Mail className="absolute start-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground z-[5] transition-colors duration-300" />
                     <Input
                       id="email"
                       type="email"
                       placeholder=" "
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      className="pl-10 transition-all duration-300 focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 dark:focus:border-emerald-600 h-11 peer login-input-focus"
+                      className="ps-10 transition-all duration-300 focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 dark:focus:border-emerald-600 h-11 peer login-input-focus"
                       required
                     />
-                    <Label htmlFor="email" className="floating-label-group">Email</Label>
+                    <Label htmlFor="email" className="floating-label-group">{t('auth.email')}</Label>
                   </div>
                 </div>
 
                 <div className="space-y-2">
                   <div className="floating-label-group">
-                    <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground z-[5] transition-colors duration-300" />
+                    <Lock className="absolute start-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground z-[5] transition-colors duration-300" />
                     <Input
                       id="password"
                       type={showPassword ? 'text' : 'password'}
                       placeholder=" "
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
-                      className="pl-10 pr-10 transition-all duration-300 focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 dark:focus:border-emerald-600 h-11 peer login-input-focus"
+                      className="ps-10 pe-10 transition-all duration-300 focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 dark:focus:border-emerald-600 h-11 peer login-input-focus"
                       required
                     />
-                    <Label htmlFor="password" className="floating-label-group">Password</Label>
+                    <Label htmlFor="password" className="floating-label-group">{t('auth.password')}</Label>
                     <button
                       type="button"
                       onClick={() => setShowPassword(!showPassword)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 z-[5] text-muted-foreground hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors duration-200"
-                      aria-label={showPassword ? 'Hide password' : 'Show password'}
+                      className="absolute end-3 top-1/2 -translate-y-1/2 z-[5] text-muted-foreground hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors duration-200"
+                      aria-label={showPassword ? t('auth.hidePassword') : t('auth.showPassword')}
                     >
                       <motion.div
                         animate={{ rotate: showPassword ? 0 : 180 }}
@@ -294,7 +302,7 @@ export function LoginForm() {
                         </motion.div>
                       </div>
                     </div>
-                    <span className="text-sm text-muted-foreground select-none">Remember me</span>
+                    <span className="text-sm text-muted-foreground select-none">{t('auth.rememberMe')}</span>
                   </label>
                   <motion.a
                     href="#"
@@ -303,7 +311,7 @@ export function LoginForm() {
                     whileTap={{ scale: 0.97 }}
                     onClick={(e) => e.preventDefault()}
                   >
-                    Forgot password?
+                    {t('auth.forgotPassword')}
                   </motion.a>
                 </div>
 
@@ -329,9 +337,9 @@ export function LoginForm() {
                           className="flex items-center"
                         >
                           <motion.div animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}>
-                            <Loader2 className="mr-2 h-4 w-4" />
+                            <Loader2 className="me-2 h-4 w-4" />
                           </motion.div>
-                          Signing in...
+                          {t('auth.signingIn')}
                         </motion.span>
                       ) : (
                         <motion.span
@@ -341,8 +349,8 @@ export function LoginForm() {
                           exit={{ opacity: 0, y: -10 }}
                           className="flex items-center"
                         >
-                          <Shield className="mr-2 h-4 w-4" />
-                          Sign In
+                          <Shield className="me-2 h-4 w-4" />
+                          {t('auth.signIn.title')}
                         </motion.span>
                       )}
                     </AnimatePresence>
@@ -351,24 +359,24 @@ export function LoginForm() {
 
                 {/* Terms of Service and Privacy Policy */}
                 <p className="text-center text-xs text-muted-foreground">
-                  By signing in, you agree to our{' '}
+                  {t('auth.termsPrefix')}{' '}
                   <a href="#" className="text-emerald-600 dark:text-emerald-400 hover:underline underline-offset-2 transition-colors">
-                    Terms of Service
+                    {t('auth.termsOfService')}
                   </a>{' '}
-                  and{' '}
+                  {t('auth.termsAnd')}{' '}
                   <a href="#" className="text-emerald-600 dark:text-emerald-400 hover:underline underline-offset-2 transition-colors">
-                    Privacy Policy
+                    {t('auth.privacyPolicy')}
                   </a>
                 </p>
               </form>
 
               <div className="mt-6 pt-6 border-t dark:border-gray-800 text-center">
                 <p className="text-sm text-muted-foreground mb-3">
-                  First time using MediVault?
+                  {t('auth.firstTime')}
                 </p>
                 <motion.div whileTap={{ scale: 0.98 }}>
                   <Button variant="outline" onClick={handleSetup} className="w-full h-11 transition-all duration-200 hover:border-emerald-300 dark:hover:border-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/20">
-                    Set Up Your Account
+                    {t('auth.setUpAccount')}
                   </Button>
                 </motion.div>
               </div>
@@ -379,12 +387,12 @@ export function LoginForm() {
         {/* Feature Cards - Staggered entrance with hover glow effects */}
         <div className="mt-8 grid grid-cols-3 gap-3 sm:gap-4">
           {[
-            { icon: ScanLine, label: 'Scan Documents', desc: 'Camera capture', color: 'emerald', floatClass: 'float-gentle' },
-            { icon: FileText, label: 'Secure Storage', desc: 'Local & offline', color: 'teal', floatClass: 'float-gentle-delay-1' },
-            { icon: Heart, label: 'Patient Care', desc: 'Organized records', color: 'rose', floatClass: 'float-gentle-delay-2' },
+            { icon: ScanLine, titleKey: 'auth.feature.scan.title', descKey: 'auth.feature.scan.desc', color: 'emerald', floatClass: 'float-gentle' },
+            { icon: FileText, titleKey: 'auth.feature.storage.title', descKey: 'auth.feature.storage.desc', color: 'teal', floatClass: 'float-gentle-delay-1' },
+            { icon: Heart, titleKey: 'auth.feature.care.title', descKey: 'auth.feature.care.desc', color: 'rose', floatClass: 'float-gentle-delay-2' },
           ].map((feature, index) => (
             <motion.div
-              key={feature.label}
+              key={feature.titleKey}
               className="group relative overflow-hidden rounded-xl p-3 sm:p-4 text-center bg-white/60 dark:bg-gray-900/40 glass shine-sweep cursor-default feature-card-glow"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
@@ -406,8 +414,8 @@ export function LoginForm() {
                   <feature.icon className={`h-5 w-5 text-${feature.color}-600`} />
                 </div>
               </div>
-              <p className="text-xs font-medium text-gray-900 dark:text-white relative z-10">{feature.label}</p>
-              <p className="text-[11px] text-muted-foreground relative z-10">{feature.desc}</p>
+              <p className="text-xs font-medium text-gray-900 dark:text-white relative z-10">{t(feature.titleKey)}</p>
+              <p className="text-[11px] text-muted-foreground relative z-10">{t(feature.descKey)}</p>
             </motion.div>
           ))}
         </div>
@@ -419,7 +427,7 @@ export function LoginForm() {
           className="text-center text-xs text-muted-foreground mt-6 flex items-center justify-center gap-1"
         >
           <Shield className="h-3 w-3" />
-          End-to-end encrypted &bull; HIPAA compliant design
+          {t('auth.footer.security')}
         </motion.p>
       </motion.div>
     </div>

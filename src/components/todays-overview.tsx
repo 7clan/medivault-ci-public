@@ -17,6 +17,7 @@ import {
   Stethoscope,
   Loader2,
 } from 'lucide-react'
+import { useI18n, type TranslationParams } from '@/i18n'
 
 interface TodayData {
   todayVisits: number
@@ -70,7 +71,7 @@ function useLiveClock(intervalMs = 60000) {
   return time
 }
 
-function formatTimeRemaining(visitDate: string, visitTime: string | null): string {
+function formatTimeRemaining(t: (key: string, params?: TranslationParams) => string, visitDate: string, visitTime: string | null): string {
   const now = new Date()
   let target: Date
 
@@ -83,13 +84,13 @@ function formatTimeRemaining(visitDate: string, visitTime: string | null): strin
   }
 
   const diffMs = target.getTime() - now.getTime()
-  if (diffMs <= 0) return 'Now'
+  if (diffMs <= 0) return t('visits.now')
 
   const diffMins = Math.floor(diffMs / 60000)
-  if (diffMins < 60) return `In ${diffMins} min`
+  if (diffMins < 60) return t('visits.inMinutes', { minutes: diffMins })
   const hours = Math.floor(diffMins / 60)
   const mins = diffMins % 60
-  return `In ${hours}h ${mins}m`
+  return t('visits.inHours', { hours, minutes: mins })
 }
 
 function getVisitTypeColor(type: string): string {
@@ -103,6 +104,7 @@ function getVisitTypeColor(type: string): string {
 }
 
 export function TodaysOverview({ onScheduleVisit, onAddPatient, onViewPatient }: TodaysOverviewProps) {
+  const { t, formatTime, formatDate } = useI18n()
   const liveTime = useLiveClock()
   const [todayData, setTodayData] = useState<TodayData | null>(null)
   const [loading, setLoading] = useState(true)
@@ -131,13 +133,13 @@ export function TodaysOverview({ onScheduleVisit, onAddPatient, onViewPatient }:
     }
   }, [loadTodayData])
 
-  const timeString = liveTime.toLocaleTimeString('en-US', {
+  const timeString = formatTime(liveTime, {
     hour: '2-digit',
     minute: '2-digit',
     hour12: true,
   })
 
-  const dateString = liveTime.toLocaleDateString('en-US', {
+  const dateString = formatDate(liveTime, {
     weekday: 'long',
     month: 'long',
     day: 'numeric',
@@ -145,8 +147,8 @@ export function TodaysOverview({ onScheduleVisit, onAddPatient, onViewPatient }:
   })
 
   const dayOfMonth = liveTime.getDate()
-  const dayName = liveTime.toLocaleDateString('en-US', { weekday: 'short' })
-  const monthName = liveTime.toLocaleDateString('en-US', { month: 'short' })
+  const dayName = formatDate(liveTime, { weekday: 'short' })
+  const monthName = formatDate(liveTime, { month: 'short' })
 
   const isAllCaughtUp = todayData && todayData.todayVisits === 0 && !todayData.nextAppointment
 
@@ -228,31 +230,31 @@ export function TodaysOverview({ onScheduleVisit, onAddPatient, onViewPatient }:
                 <Badge
                   className={`px-2.5 py-1 text-xs font-semibold rounded-lg border-0 ${getVisitsBadgeColor(todayData?.todayVisits || 0)}`}
                 >
-                  <CalendarDays className="h-3 w-3 mr-1" />
+                  <CalendarDays className="h-3 w-3 me-1" />
                   {loading ? (
                     <Loader2 className="h-3 w-3 animate-spin" />
                   ) : (
-                    <>{todayData?.todayVisits ?? 0} visits today</>
+                    <>{t('overview.visitsToday', { count: todayData?.todayVisits ?? 0 })}</>
                   )}
                 </Badge>
 
                 {/* Patients seen */}
                 <Badge className="px-2.5 py-1 text-xs font-medium rounded-lg border-0 bg-emerald-50 text-emerald-600 dark:bg-emerald-950/50 dark:text-emerald-400">
-                  <UserCheck className="h-3 w-3 mr-1" />
+                  <UserCheck className="h-3 w-3 me-1" />
                   {loading ? (
                     <Loader2 className="h-3 w-3 animate-spin" />
                   ) : (
-                    <>{todayData?.todayPatientsSeen ?? 0} seen</>
+                    <>{t('overview.patientsSeen', { count: todayData?.todayPatientsSeen ?? 0 })}</>
                   )}
                 </Badge>
 
                 {/* Documents uploaded */}
                 <Badge className="px-2.5 py-1 text-xs font-medium rounded-lg border-0 bg-teal-50 text-teal-600 dark:bg-teal-950/50 dark:text-teal-400">
-                  <FileUp className="h-3 w-3 mr-1" />
+                  <FileUp className="h-3 w-3 me-1" />
                   {loading ? (
                     <Loader2 className="h-3 w-3 animate-spin" />
                   ) : (
-                    <>{todayData?.todayDocuments ?? 0} docs</>
+                    <>{t('overview.docsCount', { count: todayData?.todayDocuments ?? 0 })}</>
                   )}
                 </Badge>
               </div>
@@ -262,13 +264,13 @@ export function TodaysOverview({ onScheduleVisit, onAddPatient, onViewPatient }:
                 {loading ? (
                   <div className="flex items-center gap-2 text-xs text-gray-400 dark:text-gray-500">
                     <Loader2 className="h-3 w-3 animate-spin" />
-                    Loading appointments...
+                    {t('overview.loadingAppointments')}
                   </div>
                 ) : isAllCaughtUp ? (
                   <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-100 dark:border-emerald-900/50">
                     <CheckCircle2 className="h-4 w-4 text-emerald-500" />
                     <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">
-                      All caught up!
+                      {t('overview.allCaughtUp')}
                     </span>
                   </div>
                 ) : todayData?.nextAppointment ? (
@@ -281,10 +283,10 @@ export function TodaysOverview({ onScheduleVisit, onAddPatient, onViewPatient }:
                     </div>
                     <div className="min-w-0">
                       <p className="text-xs font-medium text-gray-700 dark:text-gray-300 truncate">
-                        Next: {todayData.nextAppointment.patient.firstName} {todayData.nextAppointment.patient.lastName}
+                        {t('overview.next')}: {todayData.nextAppointment.patient.firstName} {todayData.nextAppointment.patient.lastName}
                       </p>
                       <p className="text-[10px] text-gray-500 dark:text-gray-400">
-                        {todayData.nextAppointment.visitTime ? formatTimeRemaining(todayData.nextAppointment.visitDate, todayData.nextAppointment.visitTime) : formatTimeRemaining(todayData.nextAppointment.visitDate, null)}
+                        {todayData.nextAppointment.visitTime ? formatTimeRemaining(t, todayData.nextAppointment.visitDate, todayData.nextAppointment.visitTime) : formatTimeRemaining(t, todayData.nextAppointment.visitDate, null)}
                         {' · '}
                         <span className={`inline-block px-1 py-0.5 rounded text-[10px] font-medium ${getVisitTypeColor(todayData.nextAppointment.visitType)}`}>
                           {todayData.nextAppointment.visitType}
@@ -297,7 +299,7 @@ export function TodaysOverview({ onScheduleVisit, onAddPatient, onViewPatient }:
                   <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-gray-900/50 border border-gray-100 dark:border-gray-800">
                     <CalendarDays className="h-4 w-4 text-gray-400" />
                     <span className="text-xs text-gray-500 dark:text-gray-400">
-                      No appointments today
+                      {t('overview.noAppointmentsToday')}
                     </span>
                   </div>
                 )}
@@ -318,8 +320,8 @@ export function TodaysOverview({ onScheduleVisit, onAddPatient, onViewPatient }:
                 onClick={onScheduleVisit}
                 className="bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-white shadow-md shadow-emerald-200/40 dark:shadow-emerald-900/30 transition-all duration-200 text-xs sm:text-sm"
               >
-                <CalendarPlus className="h-3.5 w-3.5 sm:h-4 sm:w-4 mr-1.5" />
-                Schedule Visit
+                <CalendarPlus className="h-3.5 w-3.5 sm:h-4 sm:w-4 me-1.5" />
+                {t('dashboard.scheduleVisit')}
               </Button>
               <Button
                 size="sm"
@@ -327,8 +329,8 @@ export function TodaysOverview({ onScheduleVisit, onAddPatient, onViewPatient }:
                 onClick={onAddPatient}
                 className="border-emerald-200 dark:border-emerald-800 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 transition-all duration-200 text-xs sm:text-sm"
               >
-                <UserPlus className="h-3.5 w-3.5 sm:h-4 sm:w-4 mr-1.5" />
-                Add Patient
+                <UserPlus className="h-3.5 w-3.5 sm:h-4 sm:w-4 me-1.5" />
+                {t('patients.addPatient')}
               </Button>
             </motion.div>
           </div>

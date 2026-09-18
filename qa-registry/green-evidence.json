@@ -1,0 +1,327 @@
+{
+  "schema": "medivault.green-evidence-registry",
+  "version": 1,
+  "generated_utc": "2026-09-18T16:30:00Z",
+  "generated_by": "micro-shard architecture directive 2026-09-18 §1 (FREEZE ALL EXISTING ACCEPTED GREEN EVIDENCE)",
+  "repositories": {
+    "private": "7clan/medivault (branch platform/macos — the QA canonical)",
+    "public_mirror": "7clan/medivault-ci-public (branch main — CI executes here)"
+  },
+  "dmg_inventory": {
+    "d444ff51": {
+      "sha256": "d444ff516727dfd83d806e3114f42233fe8da4ce86b7f637f3fa5e12b96f55fe",
+      "source_run": 35174260193,
+      "source_public_sha": "1392372357343706ff400467b11f0ba0f19456c7",
+      "status": "SUPERSEDED (contained the DE1 stale-scroll viewer defect; fixed by 038ae05)"
+    },
+    "6e6a80fc": {
+      "sha256": "6e6a80fc7852c4555e9fdfbd2e18d77a2096d732f238b16aca8fccf1770ab132",
+      "source_run": 35332143505,
+      "source_public_sha": "276684918672764b96456349bb2a3db98e099c3f",
+      "artifact_id": 10541623220,
+      "status": "ACCEPTED BASELINE (patients full battery GREEN + PD23 viewer acceptance IMAGE+PDF promoted)"
+    },
+    "b2fd83bf": {
+      "sha256": "b2fd83bf18115b8696e3f4836a6a712c1c0c5136480c21dede2014f9542696a8",
+      "source_run": 35352445690,
+      "source_public_sha": "ba7ed053a15b0a63d8c0f49e9ad1cc8e02e915e3",
+      "artifact_id": 10550934602,
+      "contains_product_fixes": [
+        "PD24 CSV import in-flight cancel UX (merge 63541ba)",
+        "PD26 Export CSV webview-navigation (0e6601b)"
+      ],
+      "status": "FINAL DMG — documents battery GREEN (Wave 16 B) + PD24 import-cancel contract GREEN (Wave 17 D) + PD26 export CSV GREEN (Wave 17 E surface row); remaining at this hash: backup ZIP (BUG-PD29 fixed, awaiting micro:backup) + DD5 export re-proof (BUG-PD30 fixed, awaiting micro:csv-export) + the print-family ENV records"
+    }
+  },
+  "environment_baseline": {
+    "runner": "GitHub-hosted macOS (arm64 = macos-15/macos-26 lane)",
+    "gui_resolution": "1024x768 windowed",
+    "harness": "macos/scripts/exploratory-qa.sh (OCR + CGEvent interaction stack, verbatim-extracted from the frozen product-functional-test lane)",
+    "notes": "toasts NEVER render (shadcn Toaster not mounted) — no toast text is ever an OCR needle"
+  },
+  "frozen_green": [
+    {
+      "capability": "surface (first-run, install, SMAppService, API/PG loopback, account creation, handoff)",
+      "verdict": "GREEN",
+      "product_source_sha_public": "ea76ee5",
+      "dmg_sha256": "era-specific (built from run 34864029026's own commit)",
+      "workflow": "Exploratory QA (exploratory-qa.yml)",
+      "run_id": 34864029026,
+      "date": "2026-09-15",
+      "artifact": "qa-evidence-arm64-focus-surface",
+      "invalidated_by": [
+        "first-run/onboarding flow",
+        "app shell page.tsx navigation semantics",
+        "SMAppService registration",
+        "API/PG loopback config"
+      ]
+    },
+    {
+      "capability": "account/auth (setup, login/logout, session restore, wrong-password, profile identity, duplicate-setup)",
+      "verdict": "GREEN (definitive run 4)",
+      "product_source_sha_public": "62a660c",
+      "dmg_sha256": "era-specific (built from run 34885186221's own commit)",
+      "workflow": "Exploratory QA (exploratory-qa.yml)",
+      "run_id": 34885186221,
+      "date": "2026-09-15",
+      "artifact": "qa-evidence-arm64-focus-account",
+      "invalidated_by": [
+        "auth-service",
+        "auth routes",
+        "session/CSRF middleware",
+        "setup flow UI"
+      ]
+    },
+    {
+      "capability": "patients (create/edit/search/detail/delete/persistence/isolation — full battery)",
+      "verdict": "GREEN (P0=0 P1=0 P2=0 P3=0 D=2 ENV=1)",
+      "product_source_sha_public": "276684918672764b96456349bb2a3db98e099c3f",
+      "dmg_sha256": "6e6a80fc7852c4555e9fdfbd2e18d77a2096d732f238b16aca8fccf1770ab132",
+      "workflow": "Exploratory QA (exploratory-qa.yml, focus=patients)",
+      "run_id": 35332143505,
+      "artifact_id": 10547162941,
+      "artifact": "qa-evidence-arm64-focus-patients (187836682 B)",
+      "date": "2026-09-18",
+      "invalidated_by": [
+        "patient CRUD pages",
+        "patient store",
+        "patients API routes",
+        "db schema patient models",
+        "app shell navigation"
+      ]
+    },
+    {
+      "capability": "document viewer acceptance — PD23 stale-scroll fix (IMAGE + PDF: deep-scroll → click → header/title/content immediately visible; scroll auto-resets to ~0)",
+      "verdict": "GREEN (promoted per patients GREEN at same DMG hash)",
+      "product_source_sha_public": "276684918672764b96456349bb2a3db98e099c3f",
+      "dmg_sha256": "6e6a80fc7852c4555e9fdfbd2e18d77a2096d732f238b16aca8fccf1770ab132",
+      "workflow": "Exploratory QA Parallel Wave (exploratory-qa-parallel.yml)",
+      "run_id": 35341388397,
+      "job": "Shard E (§5 viewer acceptance section)",
+      "date": "2026-09-18",
+      "invalidated_by": [
+        "src/app/page.tsx view transitions",
+        "document-viewer component",
+        "selectDocument store contract"
+      ]
+    },
+    {
+      "capability": "search (q1-q10 battery)",
+      "verdict": "GREEN",
+      "product_source_sha_public": "140d3a89-era (d444ff51 DMG era)",
+      "dmg_sha256": "d444ff516727dfd83d806e3114f42233fe8da4ce86b7f637f3fa5e12b96f55fe",
+      "workflow": "Exploratory QA Parallel Wave",
+      "run_id": 35159006355,
+      "job": "Shard A — search (success; re-confirmed success in 35166559598)",
+      "artifact_id": 10471404784,
+      "artifact": "qa-evidence-search",
+      "date": "2026-09-16",
+      "invalidated_by": [
+        "search box/store",
+        "patient list rendering",
+        "search API"
+      ]
+    },
+    {
+      "capability": "settings (g1-g7 battery incl. g2 Display-Name fix)",
+      "verdict": "GREEN",
+      "product_source_sha_public": "1c35e78c-era (d444ff51 DMG era)",
+      "dmg_sha256": "d444ff516727dfd83d806e3114f42233fe8da4ce86b7f637f3fa5e12b96f55fe",
+      "workflow": "Exploratory QA Parallel Wave",
+      "run_id": 35166559598,
+      "job": "Shard A — settings (success)",
+      "artifact_id": 10475395009,
+      "artifact": "qa-evidence-settings",
+      "date": "2026-09-17",
+      "invalidated_by": [
+        "settings-view component",
+        "profile API",
+        "theme persistence"
+      ]
+    },
+    {
+      "capability": "persistence (logout/login + quit/reopen h-series)",
+      "verdict": "GREEN",
+      "product_source_sha_public": "140d3a89-era (d444ff51 DMG era)",
+      "dmg_sha256": "d444ff516727dfd83d806e3114f42233fe8da4ce86b7f637f3fa5e12b96f55fe",
+      "workflow": "Exploratory QA Parallel Wave",
+      "run_id": 35159006355,
+      "job": "Shard A — persistence (success; re-confirmed in 35166559598)",
+      "artifact_id": 10472796279,
+      "artifact": "qa-evidence-persistence",
+      "date": "2026-09-16",
+      "invalidated_by": [
+        "auth/session",
+        "app quit/reopen lifecycle",
+        "data persistence layer"
+      ]
+    },
+    {
+      "capability": "clinical (visits / notes / prescriptions / reports battery)",
+      "verdict": "GREEN",
+      "product_source_sha_public": "4c119496 (d444ff51 DMG era)",
+      "dmg_sha256": "d444ff516727dfd83d806e3114f42233fe8da4ce86b7f637f3fa5e12b96f55fe",
+      "workflow": "Exploratory QA Parallel Wave",
+      "run_id": 35170397410,
+      "job": "Shard C — clinical (success)",
+      "artifact_id": 10476653464,
+      "artifact": "qa-evidence-clinical",
+      "date": "2026-09-17",
+      "invalidated_by": [
+        "clinical components",
+        "visits/calendar",
+        "prescriptions",
+        "reports",
+        "their API routes"
+      ]
+    },
+    {
+      "capability": "documents + scan + file management (FULL battery incl. DB9-DB17 + viewer toolbar family + fx uploads; PD19 empty-CSV + PD20 Upload Files fixes re-proven)",
+      "verdict": "GREEN (on the FINAL DMG)",
+      "product_source_sha_public": "ba7ed053a15b0a63d8c0f49e9ad1cc8e02e915e3f",
+      "dmg_sha256": "b2fd83bf18115b8696e3f4836a6a712c1c0c5136480c21dede2014f9542696a8",
+      "workflow": "Exploratory QA Parallel Wave",
+      "run_id": 35355377514,
+      "job_id": 105633442992,
+      "job": "Shard B — documents + scan + file management (completed success 2026-09-18T16:08:53Z)",
+      "artifact_id": 10556461909,
+      "artifact": "qa-evidence-documents-scan (193673000 B)",
+      "date": "2026-09-18",
+      "invalidated_by": [
+        "upload paths",
+        "scan-capture",
+        "viewer",
+        "document API",
+        "file management UI"
+      ]
+    },
+    {
+      "capability": "dashboard Export CSV (PD26 fix: click → app intact → file lands ~/Downloads, dated filename)",
+      "verdict": "GREEN (surface row in Wave 17 E log before the backup first-red; PD28 harness needle confirmed fixed)",
+      "product_source_sha_public": "0d949bdbf6999b7cd4fbba681f2e18f48d619a4d",
+      "dmg_sha256": "b2fd83bf18115b8696e3f4836a6a712c1c0c5136480c21dede2014f9542696a8",
+      "workflow": "Exploratory QA Parallel Wave",
+      "run_id": 35361609673,
+      "job_id": 105654082345,
+      "date": "2026-09-18",
+      "invalidated_by": [
+        "dashboard export button",
+        "export API route"
+      ]
+    },
+    {
+      "capability": "CSV import in-flight cancel contract (PD24: importInFlightRef — commit visible, cancel during upload ineffective-by-design, legal complete-phase close)",
+      "verdict": "GREEN (DD4 surface rows GREEN in the Wave 17 D rerun: Import Another GREEN, Cancel-blocked-while-uploading RECORDED per the contract, Done GREEN, 1 patient imported, badge updated — run 35361609673 job 105654082273, before the D-class DD5 false-red)",
+      "product_source_sha_public": "ba7ed053a15b0a63d8c0f49e9ad1cc8e02e915e3f",
+      "dmg_sha256": "b2fd83bf18115b8696e3f4836a6a712c1c0c5136480c21dede2014f9542696a8",
+      "workflow": "Exploratory QA (source run)",
+      "run_id": 35352445690,
+      "date": "2026-09-18",
+      "invalidated_by": [
+        "import dialog UX",
+        "patients/import API",
+        "importInFlightRef contract"
+      ],
+      "note": "Wave 17 D (35361609673) re-proved the full contract at this hash; the battery continued to DD5 where BUG-PD30 (D-class quoted-header needle) stopped it — product evidence unaffected"
+    },
+    {
+      "capability": "dataio battery DD1-DD4 on the final DMG (dashboard counts, analytics/calendar toolbar, notifications, import dialog full lifecycle + the PD24 cancel contract)",
+      "verdict": "GREEN (30 caps GREEN; the battery first-reded D-class at DD5 — BUG-PD30, harness-fixed; DD6-DD7 unexercised in this run)",
+      "product_source_sha_public": "0d949bdbf6999b7cd4fbba681f2e18f48d619a4d",
+      "dmg_sha256": "b2fd83bf18115b8696e3f4836a6a712c1c0c5136480c21dede2014f9542696a8",
+      "workflow": "Exploratory QA Parallel Wave",
+      "run_id": 35361609673,
+      "job_id": 105654082273,
+      "date": "2026-09-18",
+      "artifact": "qa-evidence-data-io (in the run artifacts)",
+      "invalidated_by": [
+        "dashboard",
+        "analytics/calendar toolbar",
+        "notifications",
+        "import dialog",
+        "import API"
+      ],
+      "p3_records": "DATAIO_IMPORT_NO_DEDUPE + DATAIO_IMPORT_BAD_DOB (product P3 backlog)"
+    }
+  ],
+  "frozen_green_platform_stages": [
+    {
+      "capability": "macOS integration (Node 22 + bun + PG 17.11 pinned-source build + SCRAM initdb + prisma migrate + health/ready + SIGTERM graceful)",
+      "run_id": 34031521912,
+      "ref": "a282f45",
+      "date": "2026-09-06",
+      "workflow": "macos-build.yml mode=integration (both arches)"
+    },
+    {
+      "capability": "pg-bundle-verify (PG 17.11 dt13 relocatable runtime, Mach-O gates, relocation in-server)",
+      "run_id": 34051758040,
+      "ref": "795df26",
+      "date": "2026-09-06",
+      "workflow": "macos-build.yml mode=pg-bundle-verify (both arches)"
+    },
+    {
+      "capability": "Rust supervisor lifecycle (fail-closed provisioning, graceful exit, zero orphans)",
+      "run_id": 34063917607,
+      "ref": "c71ac4c",
+      "date": "2026-09-06",
+      "workflow": "macos-build.yml mode=supervisor-lifecycle (both arches)"
+    },
+    {
+      "capability": "Keychain + provisioning (login-keychain SecItem round-trip, delegated provisioning, recovery)",
+      "run_id": 34065567722,
+      "ref": "1a0c48f",
+      "date": "2026-09-06",
+      "workflow": "macos-build.yml mode=keychain-lifecycle/provision-lifecycle (both arches)"
+    },
+    {
+      "capability": "Node/PG app-bundle staging (prisma CLI closure, packaged-node API lifecycle, relocation)",
+      "run_id": 34066717890,
+      "ref": "2089913",
+      "date": "2026-09-06",
+      "workflow": "macos-build.yml mode=bundle-verify (both arches)"
+    },
+    {
+      "capability": "Tauri desktop app (WKWebView bundle, ad-hoc signing, Mach-O violations 0, launch smoke)",
+      "run_id": 34075676148,
+      "ref": "59e3155",
+      "date": "2026-09-07",
+      "workflow": "macos-build.yml mode=desktop-build (both arches)"
+    },
+    {
+      "capability": "DMG construction (UDZO drag-layout, SHA-256 provenance)",
+      "run_id": 34077839660,
+      "ref": "9623a48",
+      "date": "2026-09-07",
+      "workflow": "macos-build.yml mode=dmg (both arches)"
+    },
+    {
+      "capability": "Zero-cost release RC + SMAppService lifecycle + keychain lifecycle + Model A localhost security (artifacts preserved at release tag v0.1.0-zero-cost-rc1; localhost-security evidence zips expired pre-preservation, contracts frozen in acceptance/macos-*.md)",
+      "run_id": 34255257006,
+      "ref": "2c2a456",
+      "date": "2026-09-08",
+      "workflow": "macos-build.yml multi-mode"
+    }
+  ],
+  "open_items_not_yet_frozen": [
+    {
+      "capability": "print family (window.print/window.open inoperative in WKWebView) — documented next-round product gap, P3 backlog"
+    },
+    {
+      "capability": "P3 product backlog: DATAIO_IMPORT_NO_DEDUPE (identical rows import twice), DATAIO_IMPORT_BAD_DOB ('not-a-date' accepted verbatim)"
+    },
+    {
+      "capability": "de1-de4 ENV family (physical printer absent on hosted runners)"
+    },
+    {
+      "capability": "dataio DD5 re-proof on b2fd83bf (BUG-PD30 fixed in ci/micro-shards ed69a34) — micro:csv-export or the dataio rerun carries it",
+      "harvested": "Wave 17 D (35361609673, job 105654082273): 30 GREEN caps, DD1-DD4 GREEN incl. the PD24 contract proof, DD5 false-red D-class (BUG-PD30), DD6-DD7 unexercised",
+      "p3_records": "DATAIO_IMPORT_NO_DEDUPE + DATAIO_IMPORT_BAD_DOB re-recorded (product P3 backlog, non-stoppers)"
+    }
+  ],
+  "rules": {
+    "freeze": "Once a micro-shard is GREEN on a DMG, FREEZE IT. Unfreeze ONLY if (a) code affecting its dependency set changes, or (b) another test directly proves a regression in that contract. No 'rerun everything just to be safe'.",
+    "provisional_promotion": "Evidence stamped PROVISIONAL promotes to ACCEPTED when the owning source run completes GREEN at the SAME DMG SHA-256. A REAL product regression blocks promotion and triggers targeted reruns; a D-class harness finding preserves the evidence.",
+    "superseded_dmgs": "GREEN records on superseded DMGs (d444ff51-era A/C shards) stand per the recorded cross-shard dependency analysis: the later product fixes (PD23 scrollTo in page.tsx navigation, PD24 import dialog, PD26 export button) do not touch their exercised surfaces; PD23 IMPROVES their surfaces (navigation scroll reset).",
+    "rerun_authority": "The impact map (impact-map.json) is the single authority for what a change invalidates. 'Product changed' is NEVER a reason to rerun everything."
+  }
+}

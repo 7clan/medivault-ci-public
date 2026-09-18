@@ -6,11 +6,12 @@ import { Button } from '@/components/ui/button'
 import { useAppStore } from '@/store/app-store'
 import { UserPlus, Camera, Upload, Plus, X } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { useT } from '@/i18n'
 
 const actions = [
   {
     icon: UserPlus,
-    label: 'Add Patient',
+    labelKey: 'patients.addPatient',
     color: 'bg-emerald-600 hover:bg-emerald-700',
     shadow: 'shadow-emerald-200 dark:shadow-emerald-900/40',
     onClick: () => {
@@ -21,7 +22,7 @@ const actions = [
   },
   {
     icon: Camera,
-    label: 'Scan Document',
+    labelKey: 'documents.scanDocument',
     color: 'bg-teal-600 hover:bg-teal-700',
     shadow: 'shadow-teal-200 dark:shadow-teal-900/40',
     onClick: () => {
@@ -32,7 +33,7 @@ const actions = [
   },
   {
     icon: Upload,
-    label: 'Quick Upload',
+    labelKey: 'fab.quickUpload',
     color: 'bg-emerald-500 hover:bg-emerald-600',
     shadow: 'shadow-emerald-200 dark:shadow-emerald-900/40',
     onClick: () => {
@@ -43,6 +44,7 @@ const actions = [
 ]
 
 export function QuickActionsFab() {
+  const t = useT()
   const [isOpen, setIsOpen] = useState(false)
   const currentView = useAppStore((s) => s.currentView)
   const fabRef = useRef<HTMLDivElement>(null)
@@ -86,7 +88,7 @@ export function QuickActionsFab() {
           <>
             {actions.map((action, index) => (
               <motion.div
-                key={action.label}
+                key={action.labelKey}
                 initial={{ opacity: 0, y: 20, scale: 0.8 }}
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={{ opacity: 0, y: 20, scale: 0.8 }}
@@ -113,7 +115,7 @@ export function QuickActionsFab() {
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent side="left" sideOffset={8}>
-                      <p className="text-sm font-medium">{action.label}</p>
+                      <p className="text-sm font-medium">{t(action.labelKey)}</p>
                     </TooltipContent>
                   </Tooltip>
                 </TooltipProvider>

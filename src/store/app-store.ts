@@ -104,6 +104,7 @@ interface AppState {
   setDoctorInfo: (name: string | null, email: string | null, id: string | null) => void
   logout: () => void
   initRecentlyViewed: () => void
+  removeFromRecentlyViewed: (ids: string[]) => void
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -147,6 +148,16 @@ export const useAppStore = create<AppState>((set) => ({
   initRecentlyViewed: () => {
     const stored = loadRecentlyViewed()
     set({ recentlyViewed: stored })
+  },
+  // Prune patients (e.g. deleted via bulk management) from the recents
+  // strip and its localStorage mirror so the UI never offers a deleted
+  // patient for re-entry.
+  removeFromRecentlyViewed: (ids) => {
+    if (ids.length === 0) return
+    const idSet = new Set(ids)
+    const updated = loadRecentlyViewed().filter((p) => !idSet.has(p.id))
+    saveRecentlyViewed(updated)
+    set({ recentlyViewed: updated })
   },
   logout: () =>
     set({

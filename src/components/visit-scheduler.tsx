@@ -30,20 +30,21 @@ import {
 import { CalendarIcon, Loader2, Stethoscope, Clock, AlertCircle, ClipboardList, Zap } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { cn } from '@/lib/utils'
+import { useI18n } from '@/i18n'
 
 const VISIT_TYPES = [
-  { value: 'Checkup', label: 'Checkup', icon: Stethoscope, color: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300' },
-  { value: 'Follow-up', label: 'Follow-up', icon: Clock, color: 'bg-teal-100 text-teal-700 dark:bg-teal-900 dark:text-teal-300' },
-  { value: 'Consultation', label: 'Consultation', icon: AlertCircle, color: 'bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300' },
-  { value: 'Emergency', label: 'Emergency', icon: Zap, color: 'bg-rose-100 text-rose-700 dark:bg-rose-900 dark:text-rose-300' },
-  { value: 'Procedure', label: 'Procedure', icon: ClipboardList, color: 'bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300' },
+  { value: 'Checkup', icon: Stethoscope, color: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300' },
+  { value: 'Follow-up', icon: Clock, color: 'bg-teal-100 text-teal-700 dark:bg-teal-900 dark:text-teal-300' },
+  { value: 'Consultation', icon: AlertCircle, color: 'bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300' },
+  { value: 'Emergency', icon: Zap, color: 'bg-rose-100 text-rose-700 dark:bg-rose-900 dark:text-rose-300' },
+  { value: 'Procedure', icon: ClipboardList, color: 'bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300' },
 ]
 
 const VISIT_STATUSES = [
-  { value: 'scheduled', label: 'Scheduled', color: 'bg-sky-100 text-sky-700 dark:bg-sky-900 dark:text-sky-300' },
-  { value: 'completed', label: 'Completed', color: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300' },
-  { value: 'cancelled', label: 'Cancelled', color: 'bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300' },
-  { value: 'no-show', label: 'No-show', color: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400' },
+  { value: 'scheduled', color: 'bg-sky-100 text-sky-700 dark:bg-sky-900 dark:text-sky-300' },
+  { value: 'completed', color: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300' },
+  { value: 'cancelled', color: 'bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300' },
+  { value: 'no-show', color: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400' },
 ]
 
 function generateTimeSlots(): string[] {
@@ -101,6 +102,18 @@ export function VisitScheduler({
   prefillPatientId,
 }: VisitSchedulerProps) {
   const { toast } = useToast()
+  const { t, formatDate } = useI18n()
+  // Visit types/statuses are STORED DATA (API values stay English raw); labels
+  // localize via the catalog, unknown custom values pass through verbatim
+  // (same contract as tCategory for document categories).
+  const tVisitType = (value: string) => {
+    const label = t(`visits.type.${value}`)
+    return label.startsWith('visits.type.') ? value : label
+  }
+  const tVisitStatus = (value: string) => {
+    const label = t(`visits.status.${value}`)
+    return label.startsWith('visits.status.') ? value : label
+  }
   const [patientsList, setPatientsList] = useState<PatientInfo[]>([])
   const [visitDate, setVisitDate] = useState<Date | undefined>(
     editVisit?.visitDate ? new Date(editVisit.visitDate) : defaultDate || new Date()
@@ -158,11 +171,11 @@ export function VisitScheduler({
   const handleSave = async () => {
     const targetPatientId = patient?.id || prefillPatientId || selectedPatientId
     if (!targetPatientId) {
-      toast({ title: 'Select a patient', variant: 'destructive' })
+      toast({ title: t('visits.selectPatient'), variant: 'destructive' })
       return
     }
     if (!visitDate) {
-      toast({ title: 'Select a date', variant: 'destructive' })
+      toast({ title: t('visits.selectDateTitle'), variant: 'destructive' })
       return
     }
 
@@ -192,18 +205,18 @@ export function VisitScheduler({
       if (res.ok) {
         const saved = await res.json()
         toast({
-          title: isEditing ? 'Visit Updated' : 'Visit Scheduled',
-          description: isEditing ? 'Changes have been saved.' : `${visitType} scheduled successfully.`,
+          title: isEditing ? t('visits.visitUpdated') : t('visits.scheduledTitle'),
+          description: isEditing ? t('visits.changesSaved') : t('visits.scheduledDesc', { type: tVisitType(visitType) }),
         })
         onSaved?.(saved)
         resetForm()
         onOpenChange(false)
       } else {
         const err = await res.json()
-        toast({ title: err.error || 'Failed to save visit', variant: 'destructive' })
+        toast({ title: err.error || t('errors.saveVisitFailed'), variant: 'destructive' })
       }
     } catch {
-      toast({ title: 'Error', description: 'Failed to save visit.', variant: 'destructive' })
+      toast({ title: t('auth.toast.errorTitle'), description: t('errors.saveVisitFailedDesc'), variant: 'destructive' })
     }
     setSaving(false)
   }
@@ -216,20 +229,20 @@ export function VisitScheduler({
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-500 to-teal-500 flex items-center justify-center">
               <CalendarIcon className="h-4 w-4 text-white" />
             </div>
-            {isEditing ? 'Edit Visit' : 'Schedule Visit'}
+            {isEditing ? t('visits.editVisit') : t('visits.scheduleVisit')}
           </DialogTitle>
           <DialogDescription>
-            {isEditing ? 'Update visit details below.' : 'Schedule a new patient visit.'}
+            {isEditing ? t('visits.editDescription') : t('visits.newDescription')}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-5 py-2">
           {!patient && !prefillPatientId && (
             <div className="space-y-2">
-              <Label className="text-sm font-medium">Patient *</Label>
+              <Label className="text-sm font-medium">{t('visits.patientLabel')}</Label>
               <Select value={selectedPatientId} onValueChange={setSelectedPatientId}>
                 <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Select a patient" />
+                  <SelectValue placeholder={t('visits.selectPatient')} />
                 </SelectTrigger>
                 <SelectContent className="max-h-60">
                   {patientsList.map((p) => (
@@ -256,7 +269,7 @@ export function VisitScheduler({
           )}
 
           <div className="space-y-2">
-            <Label className="text-sm font-medium">Visit Date *</Label>
+            <Label className="text-sm font-medium">{t('visits.dateLabel')}</Label>
             <Popover open={datePickerOpen} onOpenChange={setDatePickerOpen}>
               <PopoverTrigger asChild>
                 <Button
@@ -266,10 +279,10 @@ export function VisitScheduler({
                     !visitDate && 'text-muted-foreground',
                   )}
                 >
-                  <CalendarIcon className="mr-2 h-4 w-4" />
-                  {visitDate ? visitDate.toLocaleDateString('en-US', {
+                  <CalendarIcon className="me-2 h-4 w-4" />
+                  {visitDate ? formatDate(visitDate, {
                     year: 'numeric', month: 'long', day: 'numeric',
-                  }) : 'Pick a date'}
+                  }) : t('visits.pickDate')}
                 </Button>
               </PopoverTrigger>
               <PopoverContent className="w-auto p-0" align="start">
@@ -284,10 +297,10 @@ export function VisitScheduler({
           </div>
 
           <div className="space-y-2">
-            <Label className="text-sm font-medium">Time</Label>
+            <Label className="text-sm font-medium">{t('visits.timeLabel')}</Label>
             <Select value={visitTime} onValueChange={setVisitTime}>
               <SelectTrigger className="w-full">
-                <SelectValue placeholder="Select time" />
+                <SelectValue placeholder={t('visits.selectTime')} />
               </SelectTrigger>
               <SelectContent className="max-h-60">
                 {TIME_SLOTS.map((slot) => (
@@ -300,7 +313,7 @@ export function VisitScheduler({
           </div>
 
           <div className="space-y-2">
-            <Label className="text-sm font-medium">Visit Type *</Label>
+            <Label className="text-sm font-medium">{t('visits.typeLabel')}</Label>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
               {VISIT_TYPES.map((type) => {
                 const Icon = type.icon
@@ -327,7 +340,7 @@ export function VisitScheduler({
                         ? 'text-emerald-700 dark:text-emerald-400'
                         : 'text-gray-600 dark:text-gray-400',
                     )}>
-                      {type.label}
+                      {tVisitType(type.value)}
                     </span>
                   </motion.button>
                 )
@@ -336,11 +349,11 @@ export function VisitScheduler({
           </div>
 
           <div className="space-y-2">
-            <Label className="text-sm font-medium">Chief Complaint</Label>
+            <Label className="text-sm font-medium">{t('visits.chiefComplaint')}</Label>
             <Textarea
               value={chiefComplaint}
               onChange={(e) => setChiefComplaint(e.target.value)}
-              placeholder="Reason for visit..."
+              placeholder={t('visits.complaintPlaceholder')}
               rows={2}
               className="resize-none"
             />
@@ -348,7 +361,7 @@ export function VisitScheduler({
 
           {isEditing && (
             <div className="space-y-2">
-              <Label className="text-sm font-medium">Status</Label>
+              <Label className="text-sm font-medium">{t('visits.statusLabel')}</Label>
               <div className="flex flex-wrap gap-2">
                 {VISIT_STATUSES.map((s) => (
                   <motion.button
@@ -364,7 +377,7 @@ export function VisitScheduler({
                         : 'bg-gray-50 dark:bg-gray-900 text-gray-500 border-transparent hover:bg-gray-100 dark:hover:bg-gray-800',
                     )}
                   >
-                    {s.label}
+                    {tVisitStatus(s.value)}
                   </motion.button>
                 ))}
               </div>
@@ -373,11 +386,11 @@ export function VisitScheduler({
 
           {(isEditing || status === 'completed') && (
             <div className="space-y-2">
-              <Label className="text-sm font-medium">Diagnosis</Label>
+              <Label className="text-sm font-medium">{t('visits.diagnosis')}</Label>
               <Textarea
                 value={diagnosis}
                 onChange={(e) => setDiagnosis(e.target.value)}
-                placeholder="Diagnosis notes..."
+                placeholder={t('visits.diagnosisPlaceholder')}
                 rows={2}
                 className="resize-none"
               />
@@ -386,11 +399,11 @@ export function VisitScheduler({
 
           {(isEditing || status === 'completed') && (
             <div className="space-y-2">
-              <Label className="text-sm font-medium">Prescription</Label>
+              <Label className="text-sm font-medium">{t('visits.prescriptionLabel')}</Label>
               <Textarea
                 value={prescription}
                 onChange={(e) => setPrescription(e.target.value)}
-                placeholder="Prescription details..."
+                placeholder={t('visits.prescriptionPlaceholder')}
                 rows={2}
                 className="resize-none"
               />
@@ -398,7 +411,7 @@ export function VisitScheduler({
           )}
 
           <div className="space-y-2">
-            <Label className="text-sm font-medium">Follow-up Date</Label>
+            <Label className="text-sm font-medium">{t('visits.followUpDateLabel')}</Label>
             <Popover open={followUpPickerOpen} onOpenChange={setFollowUpPickerOpen}>
               <PopoverTrigger asChild>
                 <Button
@@ -408,10 +421,10 @@ export function VisitScheduler({
                     !followUpDate && 'text-muted-foreground',
                   )}
                 >
-                  <CalendarIcon className="mr-2 h-4 w-4" />
-                  {followUpDate ? followUpDate.toLocaleDateString('en-US', {
+                  <CalendarIcon className="me-2 h-4 w-4" />
+                  {followUpDate ? formatDate(followUpDate, {
                     year: 'numeric', month: 'long', day: 'numeric',
-                  }) : 'No follow-up scheduled'}
+                  }) : t('visits.noFollowUp')}
                 </Button>
               </PopoverTrigger>
               <PopoverContent className="w-auto p-0" align="start">
@@ -427,11 +440,11 @@ export function VisitScheduler({
 
           {followUpDate && (
             <div className="space-y-2">
-              <Label className="text-sm font-medium">Follow-up Notes</Label>
+              <Label className="text-sm font-medium">{t('visits.followUpNotesLabel')}</Label>
               <Textarea
                 value={followUpNotes}
                 onChange={(e) => setFollowUpNotes(e.target.value)}
-                placeholder="Notes for follow-up visit..."
+                placeholder={t('visits.followUpNotesPlaceholder')}
                 rows={2}
                 className="resize-none"
               />
@@ -439,11 +452,11 @@ export function VisitScheduler({
           )}
 
           <div className="space-y-2">
-            <Label className="text-sm font-medium">Additional Notes</Label>
+            <Label className="text-sm font-medium">{t('visits.additionalNotesLabel')}</Label>
             <Textarea
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              placeholder="Any additional notes..."
+              placeholder={t('visits.additionalNotesPlaceholder')}
               rows={2}
               className="resize-none"
             />
@@ -452,15 +465,15 @@ export function VisitScheduler({
 
         <DialogFooter className="gap-2 sm:gap-0">
           <Button variant="outline" onClick={() => { resetForm(); onOpenChange(false) }}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button
             onClick={handleSave}
             disabled={saving || !visitDate}
             className="bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-teal-600 text-white"
           >
-            {saving ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-            {isEditing ? 'Save Changes' : 'Schedule Visit'}
+            {saving ? <Loader2 className="h-4 w-4 animate-spin me-2" /> : null}
+            {isEditing ? t('common.saveChanges') : t('visits.scheduleVisit')}
           </Button>
         </DialogFooter>
       </DialogContent>

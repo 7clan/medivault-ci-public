@@ -6,6 +6,7 @@ import { useAppStore, type PatientInfo } from '@/store/app-store'
 import { formatDateTime } from '@/lib/utils-helpers'
 import { motion } from 'framer-motion'
 import { Activity, UserPlus, FileUp, Loader2 } from 'lucide-react'
+import { useT } from '@/i18n'
 
 interface TimelineItem {
   type: 'patient_added' | 'document_uploaded'
@@ -30,6 +31,7 @@ const itemVariants = {
 }
 
 export function ActivityTimeline() {
+  const t = useT()
   const { selectPatient } = useAppStore()
   const [timeline, setTimeline] = useState<TimelineItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -82,7 +84,7 @@ export function ActivityTimeline() {
     <div>
       <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
         <Activity className="h-5 w-5 text-emerald-600" />
-        Activity Timeline
+        {t('activity.title')}
       </h2>
       <motion.div
         className="relative"
@@ -91,7 +93,7 @@ export function ActivityTimeline() {
         animate="show"
       >
         {/* Timeline line */}
-        <div className="absolute left-5 top-3 bottom-3 w-0.5 bg-emerald-100 dark:bg-emerald-900/50" />
+        <div className="absolute start-5 top-3 bottom-3 w-0.5 bg-emerald-100 dark:bg-emerald-900/50" />
 
         <div className="space-y-3">
           {timeline.map((item) => (
@@ -103,9 +105,9 @@ export function ActivityTimeline() {
                 className="cursor-pointer hover:border-emerald-300 dark:hover:border-emerald-700 transition-all hover:shadow-sm group"
                 onClick={() => handleItemClick(item)}
               >
-                <CardContent className="p-3 pl-12 relative">
+                <CardContent className="p-3 ps-12 relative">
                   {/* Timeline dot */}
-                  <div className="absolute left-3.5 top-4 w-3 h-3 rounded-full border-2 border-white dark:border-gray-900 z-10 group-hover:scale-125 transition-transform">
+                  <div className="absolute start-3.5 top-4 w-3 h-3 rounded-full border-2 border-white dark:border-gray-900 z-10 group-hover:scale-125 transition-transform">
                     <div
                       className={`w-full h-full rounded-full ${
                         item.type === 'patient_added'
@@ -135,8 +137,8 @@ export function ActivityTimeline() {
                       </p>
                       <p className="text-xs text-muted-foreground mt-0.5">
                         {item.type === 'patient_added'
-                          ? 'Patient record created'
-                          : `Uploaded: ${item.documentTitle}`}
+                          ? t('activity.patientCreated')
+                          : t('activity.uploaded', { title: item.documentTitle ?? '' })}
                       </p>
                       <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-0.5">
                         {formatDateTime(item.timestamp)}

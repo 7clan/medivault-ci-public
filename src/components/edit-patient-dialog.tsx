@@ -16,6 +16,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Loader2, User, Calendar, Phone, Mail, MapPin, StickyNote, Save } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useToast } from '@/hooks/use-toast'
+import { useT } from '@/i18n'
 import type { PatientInfo } from '@/store/app-store'
 
 interface EditPatientDialogProps {
@@ -33,6 +34,7 @@ export function EditPatientDialog({
 }: EditPatientDialogProps) {
   const { toast } = useToast()
 
+  const t = useT()
   const [firstName, setFirstName] = useState('')
   const [lastName, setLastName] = useState('')
   const [dateOfBirth, setDateOfBirth] = useState('')
@@ -62,7 +64,7 @@ export function EditPatientDialog({
     setError('')
 
     if (!firstName.trim() || !lastName.trim()) {
-      setError('First name and last name are required.')
+      setError(t('errors.namesRequired'))
       return
     }
 
@@ -85,7 +87,7 @@ export function EditPatientDialog({
 
       if (!res.ok) {
         const data = await res.json()
-        setError(data.error || 'Failed to update patient')
+        setError(data.error || t('errors.updatePatientFailed'))
         return
       }
 
@@ -93,11 +95,11 @@ export function EditPatientDialog({
       onSaved(updated)
       onOpenChange(false)
       toast({
-        title: 'Patient Updated',
-        description: `${updated.firstName} ${updated.lastName} has been updated successfully.`,
+        title: t('patients.updatedTitle'),
+        description: t('patients.updatedDesc', { name: `${updated.firstName} ${updated.lastName}` }),
       })
     } catch {
-      setError('Failed to update patient. Please try again.')
+      setError(t('errors.updatePatientRetry'))
     } finally {
       setLoading(false)
     }
@@ -139,17 +141,17 @@ export function EditPatientDialog({
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center">
               <Save className="h-4 w-4 text-white" />
             </div>
-            Edit Patient
+            {t('patients.editPatient')}
           </DialogTitle>
           <DialogDescription>
-            Update {patient.firstName} {patient.lastName}&apos;s information
+            {t('patients.editDescription', { name: `${patient.firstName} ${patient.lastName}` })}
           </DialogDescription>
         </DialogHeader>
 
         {/* Progress indicator */}
         <div className="space-y-1.5 px-1">
           <div className="flex items-center justify-between">
-            <span className="text-xs text-muted-foreground">Completion</span>
+            <span className="text-xs text-muted-foreground">{t('patients.completion')}</span>
             <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400 tabular-nums">
               {completionPercent}%
             </span>
@@ -163,7 +165,7 @@ export function EditPatientDialog({
             />
           </div>
           <span className="text-[11px] text-muted-foreground">
-            {completedFields} of {totalFields} fields filled
+            {t('patients.fieldsFilled', { filled: completedFields, total: totalFields })}
           </span>
         </div>
 
@@ -192,11 +194,11 @@ export function EditPatientDialog({
             <div className="space-y-2">
               <Label htmlFor="edit-firstName" className="flex items-center gap-1.5">
                 <User className="h-3.5 w-3.5 text-emerald-600" />
-                First Name <span className="text-red-500">*</span>
+                {t('patients.firstName')} <span className="text-red-500">*</span>
               </Label>
               <Input
                 id="edit-firstName"
-                placeholder="John"
+                placeholder={t('patients.firstNamePlaceholder')}
                 value={firstName}
                 onChange={(e) => setFirstName(e.target.value)}
                 className="transition-all duration-200 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400"
@@ -206,11 +208,11 @@ export function EditPatientDialog({
             <div className="space-y-2">
               <Label htmlFor="edit-lastName" className="flex items-center gap-1.5">
                 <User className="h-3.5 w-3.5 text-emerald-600" />
-                Last Name <span className="text-red-500">*</span>
+                {t('patients.lastName')} <span className="text-red-500">*</span>
               </Label>
               <Input
                 id="edit-lastName"
-                placeholder="Smith"
+                placeholder={t('patients.lastNamePlaceholder')}
                 value={lastName}
                 onChange={(e) => setLastName(e.target.value)}
                 className="transition-all duration-200 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400"
@@ -232,7 +234,7 @@ export function EditPatientDialog({
             </div>
             <div className="relative flex justify-center text-xs">
               <span className="px-2 bg-white dark:bg-gray-900 text-muted-foreground rounded">
-                Optional Details
+                {t('patients.optionalDetails')}
               </span>
             </div>
           </motion.div>
@@ -247,7 +249,7 @@ export function EditPatientDialog({
           >
             <Label htmlFor="edit-dob" className="flex items-center gap-1.5">
               <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
-              Date of Birth
+              {t('patients.dateOfBirth')}
             </Label>
             <Input
               id="edit-dob"
@@ -269,7 +271,7 @@ export function EditPatientDialog({
             <div className="space-y-2">
               <Label htmlFor="edit-phone" className="flex items-center gap-1.5">
                 <Phone className="h-3.5 w-3.5 text-muted-foreground" />
-                Phone
+                {t('patients.phone')}
               </Label>
               <Input
                 id="edit-phone"
@@ -283,7 +285,7 @@ export function EditPatientDialog({
             <div className="space-y-2">
               <Label htmlFor="edit-email" className="flex items-center gap-1.5">
                 <Mail className="h-3.5 w-3.5 text-muted-foreground" />
-                Email
+                {t('patients.email')}
               </Label>
               <Input
                 id="edit-email"
@@ -306,11 +308,11 @@ export function EditPatientDialog({
           >
             <Label htmlFor="edit-address" className="flex items-center gap-1.5">
               <MapPin className="h-3.5 w-3.5 text-muted-foreground" />
-              Address
+              {t('patients.address')}
             </Label>
             <Input
               id="edit-address"
-              placeholder="123 Main St, City"
+              placeholder={t('patients.addressPlaceholder')}
               value={address}
               onChange={(e) => setAddress(e.target.value)}
               className="transition-all duration-200 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400"
@@ -327,11 +329,11 @@ export function EditPatientDialog({
           >
             <Label htmlFor="edit-notes" className="flex items-center gap-1.5">
               <StickyNote className="h-3.5 w-3.5 text-muted-foreground" />
-              Notes
+              {t('patients.notes')}
             </Label>
             <Textarea
               id="edit-notes"
-              placeholder="Any additional notes about the patient..."
+              placeholder={t('patients.notesPlaceholder')}
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               rows={3}
@@ -347,7 +349,7 @@ export function EditPatientDialog({
               disabled={loading}
               className="transition-all duration-200"
             >
-              Cancel
+              {t('common.cancel')}
             </Button>
             <motion.div whileTap={{ scale: 0.98 }}>
               <Button
@@ -357,13 +359,13 @@ export function EditPatientDialog({
               >
                 {loading ? (
                   <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Saving...
+                    <Loader2 className="me-2 h-4 w-4 animate-spin" />
+                    {t('common.saving')}
                   </>
                 ) : (
                   <>
-                    <Save className="mr-2 h-4 w-4" />
-                    Save Changes
+                    <Save className="me-2 h-4 w-4" />
+                    {t('common.saveChanges')}
                   </>
                 )}
               </Button>

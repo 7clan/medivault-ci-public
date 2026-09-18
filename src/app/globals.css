@@ -1446,44 +1446,6 @@ input[type="checkbox"] {
 }
 
 /* ========================================
-   DANGER ZONE PULSING RED ACCENT
-   ======================================== */
-.danger-zone {
-  border-color: oklch(0.704 0.191 22.216 / 40%);
-  animation: dangerPulse 3s ease-in-out infinite;
-}
-
-@keyframes dangerPulse {
-  0%, 100% {
-    border-color: oklch(0.704 0.191 22.216 / 40%);
-    box-shadow: 0 0 0 0 oklch(0.704 0.191 22.216 / 0%);
-  }
-  50% {
-    border-color: oklch(0.704 0.191 22.216 / 60%);
-    box-shadow: 0 0 16px 2px oklch(0.704 0.191 22.216 / 8%);
-  }
-}
-
-.dark .danger-zone {
-  border-color: oklch(0.704 0.191 22.216 / 25%);
-}
-
-@keyframes dangerPulseDark {
-  0%, 100% {
-    border-color: oklch(0.704 0.191 22.216 / 25%);
-    box-shadow: 0 0 0 0 oklch(0.704 0.191 22.216 / 0%);
-  }
-  50% {
-    border-color: oklch(0.704 0.191 22.216 / 45%);
-    box-shadow: 0 0 12px 1px oklch(0.704 0.191 22.216 / 5%);
-  }
-}
-
-.dark .danger-zone {
-  animation: dangerPulseDark 3s ease-in-out infinite;
-}
-
-/* ========================================
    SETTINGS ITEM HOVER
    ======================================== */
 .settings-item {
@@ -2298,28 +2260,6 @@ input[type="checkbox"] {
 }
 
 /* ========================================
-   SETTINGS DANGER ZONE
-   ======================================== */
-.danger-zone-card {
-  background: linear-gradient(135deg, oklch(1 0.005 20), oklch(0.98 0.01 20));
-  border: 1px solid oklch(0.65 0.2 20 / 30%);
-  transition: all 0.3s ease;
-}
-
-.danger-zone-card:hover {
-  box-shadow: 0 4px 24px oklch(0.65 0.2 20 / 10%);
-}
-
-.dark .danger-zone-card {
-  background: linear-gradient(135deg, oklch(0.15 0.01 20), oklch(0.13 0.015 20));
-  border: 1px solid oklch(0.65 0.2 20 / 20%);
-}
-
-.dark .danger-zone-card:hover {
-  box-shadow: 0 4px 24px oklch(0.65 0.2 20 / 15%);
-}
-
-/* ========================================
    BACKUP PROGRESS BUTTON
    ======================================== */
 @keyframes backup-progress {
@@ -2344,4 +2284,30 @@ input[type="checkbox"] {
 .animated-number {
   display: inline-block;
   font-variant-numeric: tabular-nums;
+}
+
+/* ========================================
+   FEATURE D — ARABIC / RTL TYPOGRAPHY
+   ========================================
+   No font files are added to the repo (offline constraint): the Arabic stack
+   leans on macOS/iOS system fonts (SF Arabic, Geeza Pro) with a generic
+   Tahoma fallback for other hosts. Geist has no Arabic glyphs, so the
+   fallback chain below is what WKWebView actually resolves for Arabic text.
+   Letter-spacing is disabled for Arabic — tracking breaks the visual rhythm
+   of the script (ligatures/joining) and is typographically incorrect. */
+html[lang="ar"] body {
+  font-family: -apple-system, "SF Arabic", "Geeza Pro", Tahoma, "Segoe UI",
+    system-ui, sans-serif;
+}
+
+html[lang="ar"] * {
+  letter-spacing: normal !important;
+}
+
+/* Latin-only tokens inside Arabic prose (file names, IDs, e-mail) keep the
+   mono/latin stack and an isolated embedding so punctuation order holds. */
+html[lang="ar"] .ltr-embed {
+  direction: ltr;
+  unicode-bidi: isolate;
+  display: inline-block;
 }

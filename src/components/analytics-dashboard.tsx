@@ -30,6 +30,7 @@ import {
   HardDrive,
   Calendar,
 } from 'lucide-react'
+import { useI18n } from '@/i18n'
 
 interface AnalyticsData {
   patientsByMonth: { month: string; count: number }[]
@@ -41,10 +42,10 @@ interface AnalyticsData {
 
 type TimePeriod = '12months' | '6months' | '30days'
 
-const PERIOD_LABELS: Record<TimePeriod, string> = {
-  '12months': 'Last 12 Months',
-  '6months': 'Last 6 Months',
-  '30days': 'Last 30 Days',
+const PERIOD_LABEL_KEYS: Record<TimePeriod, string> = {
+  '12months': 'analytics.period.12months',
+  '6months': 'analytics.period.6months',
+  '30days': 'analytics.period.30days',
 }
 
 const PIE_COLORS = [
@@ -119,6 +120,7 @@ function StorageTooltip({ active, payload, label, isDark }: { active?: boolean; 
 }
 
 function ActivityHeatmap({ data, isDark }: { data: { date: string; uploads: number; newPatients: number }[]; isDark: boolean }) {
+  const { t } = useI18n()
   // Show last 7 days as heatmap grid (7 rows x 4 columns = 28 days)
   const last28 = data.slice(-28)
 
@@ -149,12 +151,12 @@ function ActivityHeatmap({ data, isDark }: { data: { date: string; uploads: numb
     <div className="space-y-3">
       <div className="flex items-center gap-2">
         <Calendar className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-        <span className={`text-sm font-medium ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>Last 28 Days</span>
+        <span className={`text-sm font-medium ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>{t('analytics.last28Days')}</span>
       </div>
       <div className="overflow-x-auto">
         <div className="flex gap-1.5 min-w-fit">
           {/* Day labels column */}
-          <div className="flex flex-col gap-1.5 pt-5 mr-1">
+          <div className="flex flex-col gap-1.5 pt-5 me-1">
             {dayLabels.map((day) => (
               <div key={day} className="h-5 flex items-center">
                 <span className={`text-[10px] ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>{day}</span>
@@ -185,7 +187,7 @@ function ActivityHeatmap({ data, isDark }: { data: { date: string; uploads: numb
                     {/* Tooltip on hover */}
                     <div className={`absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 rounded text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 shadow-lg ${isDark ? 'bg-gray-800 text-gray-200 border border-gray-700' : 'bg-white text-gray-800 border border-gray-200'}`}>
                       <div className="font-medium">{day.date}</div>
-                      <div>{day.uploads} uploads, {day.newPatients} patients</div>
+                      <div>{t('analytics.uploadsAndPatients', { uploads: day.uploads, patients: day.newPatients })}</div>
                       <div className={`absolute top-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent ${isDark ? 'border-t-gray-700' : 'border-t-gray-200'}`} />
                     </div>
                   </motion.div>
@@ -201,14 +203,14 @@ function ActivityHeatmap({ data, isDark }: { data: { date: string; uploads: numb
       </div>
       {/* Legend */}
       <div className="flex items-center gap-2 justify-end">
-        <span className={`text-xs ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>Less</span>
+        <span className={`text-xs ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>{t('analytics.less')}</span>
         {[0, 0.25, 0.5, 0.75, 1].map((intensity) => (
           <div
             key={intensity}
             className={`w-3 h-3 rounded-sm ${getHeatColor(Math.round(intensity * getMaxActivity()))}`}
           />
         ))}
-        <span className={`text-xs ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>More</span>
+        <span className={`text-xs ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>{t('analytics.more')}</span>
       </div>
     </div>
   )
@@ -242,6 +244,7 @@ const chartVariants = {
 }
 
 export function AnalyticsDashboard() {
+  const { t, tCategory } = useI18n()
   const { resolvedTheme } = useTheme()
   const isDark = resolvedTheme === 'dark'
   const [period, setPeriod] = useState<TimePeriod>('12months')
@@ -316,11 +319,11 @@ export function AnalyticsDashboard() {
       >
         <div className="flex items-center gap-2">
           <BarChart3 className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Analytics</h2>
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">{t('dashboard.analytics')}</h2>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <div className="flex items-center bg-gray-100 dark:bg-gray-800 rounded-lg p-0.5">
-            {(Object.keys(PERIOD_LABELS) as TimePeriod[]).map((p) => (
+            {(Object.keys(PERIOD_LABEL_KEYS) as TimePeriod[]).map((p) => (
               <button
                 key={p}
                 onClick={() => setPeriod(p)}
@@ -330,7 +333,7 @@ export function AnalyticsDashboard() {
                     : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
                 }`}
               >
-                {PERIOD_LABELS[p]}
+                {t(PERIOD_LABEL_KEYS[p])}
               </button>
             ))}
           </div>
@@ -340,8 +343,8 @@ export function AnalyticsDashboard() {
             onClick={handleExportAll}
             className="border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800"
           >
-            <Download className="h-3.5 w-3.5 mr-1.5" />
-            Export CSV
+            <Download className="h-3.5 w-3.5 me-1.5" />
+            {t('importExport.exportCsv')}
           </Button>
         </div>
       </motion.div>
@@ -354,7 +357,7 @@ export function AnalyticsDashboard() {
             <CardContent className="p-4 sm:p-6">
               <div className="flex items-center gap-2 mb-4">
                 <TrendingUp className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Patient Growth</h3>
+                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">{t('analytics.patientGrowth')}</h3>
               </div>
               <ResponsiveContainer width="100%" height={220}>
                 <AreaChart data={data.patientsByMonth} margin={{ top: 5, right: 10, left: -10, bottom: 0 }}>
@@ -400,7 +403,7 @@ export function AnalyticsDashboard() {
             <CardContent className="p-4 sm:p-6">
               <div className="flex items-center gap-2 mb-4">
                 <FileText className="h-4 w-4 text-teal-600 dark:text-teal-400" />
-                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Documents Uploaded</h3>
+                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">{t('analytics.documentsUploaded')}</h3>
               </div>
               <ResponsiveContainer width="100%" height={220}>
                 <BarChart data={data.documentsByMonth} margin={{ top: 5, right: 10, left: -10, bottom: 0 }}>
@@ -437,7 +440,7 @@ export function AnalyticsDashboard() {
             <CardContent className="p-4 sm:p-6">
               <div className="flex items-center gap-2 mb-4">
                 <PieChartIcon className="h-4 w-4 text-amber-600 dark:text-amber-400" />
-                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Document Categories</h3>
+                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">{t('documents.categories')}</h3>
               </div>
               {data.documentsByCategory.length > 0 ? (
                 <div className="flex flex-col sm:flex-row items-center gap-4">
@@ -468,8 +471,8 @@ export function AnalyticsDashboard() {
                           const entry = payload[0] as { name: string; value: number; payload: { category: string; count: number } }
                           return (
                             <div className={`rounded-lg border px-3 py-2 text-sm shadow-lg ${isDark ? 'bg-gray-800 border-gray-700 text-gray-200' : 'bg-white border-gray-200 text-gray-800'}`}>
-                              <span className="font-medium">{entry.payload.category}</span>
-                              <span className="ml-2 text-xs">({entry.value} docs)</span>
+                              <span className="font-medium">{tCategory(entry.payload.category)}</span>
+                              <span className="ms-2 text-xs">{t('analytics.docsCount', { count: entry.value })}</span>
                             </div>
                           )
                         }}
@@ -484,9 +487,9 @@ export function AnalyticsDashboard() {
                           style={{ backgroundColor: getCategoryColor(idx, isDark) }}
                         />
                         <span className={`text-xs truncate ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
-                          {cat.category}
+                          {tCategory(cat.category)}
                         </span>
-                        <span className={`text-xs font-semibold ml-auto ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+                        <span className={`text-xs font-semibold ms-auto ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
                           {cat.count}
                         </span>
                       </div>
@@ -495,7 +498,7 @@ export function AnalyticsDashboard() {
                 </div>
               ) : (
                 <div className="h-[200px] flex items-center justify-center">
-                  <p className={`text-sm ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>No document data yet</p>
+                  <p className={`text-sm ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>{t('analytics.noDocumentData')}</p>
                 </div>
               )}
             </CardContent>
@@ -508,7 +511,7 @@ export function AnalyticsDashboard() {
             <CardContent className="p-4 sm:p-6">
               <div className="flex items-center gap-2 mb-4">
                 <HardDrive className="h-4 w-4 text-purple-600 dark:text-purple-400" />
-                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Storage Growth</h3>
+                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">{t('analytics.storageGrowth')}</h3>
               </div>
               <ResponsiveContainer width="100%" height={220}>
                 <AreaChart data={data.storageByMonth} margin={{ top: 5, right: 10, left: -10, bottom: 0 }}>
@@ -556,7 +559,7 @@ export function AnalyticsDashboard() {
           <CardContent className="p-4 sm:p-6">
             <div className="flex items-center gap-2 mb-4">
               <Calendar className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-              <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Activity Heatmap</h3>
+              <h3 className="text-sm font-semibold text-gray-900 dark:text-white">{t('analytics.activityHeatmap')}</h3>
             </div>
             <ActivityHeatmap data={data.recentActivity} isDark={isDark} />
           </CardContent>

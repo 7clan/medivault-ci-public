@@ -4,6 +4,7 @@ import { useEffect } from 'react'
 import { useAppStore, type PatientInfo } from '@/store/app-store'
 import { motion } from 'framer-motion'
 import { Clock } from 'lucide-react'
+import { useI18n } from '@/i18n'
 
 const containerVariants = {
   hidden: { opacity: 0 },
@@ -20,6 +21,7 @@ const itemVariants = {
 
 export function RecentlyViewed() {
   const { recentlyViewed, selectPatient, initRecentlyViewed } = useAppStore()
+  const { t } = useI18n()
 
   // Load from localStorage on mount
   useEffect(() => {
@@ -38,7 +40,7 @@ export function RecentlyViewed() {
     >
       <div className="flex items-center gap-2 mb-3">
         <Clock className="h-4 w-4 text-emerald-600" />
-        <h3 className="text-sm font-medium text-muted-foreground">Recently Viewed</h3>
+        <h3 className="text-sm font-medium text-muted-foreground">{t('dashboard.recentlyViewed')}</h3>
       </div>
       <div className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1">
         {recentlyViewed.map((patient) => (

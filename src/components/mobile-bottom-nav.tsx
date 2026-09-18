@@ -3,22 +3,24 @@
 import { useAppStore, type ViewType } from '@/store/app-store'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Home, Users, ScanLine, Upload, Settings } from 'lucide-react'
+import { useT } from '@/i18n'
 
 type NavItem = {
   icon: typeof Home
-  label: string
+  labelKey: string
   view: ViewType
 }
 
 const navItems: NavItem[] = [
-  { icon: Home, label: 'Dashboard', view: 'dashboard' },
-  { icon: Users, label: 'Patients', view: 'dashboard' },
-  { icon: ScanLine, label: 'Scan', view: 'scan-capture' },
-  { icon: Upload, label: 'Upload', view: 'scan-capture' },
-  { icon: Settings, label: 'Settings', view: 'settings' },
+  { icon: Home, labelKey: 'nav.dashboard', view: 'dashboard' },
+  { icon: Users, labelKey: 'nav.patients', view: 'dashboard' },
+  { icon: ScanLine, labelKey: 'nav.scan', view: 'scan-capture' },
+  { icon: Upload, labelKey: 'nav.upload', view: 'scan-capture' },
+  { icon: Settings, labelKey: 'nav.settings', view: 'settings' },
 ]
 
 export function MobileBottomNav() {
+  const t = useT()
   const currentView = useAppStore((s) => s.currentView)
 
   // Don't render on login or setup screens
@@ -42,7 +44,7 @@ export function MobileBottomNav() {
 
             return (
               <button
-                key={item.label}
+                key={item.labelKey}
                 onClick={() => {
                   useAppStore.getState().setCurrentView(item.view)
                 }}
@@ -81,7 +83,7 @@ export function MobileBottomNav() {
                         : 'font-medium text-muted-foreground'
                     }`}
                   >
-                    {item.label}
+                    {t(item.labelKey)}
                   </span>
                 </motion.div>
               </button>

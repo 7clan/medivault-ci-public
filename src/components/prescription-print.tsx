@@ -21,6 +21,7 @@ import {
   ListChecks,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useI18n } from '@/i18n'
 
 export interface PrescriptionPrintData {
   prescription: {
@@ -44,6 +45,17 @@ interface PrescriptionPrintProps {
 
 export function PrescriptionPrint({ data, open, onClose }: PrescriptionPrintProps) {
   const printRef = useRef<HTMLDivElement>(null)
+  const { t, locale, dir } = useI18n()
+  // Frequencies/durations are STORED DATA — display localizes via the
+  // catalog, unknown custom values pass through verbatim.
+  const tFreq = (value: string) => {
+    const label = t(`prescriptions.freq.${value}`)
+    return label.startsWith('prescriptions.freq.') ? value : label
+  }
+  const tDuration = (value: string) => {
+    const label = t(`prescriptions.duration.${value}`)
+    return label.startsWith('prescriptions.duration.') ? value : label
+  }
   const { prescription, medications } = data
   const patient = prescription.patient
   const doctor = prescription.doctor
@@ -61,9 +73,9 @@ export function PrescriptionPrint({ data, open, onClose }: PrescriptionPrintProp
 
     printWindow.document.write(`
       <!DOCTYPE html>
-      <html>
+      <html lang="${locale}" dir="${dir}">
       <head>
-        <title>Prescription - ${patient ? `${patient.firstName} ${patient.lastName}` : 'Patient'}</title>
+        <title>${t('print.prescriptionDocTitle', { name: patient ? `${patient.firstName} ${patient.lastName}` : t('common.doctor') })}</title>
         <style>
           * { margin: 0; padding: 0; box-sizing: border-box; }
           body {
@@ -314,7 +326,7 @@ export function PrescriptionPrint({ data, open, onClose }: PrescriptionPrintProp
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Printer className="h-5 w-5 text-emerald-600" />
-            Print Prescription
+            {t('print.prescription.title')}
           </DialogTitle>
         </DialogHeader>
 
@@ -345,8 +357,8 @@ export function PrescriptionPrint({ data, open, onClose }: PrescriptionPrintProp
                   <p className="text-xs text-gray-500">{doctor.phone}</p>
                 )}
               </div>
-              <div className="text-right">
-                <h2 className="text-base font-semibold text-emerald-700">PRESCRIPTION</h2>
+              <div className="text-end">
+                <h2 className="text-base font-semibold text-emerald-700">{t('print.prescription.header')}</h2>
                 <p className="text-xs text-gray-400 mt-0.5">{formatDate(prescription.createdAt)}</p>
                 <p className="text-xs text-gray-400">#{prescription.id.slice(0, 8)}</p>
               </div>
@@ -355,23 +367,23 @@ export function PrescriptionPrint({ data, open, onClose }: PrescriptionPrintProp
             {/* Patient Info */}
             <div className="flex flex-wrap justify-between gap-4 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 rounded-lg p-3 mb-4">
               <div className="min-w-[120px]">
-                <p className="text-[10px] uppercase tracking-wide text-emerald-600 font-semibold">Patient</p>
+                <p className="text-[10px] uppercase tracking-wide text-emerald-600 font-semibold">{t('patients.title')}</p>
                 <p className="text-sm font-medium text-gray-900 dark:text-white">
-                  {patient ? `${patient.firstName} ${patient.lastName}` : 'N/A'}
+                  {patient ? `${patient.firstName} ${patient.lastName}` : t('print.notAvailable')}
                 </p>
                 {patient?.dateOfBirth && (
-                  <p className="text-xs text-gray-500">DOB: {patient.dateOfBirth}</p>
+                  <p className="text-xs text-gray-500">{t('patients.dob')}: {patient.dateOfBirth}</p>
                 )}
               </div>
               {patient?.phone && (
                 <div className="min-w-[100px]">
-                  <p className="text-[10px] uppercase tracking-wide text-emerald-600 font-semibold">Phone</p>
+                  <p className="text-[10px] uppercase tracking-wide text-emerald-600 font-semibold">{t('patients.phone')}</p>
                   <p className="text-sm text-gray-700 dark:text-gray-300">{patient.phone}</p>
                 </div>
               )}
               {patient?.address && (
                 <div className="min-w-[120px] flex-1">
-                  <p className="text-[10px] uppercase tracking-wide text-emerald-600 font-semibold">Address</p>
+                  <p className="text-[10px] uppercase tracking-wide text-emerald-600 font-semibold">{t('patients.address')}</p>
                   <p className="text-xs text-gray-700 dark:text-gray-300">{patient.address}</p>
                 </div>
               )}
@@ -390,7 +402,7 @@ export function PrescriptionPrint({ data, open, onClose }: PrescriptionPrintProp
                     <ListChecks className="h-3.5 w-3.5 text-emerald-600" />
                     <span className="text-lg font-bold text-emerald-600">{medications.length}</span>
                   </div>
-                  <p className="text-[10px] uppercase tracking-wide text-gray-500">Total Meds</p>
+                  <p className="text-[10px] uppercase tracking-wide text-gray-500">{t('print.totalMeds')}</p>
                 </motion.div>
                 {ongoingCount > 0 && (
                   <motion.div
@@ -403,7 +415,7 @@ export function PrescriptionPrint({ data, open, onClose }: PrescriptionPrintProp
                       <Infinity className="h-3.5 w-3.5 text-blue-600" />
                       <span className="text-lg font-bold text-blue-600">{ongoingCount}</span>
                     </div>
-                    <p className="text-[10px] uppercase tracking-wide text-gray-500">Ongoing</p>
+                    <p className="text-[10px] uppercase tracking-wide text-gray-500">{t('print.ongoing')}</p>
                   </motion.div>
                 )}
                 {shortTermCount > 0 && (
@@ -417,7 +429,7 @@ export function PrescriptionPrint({ data, open, onClose }: PrescriptionPrintProp
                       <Clock className="h-3.5 w-3.5 text-amber-600" />
                       <span className="text-lg font-bold text-amber-600">{shortTermCount}</span>
                     </div>
-                    <p className="text-[10px] uppercase tracking-wide text-gray-500">Short-term</p>
+                    <p className="text-[10px] uppercase tracking-wide text-gray-500">{t('print.shortTerm')}</p>
                   </motion.div>
                 )}
               </div>
@@ -428,12 +440,12 @@ export function PrescriptionPrint({ data, open, onClose }: PrescriptionPrintProp
               <table className="w-full border-collapse">
                 <thead>
                   <tr>
-                    <th className="bg-emerald-600 text-white text-[10px] uppercase tracking-wide font-semibold px-3 py-2.5 text-left w-9">#</th>
-                    <th className="bg-emerald-600 text-white text-[10px] uppercase tracking-wide font-semibold px-3 py-2.5 text-left min-w-[140px]">Medication</th>
-                    <th className="bg-emerald-600 text-white text-[10px] uppercase tracking-wide font-semibold px-3 py-2.5 text-left w-20">Dosage</th>
-                    <th className="bg-emerald-600 text-white text-[10px] uppercase tracking-wide font-semibold px-3 py-2.5 text-left min-w-[100px]">Frequency</th>
-                    <th className="bg-emerald-600 text-white text-[10px] uppercase tracking-wide font-semibold px-3 py-2.5 text-left w-24">Duration</th>
-                    <th className="bg-emerald-600 text-white text-[10px] uppercase tracking-wide font-semibold px-3 py-2.5 text-left min-w-[160px]">Instructions</th>
+                    <th className="bg-emerald-600 text-white text-[10px] uppercase tracking-wide font-semibold px-3 py-2.5 text-start w-9">#</th>
+                    <th className="bg-emerald-600 text-white text-[10px] uppercase tracking-wide font-semibold px-3 py-2.5 text-start min-w-[140px]">{t('print.colMedication')}</th>
+                    <th className="bg-emerald-600 text-white text-[10px] uppercase tracking-wide font-semibold px-3 py-2.5 text-start w-20">{t('print.colDosage')}</th>
+                    <th className="bg-emerald-600 text-white text-[10px] uppercase tracking-wide font-semibold px-3 py-2.5 text-start min-w-[100px]">{t('print.colFrequency')}</th>
+                    <th className="bg-emerald-600 text-white text-[10px] uppercase tracking-wide font-semibold px-3 py-2.5 text-start w-24">{t('print.colDuration')}</th>
+                    <th className="bg-emerald-600 text-white text-[10px] uppercase tracking-wide font-semibold px-3 py-2.5 text-start min-w-[160px]">{t('print.colInstructions')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -462,17 +474,17 @@ export function PrescriptionPrint({ data, open, onClose }: PrescriptionPrintProp
                         </Badge>
                       </td>
                       <td className="px-3 py-2.5 text-xs text-gray-700 dark:text-gray-300 border-b border-gray-100 dark:border-gray-800">
-                        {med.frequency}
+                        {tFreq(med.frequency)}
                       </td>
                       <td className="px-3 py-2.5 border-b border-gray-100 dark:border-gray-800">
                         {med.duration === 'Ongoing' ? (
                           <Badge className="font-semibold text-[11px] bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300">
-                            <Infinity className="h-2.5 w-2.5 mr-0.5" />
-                            Ongoing
+                            <Infinity className="h-2.5 w-2.5 me-0.5" />
+                            {tDuration(med.duration)}
                           </Badge>
                         ) : (
                           <span className="text-xs text-gray-700 dark:text-gray-300">
-                            {med.duration}
+                            {tDuration(med.duration)}
                           </span>
                         )}
                       </td>
@@ -488,7 +500,7 @@ export function PrescriptionPrint({ data, open, onClose }: PrescriptionPrintProp
             {/* Notes */}
             {prescription.notes && (
               <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 rounded-lg p-3 mb-6">
-                <p className="text-[10px] uppercase tracking-wide text-amber-600 font-semibold mb-1">Notes</p>
+                <p className="text-[10px] uppercase tracking-wide text-amber-600 font-semibold mb-1">{t('patients.notes')}</p>
                 <p className="text-xs text-gray-700 dark:text-gray-300 leading-relaxed">{prescription.notes}</p>
               </div>
             )}
@@ -497,28 +509,28 @@ export function PrescriptionPrint({ data, open, onClose }: PrescriptionPrintProp
             <div className="flex justify-end mt-8">
               <div className="text-center">
                 <div className="w-48 border-b border-gray-400 mb-1" />
-                <p className="text-[10px] text-gray-500">Doctor&apos;s Signature</p>
+                <p className="text-[10px] text-gray-500">{t('print.doctorSignature')}</p>
               </div>
             </div>
 
             {/* Footer */}
             <div className="mt-6 pt-3 border-t border-gray-100 dark:border-gray-800 text-center">
-              <p className="text-[10px] text-gray-400">Generated by MediVault Medical Document Management System</p>
+              <p className="text-[10px] text-gray-400">{t('print.generatedBy')}</p>
             </div>
           </div>
         </div>
 
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>
-            <X className="h-4 w-4 mr-1.5" />
-            Close
+            <X className="h-4 w-4 me-1.5" />
+            {t('common.close')}
           </Button>
           <Button
             onClick={handlePrint}
             className="bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-teal-600 text-white"
           >
-            <Printer className="h-4 w-4 mr-1.5" />
-            Print
+            <Printer className="h-4 w-4 me-1.5" />
+            {t('viewer.print')}
           </Button>
         </DialogFooter>
       </DialogContent>

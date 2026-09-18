@@ -58,6 +58,10 @@ if token and parallel_run not in ("", "unknown"):
             m = re.search(r"Shard ([A-E])", name)
             if m:
                 job_conclusions[m.group(1)] = j.get("conclusion") or j.get("status") or "unknown"
+            # micro-shard matrix jobs are named "micro: <name> — ..."
+            m = re.search(r"^micro: (\S+)", name)
+            if m:
+                job_conclusions["micro:" + m.group(1)] = j.get("conclusion") or j.get("status") or "unknown"
     except Exception as e:
         print(f"gallery: job-conclusion lookup failed: {e}", file=sys.stderr)
 
@@ -170,6 +174,67 @@ for shard, label, focuses in SHARDS:
                 pass
     manifest["shards"].append(entry)
 
+# 2b. walk the MICRO-SHARD artifacts (directive 2026-09-18: each micro shard
+# uploads its own qa-<name> artifact via micro-qa-parallel.yml). Purely
+# ADDITIVE: in a coarse-only run no unmatched qa-* dirs exist, so this whole
+# block is a no-op and the coarse gallery output stays byte-identical
+# (manifest["micro_shards"] only appears when micro artifacts are present).
+micro_arts = {}
+if os.path.isdir("shards"):
+    for d in sorted(os.listdir("shards")):
+        if not d.startswith("qa-") or shard_for(d):
+            continue
+        name = re.sub(r"-sibling\d+$", "", d)[3:]   # "qa-camera-sibling123" -> "camera"
+        if not name:
+            continue
+        micro_arts.setdefault(name, []).append(os.path.join("shards", d))
+        manifest["artifacts"].append({"artifact": d, "micro": name, "present": True})
+for name in sorted(micro_arts):
+    arts = [a for a in micro_arts[name] if os.path.isdir(a)]
+    entry = {"micro": name, "present": bool(arts), "screenshots": 0,
+             "result": job_conclusions.get("micro:" + name, "unknown"),
+             "bug_counts": {}}
+    for art in arts:
+        n = 0
+        for src in find_files(art, ".png"):
+            rel = os.path.relpath(src, art).replace(os.sep, "_")
+            dst = os.path.join(shots, f"micro-{name}-{rel}")
+            try:
+                with open(src, "rb") as f_in, open(dst, "wb") as f_out:
+                    while True:
+                        chunk = f_in.read(65536)
+                        if not chunk:
+                            break
+                        f_out.write(chunk)
+                n += 1
+            except OSError:
+                pass
+        entry["screenshots"] += n
+        for reg in find_files(art, "BUG-REGISTER.md"):
+            try:
+                with open(reg, encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+            except OSError:
+                continue
+            entry["bug_counts"]["lines"] = entry["bug_counts"].get("lines", 0) + text.count("\n")
+            for cls in ("P0", "P1", "P2", "P3", "D-class", "ENV"):
+                c = len(re.findall(rf"\[?{re.escape(cls)}", text))
+                if c:
+                    entry["bug_counts"][cls] = entry["bug_counts"].get(cls, 0) + c
+        for rep in find_files(art, "qa-capability-report.md"):
+            combined_cap.append(f"\n## Micro shard {name}\n")
+            try:
+                combined_cap.append(open(rep, encoding="utf-8", errors="replace").read())
+            except OSError:
+                pass
+        for reg in find_files(art, "BUG-REGISTER.md"):
+            combined_bugs.append(f"\n## Micro shard {name}\n")
+            try:
+                combined_bugs.append(open(reg, encoding="utf-8", errors="replace").read())
+            except OSError:
+                pass
+    manifest.setdefault("micro_shards", []).append(entry)
+
 with open(os.path.join(out, "gallery-manifest.json"), "w") as f:
     json.dump(manifest, f, indent=2)
 
@@ -196,6 +261,29 @@ for e in manifest["shards"]:
     </tr>""")
 
 total_shots = sum(e["screenshots"] for e in manifest["shards"])
+micro_rows = []
+for e in manifest.get("micro_shards", []):
+    state = e["result"] if e["present"] or e["result"] != "unknown" else "not-run"
+    present = "yes" if e["present"] else "no"
+    badge = {"success": "#16a34a", "failure": "#dc2626", "cancelled": "#d97706"}.get(state, "#64748b")
+    micro_rows.append(f"""
+    <tr>
+      <td><strong>micro:{html.escape(e['micro'])}</strong></td>
+      <td><code>qa-{html.escape(e['micro'])}</code></td>
+      <td><span style="background:{badge};color:#fff;padding:2px 10px;border-radius:9999px;font-size:12px">{html.escape(str(state))}</span></td>
+      <td>{e['screenshots']}</td>
+      <td>{html.escape(json.dumps(e['bug_counts']))}</td>
+      <td>{present}</td>
+    </tr>""")
+micro_table = ""
+if manifest.get("micro_shards"):
+    # starts with "\n" so the empty case renders NOTHING (the coarse output
+    # stays byte-identical when no micro artifacts are present)
+    micro_table = ("\n <h2>Micro shards</h2>\n <table>\n"
+                   "  <tr><th>Micro shard</th><th>Evidence artifact</th><th>Result</th><th>Screenshots</th><th>Bug counts (raw)</th><th>Evidence</th></tr>\n  "
+                   + "".join(micro_rows)
+                   + "\n </table>")
+micro_total_shots = sum(e["screenshots"] for e in manifest.get("micro_shards", []))
 index = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -238,7 +326,7 @@ index = f"""<!DOCTYPE html>
  <table>
   <tr><th>Shard</th><th>Scope</th><th>Focus</th><th>Result</th><th>Screenshots</th><th>Bug counts (raw)</th><th>Evidence</th></tr>
   {''.join(rows)}
- </table>
+ </table>{micro_table}
  <div class="note">Result values reflect the GitHub job conclusion per shard (success = battery completed to its designed end;
  failure = honest first-red stop per the campaign discipline — see BUG-REGISTER.md).</div>
  <h2>Reports</h2>
@@ -254,5 +342,6 @@ index = f"""<!DOCTYPE html>
 with open(os.path.join(out, "index.html"), "w") as f:
     f.write(index)
 
-print(f"gallery: wrote {out}/index.html with {len(manifest['shards'])} shards, {total_shots} screenshots")
+print(f"gallery: wrote {out}/index.html with {len(manifest['shards'])} shards, {total_shots} screenshots"
+      + (f" + {len(manifest['micro_shards'])} micro shards, {micro_total_shots} micro screenshots" if manifest.get("micro_shards") else ""))
 PYEOF

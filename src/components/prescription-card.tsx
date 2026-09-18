@@ -19,6 +19,7 @@ import {
   Clock,
 } from 'lucide-react'
 import { PrescriptionPrint, type PrescriptionPrintData } from './prescription-print'
+import { useI18n } from '@/i18n'
 
 export interface PrescriptionCardData {
   id: string
@@ -65,6 +66,13 @@ function parseMedications(medicationsJson: string): Array<{ name: string; dosage
 
 export function PrescriptionCard({ prescription, onStatusChange, onDelete }: PrescriptionCardProps) {
   const { toast } = useToast()
+  const { t } = useI18n()
+  // Prescription statuses are STORED DATA (API values stay raw); labels
+  // localize via the catalog, unknown values pass through verbatim.
+  const tRxStatus = (value: string) => {
+    const label = t(`prescriptions.statusValue.${value}`)
+    return label.startsWith('prescriptions.statusValue.') ? value : label
+  }
   const [expanded, setExpanded] = useState(false)
   const [updating, setUpdating] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -83,11 +91,11 @@ export function PrescriptionCard({ prescription, onStatusChange, onDelete }: Pre
         body: JSON.stringify({ status: newStatus }),
       })
       if (res.ok) {
-        toast({ title: `Prescription ${newStatus}` })
+        toast({ title: t('prescriptions.statusChanged', { status: tRxStatus(newStatus) }) })
         onStatusChange?.(prescription.id, newStatus)
       }
     } catch {
-      toast({ title: 'Error updating prescription', variant: 'destructive' })
+      toast({ title: t('prescriptions.errorUpdate'), variant: 'destructive' })
     }
     setUpdating(false)
   }
@@ -97,11 +105,11 @@ export function PrescriptionCard({ prescription, onStatusChange, onDelete }: Pre
     try {
       const res = await fetch(`/api/prescriptions/${prescription.id}`, { method: 'DELETE' })
       if (res.ok) {
-        toast({ title: 'Prescription deleted' })
+        toast({ title: t('prescriptions.deletedTitle') })
         onDelete?.(prescription.id)
       }
     } catch {
-      toast({ title: 'Error deleting prescription', variant: 'destructive' })
+      toast({ title: t('prescriptions.errorDelete'), variant: 'destructive' })
     }
     setDeleting(false)
   }
@@ -123,10 +131,10 @@ export function PrescriptionCard({ prescription, onStatusChange, onDelete }: Pre
         exit={{ opacity: 0, y: -10 }}
         transition={{ duration: 0.2 }}
       >
-        <Card className={`border-l-[3px] transition-all duration-200 ${
-          prescription.status === 'active' ? 'border-l-emerald-500 hover:shadow-md' :
-          prescription.status === 'discontinued' ? 'border-l-red-400 opacity-70' :
-          'border-l-gray-400 opacity-60'
+        <Card className={`border-s-[3px] transition-all duration-200 ${
+          prescription.status === 'active' ? 'border-s-emerald-500 hover:shadow-md' :
+          prescription.status === 'discontinued' ? 'border-s-red-400 opacity-70' :
+          'border-s-gray-400 opacity-60'
         }`}>
           <CardContent className="p-3 sm:p-4">
             <div className="flex items-start justify-between gap-2">
@@ -141,11 +149,11 @@ export function PrescriptionCard({ prescription, onStatusChange, onDelete }: Pre
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-medium text-sm text-gray-900 dark:text-white">
-                      {meds.length} medication{meds.length !== 1 ? 's' : ''}
+                      {meds.length === 1 ? t('prescriptions.oneMedication') : t('prescriptions.medicationCount', { count: meds.length })}
                     </span>
                     <Badge className={`text-[10px] rounded-full ${statusConfig.color}`}>
-                      <StatusIcon className="h-3 w-3 mr-0.5" />
-                      {prescription.status}
+                      <StatusIcon className="h-3 w-3 me-0.5" />
+                      {tRxStatus(prescription.status)}
                     </Badge>
                   </div>
                   <div className="flex items-center gap-2 mt-1 text-xs text-muted-foreground">
@@ -173,7 +181,7 @@ export function PrescriptionCard({ prescription, onStatusChange, onDelete }: Pre
                   size="icon"
                   className="h-7 w-7"
                   onClick={handlePrint}
-                  title="Print"
+                  title={t('viewer.print')}
                 >
                   <Printer className="h-3.5 w-3.5" />
                 </Button>
@@ -184,7 +192,7 @@ export function PrescriptionCard({ prescription, onStatusChange, onDelete }: Pre
                     className="h-7 w-7 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/20"
                     onClick={() => handleStatusChange('completed')}
                     disabled={updating}
-                    title="Mark Complete"
+                    title={t('visits.markComplete')}
                   >
                     {updating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
                   </Button>
@@ -196,7 +204,7 @@ export function PrescriptionCard({ prescription, onStatusChange, onDelete }: Pre
                     className="h-7 w-7 text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/50"
                     onClick={() => handleStatusChange('discontinued')}
                     disabled={updating}
-                    title="Discontinue"
+                    title={t('prescriptions.discontinue')}
                   >
                     <XCircle className="h-3.5 w-3.5" />
                   </Button>
@@ -207,7 +215,7 @@ export function PrescriptionCard({ prescription, onStatusChange, onDelete }: Pre
                   className="h-7 w-7 text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/50"
                   onClick={handleDelete}
                   disabled={deleting}
-                  title="Delete"
+                  title={t('common.delete')}
                 >
                   {deleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
                 </Button>
@@ -243,7 +251,7 @@ export function PrescriptionCard({ prescription, onStatusChange, onDelete }: Pre
                     ))}
                     {prescription.notes && (
                       <div className="text-xs text-muted-foreground mt-2 p-2 bg-emerald-50 dark:bg-emerald-950/20 rounded-md">
-                        <span className="font-medium text-emerald-700 dark:text-emerald-400">Notes: </span>
+                        <span className="font-medium text-emerald-700 dark:text-emerald-400">{t('patients.notes')}: </span>
                         {prescription.notes}
                       </div>
                     )}

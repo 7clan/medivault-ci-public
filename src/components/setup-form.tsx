@@ -10,23 +10,28 @@ import { useToast } from '@/hooks/use-toast'
 import { useAppStore } from '@/store/app-store'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Stethoscope, Mail, Lock, Phone, Loader2, ArrowLeft, UserPlus, Check, Shield, X, Plus } from 'lucide-react'
+import { useI18n } from '@/i18n'
+import { LanguageToggle } from '@/components/language-switcher'
 
+// FEATURE D: preset VALUES stay English (stored profile data contract);
+// the LABELS are localized via the catalog key.
 const SPECIALTY_PRESETS = [
-  'General Medicine',
-  'Cardiology',
-  'Dermatology',
-  'Pediatrics',
-  'Orthopedics',
-  'Neurology',
-  'Oncology',
-  'Ophthalmology',
-  'Psychiatry',
-  'Radiology',
-  'Urology',
-  'ENT',
+  { value: 'General Medicine', key: 'specialty.generalMedicine' },
+  { value: 'Cardiology', key: 'specialty.cardiology' },
+  { value: 'Dermatology', key: 'specialty.dermatology' },
+  { value: 'Pediatrics', key: 'specialty.pediatrics' },
+  { value: 'Orthopedics', key: 'specialty.orthopedics' },
+  { value: 'Neurology', key: 'specialty.neurology' },
+  { value: 'Oncology', key: 'specialty.oncology' },
+  { value: 'Ophthalmology', key: 'specialty.ophthalmology' },
+  { value: 'Psychiatry', key: 'specialty.psychiatry' },
+  { value: 'Radiology', key: 'specialty.radiology' },
+  { value: 'Urology', key: 'specialty.urology' },
+  { value: 'ENT', key: 'specialty.ent' },
 ]
 
 export function SetupForm() {
+  const { t } = useI18n()
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -74,12 +79,12 @@ export function SetupForm() {
   const passwordStrength = useMemo(() => {
     if (!password) return { score: 0, label: '', color: '' }
     const passed = Object.values(passwordChecks).filter(Boolean).length
-    if (passed <= 1) return { score: 1, label: 'Weak', color: 'bg-red-500' }
-    if (passed <= 2) return { score: 2, label: 'Fair', color: 'bg-amber-500' }
-    if (passed <= 3) return { score: 3, label: 'Good', color: 'bg-teal-500' }
-    if (passed <= 4) return { score: 4, label: 'Strong', color: 'bg-emerald-500' }
-    return { score: 5, label: 'Excellent', color: 'bg-emerald-400' }
-  }, [password, passwordChecks])
+    if (passed <= 1) return { score: 1, label: t('auth.pwStrength.weak'), color: 'bg-red-500' }
+    if (passed <= 2) return { score: 2, label: t('auth.pwStrength.fair'), color: 'bg-amber-500' }
+    if (passed <= 3) return { score: 3, label: t('auth.pwStrength.good'), color: 'bg-teal-500' }
+    if (passed <= 4) return { score: 4, label: t('auth.pwStrength.strong'), color: 'bg-emerald-500' }
+    return { score: 5, label: t('auth.pwStrength.excellent'), color: 'bg-emerald-400' }
+  }, [password, passwordChecks, t])
 
   // Password match state
   const passwordMatch = useMemo(() => {
@@ -92,12 +97,12 @@ export function SetupForm() {
     setError('')
 
     if (password !== confirmPassword) {
-      setError('Passwords do not match.')
+      setError(t('auth.error.passwordMismatch'))
       return
     }
 
     if (password.length < 6) {
-      setError('Password must be at least 6 characters.')
+      setError(t('auth.error.passwordShort'))
       return
     }
 
@@ -113,7 +118,7 @@ export function SetupForm() {
       const data = await res.json()
 
       if (!res.ok) {
-        setError(data.error || 'Failed to create account.')
+        setError(data.error || t('auth.error.setupFailed'))
         return
       }
 
@@ -128,17 +133,17 @@ export function SetupForm() {
         setDoctorInfo(name, email, data.id)
         setCurrentView('dashboard')
         toast({
-          title: 'Account Created!',
-          description: 'Welcome to MediVault. Your account is ready.',
+          title: t('auth.toast.accountCreatedTitle'),
+          description: t('auth.toast.accountCreatedDesc'),
         })
         return
       }
       // Fallback: account created but auto-login failed
       setDoctorInfo(name, email, data.id)
       setCurrentView('login')
-      setError('Account created but auto-login failed. Please sign in.')
+      setError(t('auth.error.autoLoginFailed'))
     } catch {
-      setError('An error occurred. Please try again.')
+      setError(t('auth.error.generic'))
     } finally {
       setLoading(false)
     }
@@ -180,8 +185,13 @@ export function SetupForm() {
             animate={{ opacity: 1 }}
             transition={{ delay: 0.15 }}
           >
-            Set up your clinic account
+            {t('auth.setup.subtitle')}
           </motion.p>
+        </div>
+
+        {/* FEATURE D — language choice before setup */}
+        <div className="flex justify-center mb-4">
+          <LanguageToggle />
         </div>
 
         {/* Multi-Step Progress Indicator */}
@@ -214,13 +224,13 @@ export function SetupForm() {
                 currentStep >= 1
                   ? 'text-emerald-600 dark:text-emerald-400'
                   : 'text-gray-400 dark:text-gray-500'
-              }`}>Profile</span>
+              }`}>{t('auth.setup.step.profile')}</span>
             </motion.div>
 
             {/* Connector 1 */}
             <div className="w-12 sm:w-16 h-[2px] mx-1 relative bg-gray-200 dark:bg-gray-700">
               <motion.div
-                className={`absolute inset-y-0 left-0 transition-colors duration-500 ${
+                className={`absolute inset-y-0 start-0 transition-colors duration-500 ${
                   currentStep >= 2
                     ? 'bg-emerald-500'
                     : 'bg-gray-200 dark:bg-gray-700'
@@ -255,13 +265,13 @@ export function SetupForm() {
                 currentStep >= 2
                   ? 'text-emerald-600 dark:text-emerald-400'
                   : 'text-gray-400 dark:text-gray-500'
-              }`}>Security</span>
+              }`}>{t('auth.setup.step.security')}</span>
             </motion.div>
 
             {/* Connector 2 */}
             <div className="w-12 sm:w-16 h-[2px] mx-1 relative bg-gray-200 dark:bg-gray-700">
               <motion.div
-                className={`absolute inset-y-0 left-0 transition-colors duration-500 ${
+                className={`absolute inset-y-0 start-0 transition-colors duration-500 ${
                   currentStep >= 3
                     ? 'bg-emerald-500'
                     : 'bg-gray-200 dark:bg-gray-700'
@@ -294,7 +304,7 @@ export function SetupForm() {
                 currentStep >= 3
                   ? 'text-emerald-600 dark:text-emerald-400'
                   : 'text-gray-400 dark:text-gray-500'
-              }`}>Specialty</span>
+              }`}>{t('auth.setup.step.specialty')}</span>
             </motion.div>
           </div>
         </motion.div>
@@ -324,10 +334,10 @@ export function SetupForm() {
             <CardHeader className="pb-2">
               <CardTitle className="text-xl flex items-center gap-2">
                 <UserPlus className="h-5 w-5 text-emerald-600" />
-                Create Your Account
+                {t('auth.setup.title')}
               </CardTitle>
               <CardDescription>
-                Fill in your details to get started
+                {t('auth.setup.description')}
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -346,31 +356,31 @@ export function SetupForm() {
                 </AnimatePresence>
 
                 <div className="space-y-2">
-                  <Label htmlFor="name">Full Name *</Label>
+                  <Label htmlFor="name">{t('auth.fullName')}</Label>
                   <div className="relative">
-                    <UserPlus className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <UserPlus className="absolute start-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                     <Input
                       id="name"
-                      placeholder="Dr. John Smith"
+                      placeholder={t('auth.namePlaceholder')}
                       value={name}
                       onChange={(e) => setName(e.target.value)}
-                      className="pl-10 transition-all duration-300 focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 dark:focus:border-emerald-600 h-11"
+                      className="ps-10 transition-all duration-300 focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 dark:focus:border-emerald-600 h-11"
                       required
                     />
                   </div>
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="setup-email">Email *</Label>
+                  <Label htmlFor="setup-email">{t('auth.email')} *</Label>
                   <div className="relative">
-                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Mail className="absolute start-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                     <Input
                       id="setup-email"
                       type="email"
                       placeholder="doctor@clinic.com"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      className="pl-10 transition-all duration-300 focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 dark:focus:border-emerald-600 h-11"
+                      className="ps-10 transition-all duration-300 focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 dark:focus:border-emerald-600 h-11"
                       required
                     />
                   </div>
@@ -378,31 +388,31 @@ export function SetupForm() {
 
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-2">
-                    <Label htmlFor="password">Password *</Label>
+                    <Label htmlFor="password">{t('auth.password')} *</Label>
                     <div className="relative">
-                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                      <Lock className="absolute start-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                       <Input
                         id="password"
                         type="password"
-                        placeholder="Min 6 chars"
+                        placeholder={t('auth.passwordPlaceholder')}
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
-                        className="pl-10 transition-all duration-300 focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 dark:focus:border-emerald-600 h-11"
+                        className="ps-10 transition-all duration-300 focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 dark:focus:border-emerald-600 h-11"
                         required
                       />
                     </div>
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="confirm-password">Confirm *</Label>
+                    <Label htmlFor="confirm-password">{t('auth.confirmPassword')}</Label>
                     <div className="relative">
-                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                      <Lock className="absolute start-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                       <Input
                         id="confirm-password"
                         type="password"
-                        placeholder="Repeat password"
+                        placeholder={t('auth.confirmPlaceholder')}
                         value={confirmPassword}
                         onChange={(e) => setConfirmPassword(e.target.value)}
-                        className={`pl-10 pr-10 transition-all duration-300 focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 dark:focus:border-emerald-600 h-11 ${
+                        className={`ps-10 pe-10 transition-all duration-300 focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 dark:focus:border-emerald-600 h-11 ${
                           passwordMatch === true ? 'border-emerald-400 dark:border-emerald-600' :
                           passwordMatch === false ? 'border-red-400 dark:border-red-600' : ''
                         }`}
@@ -412,7 +422,7 @@ export function SetupForm() {
                       <AnimatePresence>
                         {passwordMatch !== null && confirmPassword && (
                           <motion.div
-                            className="absolute right-3 top-1/2 -translate-y-1/2"
+                            className="absolute end-3 top-1/2 -translate-y-1/2"
                             initial={{ scale: 0, rotate: -90 }}
                             animate={{ scale: 1, rotate: 0 }}
                             exit={{ scale: 0 }}
@@ -465,7 +475,7 @@ export function SetupForm() {
                       </div>
                       {/* Individual check indicators */}
                       <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-                        {([['length', '8+ characters'], ['uppercase', 'Uppercase (A-Z)'], ['lowercase', 'Lowercase (a-z)'], ['numbers', 'Numbers (0-9)'], ['special', 'Special (!@#$)']] as const).map(([key, label]) => (
+                        {([['length', 'auth.pwCheck.length'], ['uppercase', 'auth.pwCheck.uppercase'], ['lowercase', 'auth.pwCheck.lowercase'], ['numbers', 'auth.pwCheck.numbers'], ['special', 'auth.pwCheck.special']] as const).map(([key, labelKey]) => (
                           <motion.div
                             key={key}
                             className="flex items-center gap-1.5 text-xs"
@@ -483,14 +493,14 @@ export function SetupForm() {
                               {passwordChecks[key] && <Check className="h-2 w-2 text-white" strokeWidth={3} />}
                             </motion.div>
                             <span className={`transition-colors duration-300 ${passwordChecks[key] ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'}`}>
-                              {label}
+                              {t(labelKey)}
                             </span>
                           </motion.div>
                         ))}
                       </div>
                       <p className="text-xs text-muted-foreground flex items-center gap-1">
                         <Shield className="h-3 w-3" />
-                        Password strength: <span className={`font-medium ${
+                        {t('auth.pwStrength.label')} <span className={`font-medium ${
                           passwordStrength.score <= 1 ? 'text-red-500' :
                           passwordStrength.score <= 2 ? 'text-amber-500' :
                           passwordStrength.score <= 3 ? 'text-teal-500' :
@@ -503,33 +513,33 @@ export function SetupForm() {
                 </AnimatePresence>
 
                 <div className="space-y-2">
-                  <Label htmlFor="phone">Phone (optional)</Label>
+                  <Label htmlFor="phone">{t('auth.phoneOptional')}</Label>
                   <div className="relative">
-                    <Phone className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Phone className="absolute start-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                     <Input
                       id="phone"
                       placeholder="+1 234 567 8900"
                       value={phone}
                       onChange={(e) => setPhone(e.target.value)}
-                      className="pl-10 transition-all duration-300 focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 dark:focus:border-emerald-600 h-11"
+                      className="ps-10 transition-all duration-300 focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 dark:focus:border-emerald-600 h-11"
                     />
                   </div>
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="specialty">Specialty (optional)</Label>
+                  <Label htmlFor="specialty">{t('auth.specialtyOptional')}</Label>
                   {/* Specialty preset chips */}
                   <div className="flex flex-wrap gap-1.5 mb-2">
                     <AnimatePresence>
                       {SPECIALTY_PRESETS.filter((s) =>
-                        !specialty || s.toLowerCase().includes(specialty.toLowerCase())
+                        !specialty || s.value.toLowerCase().includes(specialty.toLowerCase())
                       ).slice(0, 6).map((preset) => (
                         <motion.button
-                          key={preset}
+                          key={preset.value}
                           type="button"
-                          onClick={() => setSpecialty(specialty === preset ? '' : preset)}
+                          onClick={() => setSpecialty(specialty === preset.value ? '' : preset.value)}
                           className={`px-2.5 py-1 rounded-full text-xs font-medium transition-all duration-200 border ${
-                            specialty === preset
+                            specialty === preset.value
                               ? 'bg-emerald-500 text-white border-emerald-500 shadow-sm shadow-emerald-200/50 dark:shadow-emerald-900/30'
                               : 'bg-gray-50 dark:bg-gray-800 text-gray-600 dark:text-gray-400 border-gray-200 dark:border-gray-700 hover:border-emerald-300 dark:hover:border-emerald-700 hover:text-emerald-600 dark:hover:text-emerald-400'
                           }`}
@@ -540,14 +550,14 @@ export function SetupForm() {
                           exit={{ opacity: 0, scale: 0.8 }}
                           layout
                         >
-                          {preset}
+                          {t(preset.key)}
                         </motion.button>
                       ))}
                     </AnimatePresence>
                   </div>
                   <Input
                     id="specialty"
-                    placeholder="Or type a custom specialty..."
+                    placeholder={t('auth.specialtyPlaceholder')}
                     value={specialty}
                     onChange={(e) => setSpecialty(e.target.value)}
                     className="transition-all duration-300 focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 dark:focus:border-emerald-600 h-11"
@@ -562,13 +572,13 @@ export function SetupForm() {
                   >
                     {loading ? (
                       <>
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Creating Account...
+                        <Loader2 className="me-2 h-4 w-4 animate-spin" />
+                        {t('auth.setup.creating')}
                       </>
                     ) : (
                       <>
-                        <UserPlus className="mr-2 h-4 w-4" />
-                        Create Account & Start
+                        <UserPlus className="me-2 h-4 w-4" />
+                        {t('auth.setup.create')}
                       </>
                     )}
                   </Button>
@@ -577,8 +587,8 @@ export function SetupForm() {
 
               <div className="mt-4 text-center">
                 <Button variant="ghost" size="sm" onClick={() => setCurrentView('login')} className="transition-all duration-200 hover:text-emerald-600">
-                  <ArrowLeft className="mr-2 h-4 w-4" />
-                  Back to Sign In
+                  <ArrowLeft className="me-2 h-4 w-4 rtl:-scale-x-100" />
+                  {t('auth.setup.back')}
                 </Button>
               </div>
             </CardContent>

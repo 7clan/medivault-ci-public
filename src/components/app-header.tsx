@@ -23,9 +23,13 @@ import {
 } from 'lucide-react'
 import { useState, useRef, useEffect } from 'react'
 import { QuickPatientSwitcher } from './quick-patient-switcher'
+import { HelpGuideMenu } from './tour/help-guide-menu'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
+import { useI18n } from '@/i18n'
+import { LanguageSwitcher } from '@/components/language-switcher'
 
 export function AppHeader() {
+  const { t } = useI18n()
   const { toast } = useToast()
   const { theme, setTheme } = useTheme()
   const { currentView, setCurrentView, doctorName, doctorEmail, logout } = useAppStore()
@@ -56,12 +60,12 @@ export function AppHeader() {
   const handleLogout = async () => {
     try { await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }) } catch {}
     logout()
-    toast({ title: 'Signed out', description: 'You have been logged out.' })
+    toast({ title: t('header.signedOutTitle'), description: t('header.signedOutDesc') })
   }
 
   const handleBackup = async () => {
     try {
-      toast({ title: 'Preparing backup...', description: 'This may take a moment for large datasets.' })
+      toast({ title: t('header.backupPreparingTitle'), description: t('header.backupPreparingDesc') })
       const res = await fetch('/api/backup', { credentials: 'include' })
       if (!res.ok) throw new Error('Backup failed')
       const blob = await res.blob()
@@ -73,9 +77,9 @@ export function AppHeader() {
       a.click()
       document.body.removeChild(a)
       URL.revokeObjectURL(url)
-      toast({ title: 'Backup Complete!', description: 'Your data has been downloaded.' })
+      toast({ title: t('header.backupCompleteTitle'), description: t('header.backupCompleteDesc') })
     } catch {
-      toast({ title: 'Backup Failed', description: 'Could not create backup.', variant: 'destructive' })
+      toast({ title: t('header.backupFailedTitle'), description: t('header.backupFailedDesc'), variant: 'destructive' })
     }
   }
 
@@ -84,8 +88,8 @@ export function AppHeader() {
   }
 
   const navItems = [
-    { icon: LayoutDashboard, label: 'Dashboard', view: 'dashboard' as const },
-    { icon: Settings, label: 'Settings', view: 'settings' as const },
+    { icon: LayoutDashboard, label: t('nav.dashboard'), view: 'dashboard' as const },
+    { icon: Settings, label: t('nav.settings'), view: 'settings' as const },
   ]
 
   return (
@@ -146,6 +150,9 @@ export function AppHeader() {
 
         {/* Right side */}
         <div className="flex items-center gap-1.5">
+          {/* FEATURE D — language switcher */}
+          <LanguageSwitcher />
+
           {/* Quick Patient Switcher Trigger */}
           <Tooltip>
             <TooltipTrigger asChild>
@@ -162,7 +169,7 @@ export function AppHeader() {
             </TooltipTrigger>
             <TooltipContent side="bottom">
               <span className="flex items-center gap-1.5">
-                Switch Patient
+                {t('header.switchPatient')}
                 <kbd className="inline-flex items-center justify-center h-4 min-w-[18px] px-1 rounded bg-white/20 border border-white/10 text-[9px] font-mono">
                   Ctrl+P
                 </kbd>
@@ -173,13 +180,16 @@ export function AppHeader() {
           {/* Notification Center */}
           <NotificationCenter />
 
+          {/* Help & Guide — permanent entry: replay the tour or jump to a section */}
+          <HelpGuideMenu />
+
           <motion.div whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}>
             <Button
               variant="ghost"
               size="icon"
               className="hidden sm:flex text-muted-foreground hover:text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-950/20 transition-colors duration-200"
               onClick={toggleTheme}
-              title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+              title={theme === 'dark' ? t('header.switchLight') : t('header.switchDark')}
             >
               <AnimatePresence mode="wait">
                 {theme === 'dark' ? (
@@ -201,7 +211,7 @@ export function AppHeader() {
               size="icon"
               className="hidden sm:flex text-muted-foreground hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/20 transition-colors duration-200"
               onClick={handleBackup}
-              title="Download Backup"
+              title={t('header.downloadBackup')}
             >
               <Download className="h-4 w-4" />
             </Button>
@@ -221,7 +231,7 @@ export function AppHeader() {
                 </span>
               </div>
               <span className="text-sm font-medium max-w-[120px] truncate">
-                {doctorName || 'Doctor'}
+                {doctorName || t('common.doctor')}
               </span>
               <motion.div animate={{ rotate: profileDropdownOpen ? 180 : 0 }} transition={{ duration: 0.2 }}>
                 <ChevronDown className="h-3 w-3" />
@@ -231,7 +241,7 @@ export function AppHeader() {
             <AnimatePresence>
               {profileDropdownOpen && (
                 <motion.div
-                  className="absolute right-0 top-full mt-2 w-56 bg-white dark:bg-gray-900 rounded-xl shadow-xl border border-gray-200 dark:border-gray-800 z-50 overflow-hidden"
+                  className="absolute end-0 top-full mt-2 w-56 bg-white dark:bg-gray-900 rounded-xl shadow-xl border border-gray-200 dark:border-gray-800 z-50 overflow-hidden"
                   initial={{ opacity: 0, y: -8, scale: 0.95 }}
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   exit={{ opacity: 0, y: -8, scale: 0.95 }}
@@ -243,8 +253,8 @@ export function AppHeader() {
                         {(doctorName || 'D')[0].toUpperCase()}
                       </div>
                       <div className="min-w-0">
-                        <p className="font-semibold text-sm text-gray-900 dark:text-white truncate">{doctorName || 'Doctor'}</p>
-                        <p className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">Clinic Doctor</p>
+                        <p className="font-semibold text-sm text-gray-900 dark:text-white truncate">{doctorName || t('common.doctor')}</p>
+                        <p className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">{t('header.clinicDoctor')}</p>
                       </div>
                     </div>
                   </div>
@@ -254,7 +264,7 @@ export function AppHeader() {
                       className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors duration-200"
                     >
                       <LogOut className="h-4 w-4" />
-                      Sign Out
+                      {t('header.signOut')}
                     </button>
                   </div>
                 </motion.div>
@@ -263,7 +273,7 @@ export function AppHeader() {
           </div>
 
           <motion.div whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}>
-            <Button variant="ghost" size="icon" onClick={handleLogout} title="Sign Out" className="text-muted-foreground hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/20 transition-colors duration-200">
+            <Button variant="ghost" size="icon" onClick={handleLogout} title={t('header.signOut')} className="text-muted-foreground hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/20 transition-colors duration-200">
               <LogOut className="h-4 w-4" />
             </Button>
           </motion.div>
@@ -351,7 +361,7 @@ export function AppHeader() {
                   }}
                 >
                   {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-                  {theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
+                  {theme === 'dark' ? t('header.lightMode') : t('header.darkMode')}
                 </Button>
               </motion.div>
               <motion.div
@@ -368,7 +378,7 @@ export function AppHeader() {
                   }}
                 >
                   <Download className="h-4 w-4" />
-                  Download Backup
+                  {t('header.downloadBackup')}
                 </Button>
               </motion.div>
               <div className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground border-t mt-2 pt-3 border-gray-100 dark:border-gray-800">
@@ -376,7 +386,7 @@ export function AppHeader() {
                   <User className="h-4 w-4 text-emerald-600" />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <span className="font-medium text-gray-900 dark:text-white block">{doctorName || 'Doctor'}</span>
+                  <span className="font-medium text-gray-900 dark:text-white block">{doctorName || t('common.doctor')}</span>
                   <span className="text-xs text-muted-foreground block truncate">{doctorEmail || ''}</span>
                 </div>
               </div>

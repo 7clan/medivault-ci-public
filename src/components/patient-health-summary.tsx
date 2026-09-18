@@ -5,6 +5,7 @@ import { motion } from 'framer-motion'
 import { Card, CardContent } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
 import { formatFileSize, formatDateTime, getCategoryColor } from '@/lib/utils-helpers'
+import { useI18n } from '@/i18n'
 import type { PatientInfo, DocumentInfo } from '@/store/app-store'
 import {
   FileText,
@@ -74,6 +75,7 @@ const itemVariants = {
 } as const
 
 export function PatientHealthSummary({ patient, documents }: PatientHealthSummaryProps) {
+  const { t, tCategory } = useI18n()
   // ── Derived data ──────────────────────────────────────────────
   const totalStorage = useMemo(
     () => documents.reduce((sum, d) => sum + d.fileSize, 0),
@@ -139,7 +141,7 @@ export function PatientHealthSummary({ patient, documents }: PatientHealthSummar
                 <FileText className="h-4.5 w-4.5 text-emerald-600 dark:text-emerald-400" />
               </div>
               <div className="min-w-0">
-                <p className="text-xs text-muted-foreground truncate">Total Docs</p>
+                <p className="text-xs text-muted-foreground truncate">{t('health.totalDocs')}</p>
                 <p className="text-lg font-bold text-gray-900 dark:text-white leading-tight">
                   {documents.length}
                 </p>
@@ -156,7 +158,7 @@ export function PatientHealthSummary({ patient, documents }: PatientHealthSummar
                 <HardDrive className="h-4.5 w-4.5 text-teal-600 dark:text-teal-400" />
               </div>
               <div className="min-w-0">
-                <p className="text-xs text-muted-foreground truncate">Total Storage</p>
+                <p className="text-xs text-muted-foreground truncate">{t('health.totalStorage')}</p>
                 <p className="text-lg font-bold text-gray-900 dark:text-white leading-tight">
                   {formatFileSize(totalStorage)}
                 </p>
@@ -173,7 +175,7 @@ export function PatientHealthSummary({ patient, documents }: PatientHealthSummar
                 <Clock className="h-4.5 w-4.5 text-amber-600 dark:text-amber-400" />
               </div>
               <div className="min-w-0">
-                <p className="text-xs text-muted-foreground truncate">Last Upload</p>
+                <p className="text-xs text-muted-foreground truncate">{t('health.lastUpload')}</p>
                 <p className="text-sm font-semibold text-gray-900 dark:text-white leading-tight truncate">
                   {lastUploadDate ? formatDateTime(lastUploadDate).split(',')[0] : '—'}
                 </p>
@@ -190,7 +192,7 @@ export function PatientHealthSummary({ patient, documents }: PatientHealthSummar
                 <Tag className="h-4.5 w-4.5 text-rose-600 dark:text-rose-400" />
               </div>
               <div className="min-w-0">
-                <p className="text-xs text-muted-foreground truncate">Top Category</p>
+                <p className="text-xs text-muted-foreground truncate">{t('health.topCategory')}</p>
                 <p className="text-sm font-semibold text-gray-900 dark:text-white leading-tight truncate">
                   {mostCommonCategory || '—'}
                 </p>
@@ -209,7 +211,7 @@ export function PatientHealthSummary({ patient, documents }: PatientHealthSummar
                 <div className="flex items-center gap-2 mb-2">
                   <HardDrive className="h-4 w-4 text-teal-600 dark:text-teal-400" />
                   <span className="text-sm font-medium text-gray-900 dark:text-white">
-                    Storage Used
+                    {t('dashboard.storageUsed')}
                   </span>
                 </div>
                 <div className="relative">
@@ -227,18 +229,18 @@ export function PatientHealthSummary({ patient, documents }: PatientHealthSummar
                   />
                 </div>
                 <p className="text-xs text-muted-foreground mt-1.5">
-                  {formatFileSize(totalStorage)} of {formatFileSize(STORAGE_MAX_BYTES)}
+                  {t('health.storageOf', { used: formatFileSize(totalStorage), total: formatFileSize(STORAGE_MAX_BYTES) })}
                 </p>
                 <p className="text-xs text-muted-foreground mt-0.5">
                   {storagePercent >= 90
-                    ? '⚠ Storage almost full. Consider archiving older documents.'
+                    ? t('health.storageAlmostFull')
                     : storagePercent >= 60
-                      ? `${Math.round(storagePercent)}% used — ample space remaining.`
-                      : `${Math.round(storagePercent)}% used`}
+                      ? t('health.storageAmple', { percent: Math.round(storagePercent) })
+                      : t('health.storageUsedPercent', { percent: Math.round(storagePercent) })}
                 </p>
               </div>
               {/* Circular progress gauge */}
-              <div className="relative w-20 h-20 flex-shrink-0 ml-4">
+              <div className="relative w-20 h-20 flex-shrink-0 ms-4">
                 <svg width="80" height="80" viewBox="0 0 96 96" className="-rotate-90">
                   <circle
                     cx="48" cy="48" r="40"
@@ -289,7 +291,7 @@ export function PatientHealthSummary({ patient, documents }: PatientHealthSummar
             <div className="flex items-center gap-2 mb-3">
               <TrendingUp className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
               <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
-                Document Distribution
+                {t('health.documentDistribution')}
               </h3>
             </div>
 
@@ -300,9 +302,9 @@ export function PatientHealthSummary({ patient, documents }: PatientHealthSummar
                   <div key={cat.category} className="flex items-center gap-2.5">
                     {/* Label */}
                     <span
-                      className={`w-24 sm:w-28 flex-shrink-0 text-xs font-medium text-gray-600 dark:text-gray-400 truncate text-right`}
+                      className={`w-24 sm:w-28 flex-shrink-0 text-xs font-medium text-gray-600 dark:text-gray-400 truncate text-end`}
                     >
-                      {cat.category}
+                      {tCategory(cat.category)}
                     </span>
 
                     {/* Bar with gradient fill */}
@@ -332,7 +334,7 @@ export function PatientHealthSummary({ patient, documents }: PatientHealthSummar
 
                     {/* Count badge */}
                     <motion.span
-                      className="w-8 flex-shrink-0 text-right text-xs font-bold text-gray-700 dark:text-gray-300"
+                      className="w-8 flex-shrink-0 text-end text-xs font-bold text-gray-700 dark:text-gray-300"
                       initial={{ opacity: 0 }}
                       animate={{ opacity: 1 }}
                       transition={{ delay: 0.4 + index * 0.08 }}
@@ -351,7 +353,7 @@ export function PatientHealthSummary({ patient, documents }: PatientHealthSummar
                   <div
                     className={`w-2 h-2 rounded-full ${getCategoryColor(cat.category).split(' ')[0]}`}
                   />
-                  <span className="text-[10px] text-muted-foreground">{cat.category}</span>
+                  <span className="text-[10px] text-muted-foreground">{tCategory(cat.category)}</span>
                 </div>
               ))}
             </div>
@@ -366,13 +368,13 @@ export function PatientHealthSummary({ patient, documents }: PatientHealthSummar
             <div className="flex items-center gap-2 mb-3">
               <Activity className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
               <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
-                Recent Activity
+                {t('health.recentActivity')}
               </h3>
             </div>
 
-            <div className="relative pl-5">
+            <div className="relative ps-5">
               {/* Vertical line */}
-              <div className="absolute left-[7px] top-1 bottom-1 w-px bg-gradient-to-b from-emerald-300 via-teal-300 to-teal-300/20 dark:from-emerald-700 dark:via-teal-700 dark:to-teal-700/20" />
+              <div className="absolute start-[7px] top-1 bottom-1 w-px bg-gradient-to-b from-emerald-300 via-teal-300 to-teal-300/20 dark:from-emerald-700 dark:via-teal-700 dark:to-teal-700/20" />
 
               <div className="space-y-3">
                 {recentUploads.map((doc, index) => (
@@ -384,7 +386,7 @@ export function PatientHealthSummary({ patient, documents }: PatientHealthSummar
                     transition={{ delay: 0.3 + index * 0.08, duration: 0.35 }}
                   >
                     {/* Timeline dot */}
-                    <div className="absolute -left-5 top-1.5 flex items-center justify-center">
+                    <div className="absolute -start-5 top-1.5 flex items-center justify-center">
                       <div
                         className={`w-3.5 h-3.5 rounded-full border-2 border-white dark:border-gray-900 shadow-sm ${getCategoryColor(doc.category).split(' ')[0]}`}
                       />
@@ -402,7 +404,7 @@ export function PatientHealthSummary({ patient, documents }: PatientHealthSummar
                         <span
                           className={`text-[10px] leading-none px-1.5 py-0.5 rounded-full font-medium ${getCategoryColor(doc.category)}`}
                         >
-                          {doc.category}
+                          {tCategory(doc.category)}
                         </span>
                       </div>
                     </div>

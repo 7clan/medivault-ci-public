@@ -83,7 +83,10 @@ describe('BUG-PD24 — CSV import in-flight Cancel race (the D import-Cancel P2)
   })
 
   it('the Importing state is shown while in flight (the user sees the import running)', () => {
-    expect(dialog).toMatch(/Importing\.\.\./)
+    // FEATURE D (i18n): the label moved from a hardcoded literal to the
+    // importExport.importing catalog key (en value "Importing…"); the visible
+    // in-flight state contract is unchanged.
+    expect(dialog).toMatch(/Importing\.\.\.|t\('importExport\.importing'\)/)
     expect(dialog).toMatch(/disabled=\{!file \|\| isUploading\}/)
   })
 

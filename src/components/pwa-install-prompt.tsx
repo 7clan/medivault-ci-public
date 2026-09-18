@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Download, X, Monitor, Smartphone, Chrome, Globe } from 'lucide-react'
+import { useT } from '@/i18n'
 
 const DISMISS_KEY = 'medivault-pwa-dismiss'
 const DISMISS_DURATION = 7 * 24 * 60 * 60 * 1000 // 7 days
@@ -13,6 +14,7 @@ interface BeforeInstallPromptEvent extends Event {
 }
 
 export function PWAInstallPrompt() {
+  const t = useT()
   const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null)
   const [isVisible, setIsVisible] = useState(false)
   const [showInstructions, setShowInstructions] = useState(false)
@@ -96,19 +98,19 @@ export function PWAInstallPrompt() {
                 {/* Content */}
                 <div className="flex-1 min-w-0">
                   <h3 className="font-semibold text-gray-900 dark:text-white text-sm sm:text-base">
-                    Install MediVault
+                    {t('pwa.installTitle')}
                   </h3>
                   <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mt-0.5">
-                    {isMobile ? 'Add to home screen for quick access' : 'Install as a desktop app for quick access'}
+                    {isMobile ? t('pwa.mobileHint') : t('pwa.desktopHint')}
                   </p>
                   <div className="flex items-center gap-1.5 mt-1.5">
                     <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium ${isMobile ? 'bg-blue-50 text-blue-600 dark:bg-blue-950/30 dark:text-blue-400' : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'}`}>
                       {isMobile ? <Smartphone className="h-3 w-3" /> : <Monitor className="h-3 w-3" />}
-                      {isMobile ? 'Mobile' : 'Desktop'}
+                      {isMobile ? t('pwa.mobile') : t('pwa.desktop')}
                     </span>
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-50 text-emerald-600 dark:bg-emerald-950/30 dark:text-emerald-400">
                       <Globe className="h-3 w-3" />
-                      Works Offline
+                      {t('pwa.worksOffline')}
                     </span>
                   </div>
                 </div>
@@ -117,7 +119,7 @@ export function PWAInstallPrompt() {
                 <button
                   onClick={handleDismiss}
                   className="p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors flex-shrink-0"
-                  aria-label="Dismiss"
+                  aria-label={t('common.dismiss')}
                 >
                   <X className="h-4 w-4 text-gray-400" />
                 </button>
@@ -130,13 +132,13 @@ export function PWAInstallPrompt() {
                   className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white text-sm font-medium rounded-xl shadow-md shadow-emerald-200/50 dark:shadow-emerald-900/40 transition-all duration-200 hover:shadow-lg active:scale-[0.98]"
                 >
                   <Download className="h-4 w-4" />
-                  {isMobile ? 'Add to Home Screen' : 'Install App'}
+                  {isMobile ? t('pwa.addHomeScreen') : t('pwa.installApp')}
                 </button>
                 <button
                   onClick={handleDismiss}
                   className="px-4 py-2.5 text-sm font-medium text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-xl transition-all duration-200"
                 >
-                  Not now
+                  {t('pwa.notNow')}
                 </button>
               </div>
 
@@ -150,18 +152,18 @@ export function PWAInstallPrompt() {
                     className="overflow-hidden"
                   >
                     <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800">
-                      <p className="text-xs font-medium text-gray-700 dark:text-gray-300 mb-2">Manual installation:</p>
+                      <p className="text-xs font-medium text-gray-700 dark:text-gray-300 mb-2">{t('pwa.manualInstall')}</p>
                       {isMobile ? (
                         <div className="space-y-1.5 text-xs text-gray-500 dark:text-gray-400">
-                          <p>1. Tap the <strong>Share</strong> button in your browser</p>
-                          <p>2. Tap <strong>&quot;Add to Home Screen&quot;</strong></p>
-                          <p>3. Tap <strong>&quot;Add&quot;</strong> to confirm</p>
+                          <p>{t('pwa.ios.step1')}</p>
+                          <p>{t('pwa.ios.step2')}</p>
+                          <p>{t('pwa.ios.step3')}</p>
                         </div>
                       ) : (
                         <div className="space-y-1.5 text-xs text-gray-500 dark:text-gray-400">
-                          <p>1. Click the <strong>install icon</strong> in the address bar</p>
-                          <p>2. Or click <strong>⋮ menu</strong> → <strong>&quot;Install MediVault&quot;</strong></p>
-                          <p>3. Click <strong>&quot;Install&quot;</strong> to confirm</p>
+                          <p>{t('pwa.desktop.step1')}</p>
+                          <p>{t('pwa.desktop.step2')}</p>
+                          <p>{t('pwa.desktop.step3')}</p>
                         </div>
                       )}
                     </div>
@@ -178,6 +180,7 @@ export function PWAInstallPrompt() {
 
 // Standalone install button for use in settings/footer
 export function PWAInstallButton() {
+  const t = useT()
   const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null)
   const [canInstall, setCanInstall] = useState(false)
   const [showInstructions, setShowInstructions] = useState(false)
@@ -220,8 +223,8 @@ export function PWAInstallButton() {
         {isMobile ? <Smartphone className="h-4 w-4" /> : <Monitor className="h-4 w-4" />}
         <Download className="h-4 w-4" />
         {canInstall
-          ? (isMobile ? 'Add to Home Screen' : 'Install as Desktop App')
-          : 'Install App (PWA)'
+          ? (isMobile ? t('pwa.addHomeScreen') : t('pwa.installDesktop'))
+          : t('pwa.installAppPwa')
         }
       </button>
 
@@ -236,17 +239,17 @@ export function PWAInstallButton() {
             <div className="p-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl border border-gray-200 dark:border-gray-700">
               <p className="text-xs font-medium text-gray-700 dark:text-gray-300 mb-2 flex items-center gap-1.5">
                 <Chrome className="h-3.5 w-3.5" />
-                How to install:
+                {t('pwa.howToInstall')}
               </p>
               {isMobile ? (
                 <div className="space-y-1 text-xs text-gray-500 dark:text-gray-400">
-                  <p><span className="font-medium text-gray-600 dark:text-gray-300">iOS (Safari):</span> Tap Share → &quot;Add to Home Screen&quot;</p>
-                  <p><span className="font-medium text-gray-600 dark:text-gray-300">Android (Chrome):</span> Tap ⋮ → &quot;Install app&quot; or &quot;Add to Home Screen&quot;</p>
+                  <p>{t('pwa.ios.safari')}</p>
+                  <p>{t('pwa.android.chrome')}</p>
                 </div>
               ) : (
                 <div className="space-y-1 text-xs text-gray-500 dark:text-gray-400">
-                  <p><span className="font-medium text-gray-600 dark:text-gray-300">Chrome/Edge:</span> Click the install icon (⊕) in the address bar</p>
-                  <p><span className="font-medium text-gray-600 dark:text-gray-300">Or:</span> Click ⋮ menu → &quot;Install MediVault&quot;</p>
+                  <p>{t('pwa.chromeEdge')}</p>
+                  <p>{t('pwa.orMenu')}</p>
                 </div>
               )}
             </div>

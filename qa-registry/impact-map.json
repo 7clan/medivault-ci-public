@@ -1,0 +1,83 @@
+{
+  "schema": "medivault.impact-map",
+  "version": 1,
+  "generated_utc": "2026-09-18T16:30:00Z",
+  "purpose": "The single authority for what a change invalidates. 'Product changed' is NEVER a reason to rerun everything. Each entry: change surface → micro-shards to rerun (+ optional short integration note).",
+  "change_rules": [
+    {
+      "change": "camera code (scan-capture camera path, camera permission handling, capture association)",
+      "rerun": ["qa-camera"],
+      "integration": "none (isolated capability)"
+    },
+    {
+      "change": "print code (print dialogs, print buttons, print handlers)",
+      "rerun": ["qa-print", "qa-save-pdf", "qa-report-pdf", "qa-prescription-pdf"],
+      "integration": "none (isolated capability family)"
+    },
+    {
+      "change": "CSV import code (import dialog, import API, template)",
+      "rerun": ["qa-csv-import-valid", "qa-csv-import-edge", "qa-csv-import-cancel"],
+      "integration": "one short patient-count sanity check (dashboard counts) if the import API changed"
+    },
+    {
+      "change": "CSV export code (export button, export API, header schema)",
+      "rerun": ["qa-csv-export"],
+      "integration": "none"
+    },
+    {
+      "change": "backup code (backup trigger, ZIP builder, backup contents)",
+      "rerun": ["qa-backup"],
+      "integration": "none"
+    },
+    {
+      "change": "patient selection/delete code (Select Patients mode, delete selected, patient CRUD store)",
+      "rerun": ["qa-patient-crud", "qa-bulk-delete", "qa-patient-isolation", "qa-search", "qa-dashboard-counts", "qa-recent-patients"],
+      "integration": "one concise doctor workflow (EN) — patient family is the data spine"
+    },
+    {
+      "change": "page.tsx / app shell (navigation, view switching, scroll behavior)",
+      "rerun": ["qa-nav", "qa-tour-en", "qa-tour-ar", "qa-rtl-layout"],
+      "integration": "one concise doctor workflow (EN)"
+    },
+    {
+      "change": "auth/store/database/schema/security (auth-service, prisma schema, CSRF, session)",
+      "rerun": ["BROAD: qa-auth-en", "qa-auth-ar", "qa-persistence", "qa-patient-isolation", "qa-document-isolation", "qa-security", "qa-backup", "qa-settings-en", "qa-settings-ar"],
+      "integration": "the concise doctor workflow EN + AR + final security pass"
+    },
+    {
+      "change": "documents upload/viewer code (upload paths, document-viewer, zoom, annotations)",
+      "rerun": ["qa-upload", "qa-viewer-pdf", "qa-viewer-image", "qa-annotations", "qa-download", "qa-document-isolation"],
+      "integration": "none (isolated capability family)"
+    },
+    {
+      "change": "clinical code (visits, notes, prescriptions, reports)",
+      "rerun": ["qa-visits", "qa-clinical-notes", "qa-prescriptions", "qa-report-pdf"],
+      "integration": "none"
+    },
+    {
+      "change": "tour/mascot code",
+      "rerun": ["qa-tour-en", "qa-tour-ar"],
+      "integration": "none"
+    },
+    {
+      "change": "i18n touching UI (translation catalogs, RTL foundation, language switcher)",
+      "rerun": ["BROAD-parallel: every qa-*-ar micro-shard + qa-rtl-layout + qa-en-ui-spotcheck", "then the representative AR doctor workflow"],
+      "integration": "Arabic acceptance checklist (RTL direction, mirroring, long strings, wrapping, dialog overflow, button clipping, mixed text, dates/numbers, dark mode AR)"
+    },
+    {
+      "change": "Reset All Data removal / bulk patient management code",
+      "rerun": ["qa-bulk-delete", "qa-reset-all-data-removed", "qa-patient-crud", "qa-search", "qa-dashboard-counts", "qa-recent-patients"],
+      "integration": "the ALPHA/BRAVO/CHARLIE/DELTA bulk-delete proof matrix"
+    },
+    {
+      "change": "harness/CI-only (probe scripts, workflow yml, no product files in diff)",
+      "rerun": [],
+      "integration": "none — evidence stands; only the affected micro-shard's own rerun if its probe changed"
+    }
+  ],
+  "notes": [
+    "The registry (green-evidence.json) is the record; this map is the decision procedure.",
+    "When a fix worker touches multiple rules, union the rerun sets — but still in PARALLEL micro-shards, never a giant serial shard.",
+    "ENV records (physical camera, physical printer) never block and never expand a rerun set."
+  ]
+}

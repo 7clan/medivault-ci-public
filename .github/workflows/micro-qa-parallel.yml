@@ -1,0 +1,491 @@
+name: Micro QA Parallel Wave
+
+# The MICRO-SHARD COMPLETION WAVE (directive 2026-09-18: micro-shard
+# parallel QA): ONE already-built immutable DMG (from a SOURCE run) is shared
+# across a fan-out of MICRO shards. Each micro shard = ONE capability on its
+# OWN clean macOS VM (the harness gateway demands a pristine runner per
+# invocation), runs QA_FOCUS=micro:<name> in macos/scripts/exploratory-qa.sh,
+# and uploads its own evidence artifact named qa-<micro-shard> (e.g.
+# qa-camera, qa-viewer-pdf, qa-backup) — ALWAYS, red or green.
+#
+#   fail-fast=false + max-parallel=5 — a red micro shard exits ITS OWN job
+#   only; every other shard continues to its own honest first-red (the
+#   first-red discipline is preserved per-shard, never across the wave).
+#
+# The expensive product build happens exactly ONCE (in the SOURCE run); this
+# workflow NEVER rebuilds. The gate logic below is VERBATIM from the proven
+# exploratory-qa-parallel.yml lane (the same strict/provisional contract):
+#   * DEFAULT (strict): the source run must be completed + success.
+#   * OPT-IN allow_in_progress_source=true (directive 2026-09-18 §13 —
+#     "artifact readiness and product acceptance are separate concepts"):
+#     additionally accepts an in_progress source (or a completed NON-GREEN
+#     source whose D-class battery must be rerun) ONLY on proof that its
+#     immutable DMG is already built: exact expected head SHA, the named
+#     product build job completed SUCCESS, exactly ONE unexpired
+#     product-test-dmg-arm64 artifact, the DMG SHA-256 verified, and no
+#     product build job still running. Evidence gathered this way is
+#     stamped PROVISIONAL — AWAITING SOURCE GREEN and is promoted to
+#     ACCEPTED only if the source run later completes GREEN at the SAME
+#     DMG SHA-256 (a REAL product regression blocks promotion and triggers
+#     targeted micro-shard reruns per qa-registry/impact-map.json; a D-class
+#     harness finding preserves the evidence).
+#
+# The micro-shard catalog + each shard's implementation status (implemented /
+# mapped-to-parent / pending-feature) lives in MICRO-SHARDS.md at the repo
+# root; the harness's QA_FOCUS=micro:<name> validation case is the dispatch
+# truth. The COARSE lane (exploratory-qa.yml + exploratory-qa-parallel.yml)
+# is UNTOUCHED and remains the proven baseline.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: 'The source run that owns the frozen DMG artifact (normally a completed GREEN run; in_progress/non-green allowed ONLY with allow_in_progress_source=true)'
+        required: true
+        type: string
+      source_sha:
+        description: 'The expected public head SHA of the source run (stale-head guard)'
+        required: true
+        type: string
+      arch:
+        description: 'arm64 only'
+        required: true
+        default: 'arm64'
+        type: choice
+        options:
+          - arm64
+      micro_shards:
+        description: 'Comma-separated micro shards to run (each = ONE capability on its OWN clean macOS VM; e.g. "camera,backup,csv-export"). The catalog + statuses live in MICRO-SHARDS.md at the repo root.'
+        required: false
+        default: 'camera,upload,viewer-pdf,viewer-image,print,save-pdf,csv-import,csv-export,backup,bulk-delete,tour-en,tour-ar,rtl,security'
+        type: string
+      sibling_run_ids:
+        description: 'Optional comma-separated EARLIER run ids whose qa-* evidence artifacts the combined gallery should also include (cross-wave aggregation)'
+        required: false
+        default: ''
+        type: string
+      allow_in_progress_source:
+        description: 'NARROW OPT-IN (default false keeps the strict gate: source run completed + success). true = additionally accept an in_progress (or completed non-green) source run whose immutable DMG is already proven: exact expected head SHA, the named build job completed SUCCESS, exactly ONE unexpired product-test-dmg-arm64 artifact, DMG SHA-256 verified, no product build job still running. Results are PROVISIONAL - AWAITING SOURCE GREEN until the source run itself completes GREEN at the same DMG SHA-256.'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  validate-source:
+    name: "Validate the frozen source run + DMG"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      provisional: ${{ steps.gate.outputs.provisional }}
+      frozen_dmg_sha: ${{ steps.dmg.outputs.sha256 }}
+    env:
+      SOURCE_RUN_ID: ${{ github.event.inputs.source_run_id }}
+      SOURCE_SHA: ${{ github.event.inputs.source_sha }}
+    steps:
+      - name: "Source gate (strict default; opt-in narrow exception for an in_progress source with a proven immutable DMG)"
+        id: gate
+        shell: bash
+        env:
+          ALLOW_IN_PROGRESS: ${{ github.event.inputs.allow_in_progress_source }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUN_JSON="$(curl -sf -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}")"
+          STATUS="$(python3 -c "import json,sys; print(json.load(sys.stdin)['status'])" <<<"$RUN_JSON")"
+          CONCL="$(python3 -c "import json,sys; print(json.load(sys.stdin)['conclusion'])" <<<"$RUN_JSON")"
+          HEAD="$(python3 -c "import json,sys; print(json.load(sys.stdin)['head_sha'])" <<<"$RUN_JSON")"
+          echo "source run ${SOURCE_RUN_ID}: status=${STATUS} conclusion=${CONCL} head=${HEAD} allow_in_progress_source=${ALLOW_IN_PROGRESS}"
+
+          # the stale-head guard applies in BOTH modes (artifact identity follows the SHA)
+          [ "$HEAD" = "${SOURCE_SHA}" ] || { echo "::error::source run head ${HEAD} != expected ${SOURCE_SHA} (stale-head guard)"; exit 1; }
+
+          PROVISIONAL=false
+          if [ "$STATUS" = "completed" ] && [ "$CONCL" = "success" ]; then
+            # STRICT DEFAULT — unchanged behavior (also the only path when allow_in_progress_source=false)
+            echo "source gate: STRICT PASS (run completed + success at the expected head)"
+          elif [ "${ALLOW_IN_PROGRESS}" = "true" ] && { [ "$STATUS" = "in_progress" ] || { [ "$STATUS" = "completed" ] && [ -n "$CONCL" ] && [ "$CONCL" != "success" ]; } }; then
+            # OPT-IN ARTIFACT-READINESS MODE (directive 2026-09-18 §13: artifact
+            # readiness and product acceptance are separate concepts). Accepts
+            # an in_progress source OR a completed NON-GREEN source (e.g. a
+            # D-class harness first-red whose battery must be rerun) — in both
+            # cases ONLY on proof that the immutable DMG is already built. The
+            # shards' evidence stays PROVISIONAL; the DMG's acceptance must be
+            # established separately by a GREEN battery at the same SHA-256
+            # (typically the affected shard's own rerun).
+            echo "source gate: PROVISIONAL MODE (allow_in_progress_source=true, status=${STATUS}/conclusion=${CONCL}) — proving immutable artifact readiness instead"
+            JOBS_JSON="$(curl -sf -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/jobs?per_page=100")"
+            BUILD_OK="$(REQUIRED_BUILD_JOB='Build the first-run-fix test DMG (arm64)' python3 -c '
+          import json, os, sys
+          required = os.environ["REQUIRED_BUILD_JOB"]
+          jobs = json.load(sys.stdin).get("jobs", [])
+          req = [j for j in jobs if j.get("name") == required]
+          if not req:
+              print("missing-required-build-job"); sys.exit(0)
+          j = req[0]
+          if j.get("status") != "completed" or j.get("conclusion") != "success":
+              print("required-build-not-success:" + str(j.get("status")) + "/" + str(j.get("conclusion"))); sys.exit(0)
+          still = [j.get("name") for j in jobs if (j.get("name") or "").startswith("Build") and j.get("status") != "completed"]
+          if still:
+              print("product-build-still-running:" + ",".join(still)); sys.exit(0)
+          print("ok")
+          ' <<<"$JOBS_JSON")"
+            [ "$BUILD_OK" = "ok" ] || { echo "::error::PROVISIONAL GATE: immutable product artifact not proven (${BUILD_OK}) — the named build job must be completed SUCCESS with no product build still running"; exit 1; }
+            echo "provisional gate: named build job completed SUCCESS; no product build job still running"
+            ART_OK="$(curl -sf -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts?per_page=100" \
+              | python3 -c '
+          import json, sys
+          arts = [a for a in json.load(sys.stdin).get("artifacts", []) if a.get("name") == "product-test-dmg-arm64" and not a.get("expired")]
+          print("ok" if len(arts) == 1 else "unexpired-count=%d" % len(arts))
+          ' )"
+            [ "$ART_OK" = "ok" ] || { echo "::error::PROVISIONAL GATE: expected exactly ONE unexpired product-test-dmg-arm64 artifact (${ART_OK})"; exit 1; }
+            echo "provisional gate: exactly one unexpired product-test-dmg-arm64 artifact (its SHA-256 is verified by the following steps)"
+            PROVISIONAL=true
+          else
+            echo "::error::source run status=${STATUS} is not completed+success (strict gate) and the in_progress opt-in is not enabled — wait for GREEN or dispatch with allow_in_progress_source=true"
+            exit 1
+          fi
+          echo "provisional=${PROVISIONAL}" >> "$GITHUB_OUTPUT"
+
+      - name: Download the frozen DMG from the source run
+        uses: actions/download-artifact@v4
+        with:
+          name: product-test-dmg-arm64
+          run-id: ${{ github.event.inputs.source_run_id }}
+          github-token: ${{ github.token }}
+          path: dmg
+
+      - name: Verify the DMG SHA-256 (the one frozen build for the whole wave)
+        id: dmg
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dmg
+          ls -la
+          test -f MediVault-0.1.1-firstrun-arm64.dmg || { echo "::error::DMG missing"; exit 1; }
+          test -f MediVault-0.1.1-firstrun-arm64.dmg.sha256 || { echo "::error::DMG sha256 file missing"; exit 1; }
+          EXPECTED="$(awk '{print $1}' MediVault-0.1.1-firstrun-arm64.dmg.sha256)"
+          ACTUAL="$(shasum -a 256 MediVault-0.1.1-firstrun-arm64.dmg | awk '{print $1}')"
+          echo "expected=${EXPECTED}"
+          echo "actual  =${ACTUAL}"
+          [ "$EXPECTED" = "$ACTUAL" ] || { echo "::error::DMG hash mismatch"; exit 1; }
+          echo "FROZEN DMG VERIFIED: ${ACTUAL}" | tee frozen-dmg-sha256.txt
+          echo "sha256=${ACTUAL}" >> "$GITHUB_OUTPUT"
+
+      - name: Share the frozen DMG with all micro shards
+        uses: actions/upload-artifact@v4
+        with:
+          name: product-dmg-frozen
+          retention-days: 14
+          path: dmg/
+
+  prep-micro-shards:
+    name: "Prepare the micro-shard matrix (validate the micro_shards input)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      include: ${{ steps.set.outputs.include }}
+      any: ${{ steps.set.outputs.any }}
+    steps:
+      - id: set
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILTER="${{ github.event.inputs.micro_shards || '' }}"
+          INCLUDE="$(python3 - "$FILTER" <<'PYEOF'
+          import json, sys
+          # The dispatch catalog (must stay in sync with the QA_FOCUS=micro:<name>
+          # validation case at the top of macos/scripts/exploratory-qa.sh and with
+          # MICRO-SHARDS.md at the repo root). status: implemented (its own micro
+          # body), mapped-to-parent (the PROVEN coarse battery does the walking),
+          # pending-feature (in flight on a feature worktree — the shard records
+          # the gap honestly and stays GREEN).
+          CATALOG = {
+              "camera":            "implemented",
+              "viewer-pdf":        "implemented",
+              "viewer-image":      "implemented",
+              "print":             "implemented",
+              "save-pdf":          "implemented",
+              "backup":            "implemented",
+              "csv-export":        "implemented",
+              "csv-import-cancel": "implemented",
+              "security":         "implemented",
+              "persistence":       "implemented (the parent battery IS the shard)",
+              "settings":          "mapped-to-parent (settings)",
+              "dashboard":         "mapped-to-parent (dataio)",
+              "core-startup":      "mapped-to-parent (surface)",
+              "auth":              "mapped-to-parent (account)",
+              "visits":            "mapped-to-parent (clinical)",
+              "clinical-notes":    "mapped-to-parent (clinical)",
+              "prescriptions":     "mapped-to-parent (clinical)",
+              "reports":           "mapped-to-parent (clinical)",
+              "upload":            "mapped-to-parent (documents)",
+              "scan":             "mapped-to-parent (documents)",
+              "download":          "mapped-to-parent (documents)",
+              "annotations":       "mapped-to-parent (documents)",
+              "document-isolation": "mapped-to-parent (documents)",
+              "patient-isolation": "mapped-to-parent (patients)",
+              "bulk-delete":       "mapped-to-parent (documents)",
+              "csv-import":        "mapped-to-parent (dataio)",
+              "csv-import-valid":  "mapped-to-parent (dataio)",
+              "csv-import-edge":   "mapped-to-parent (dataio)",
+              "tour-en":           "pending-feature (guided-tour worktree)",
+              "tour-ar":           "pending-feature (guided-tour worktree)",
+              "rtl":              "pending-feature (i18n worktree)",
+          }
+          tokens = [t.strip().lower() for t in sys.argv[1].split(",") if t.strip()] if len(sys.argv) > 1 and sys.argv[1].strip() else []
+          if not tokens:
+              # fail-closed: an empty wave is almost certainly a dispatch mistake
+              print("::error::micro_shards input is empty — pass a comma-separated subset of the catalog (see MICRO-SHARDS.md at the repo root)", file=sys.stderr)
+              sys.exit(1)
+          unknown = [t for t in tokens if t not in CATALOG]
+          if unknown:
+              print("::error::unknown micro shard(s): %s — the catalog lives in MICRO-SHARDS.md at the repo root" % ", ".join(unknown), file=sys.stderr)
+              sys.exit(1)
+          # dedupe (a repeated name must not double-dispatch a clean VM)
+          seen = []
+          for t in tokens:
+              if t not in seen:
+                  seen.append(t)
+          include = [{"micro": t, "status": CATALOG[t]} for t in seen]
+          print(json.dumps(include))
+          PYEOF
+          )"
+          echo "include=${INCLUDE}" >> "$GITHUB_OUTPUT"
+          if [ "$INCLUDE" = "[]" ]; then
+            echo "any=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "any=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  micro-shard:
+    name: "micro: ${{ matrix.micro }} — qa-${{ matrix.micro }}"
+    needs: [validate-source, prep-micro-shards]
+    # cross-shard fix discipline: rerun only AFFECTED micro shards (per
+    # qa-registry/impact-map.json) — the micro_shards input filters the
+    # matrix at prepare time (skipped shards are simply absent; no runner is
+    # ever allocated)
+    if: needs.prep-micro-shards.outputs.any == 'true'
+    runs-on: macos-26
+    # 240 = the mapped-to-parent entries may run a FULL coarse battery on
+    # their VM (the patients battery measures ~175-185 min); the implemented
+    # micro bodies finish in their own time — the cap only bounds the worst case
+    timeout-minutes: 240
+    strategy:
+      # FIRST-RED DISCIPLINE: a red micro shard exits ITS OWN job only —
+      # every other shard continues to its own honest first-red
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include: ${{ fromJSON(needs.prep-micro-shards.outputs.include) }}
+    env:
+      EXPECTED_ARCH: arm64
+      SOURCE_RUN_ID: ${{ github.event.inputs.source_run_id }}
+      MICRO: ${{ matrix.micro }}
+      PROVISIONAL: ${{ needs.validate-source.outputs.provisional }}
+      FROZEN_DMG_SHA: ${{ needs.validate-source.outputs.frozen_dmg_sha }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download the frozen DMG (the shared source build)
+        uses: actions/download-artifact@v4
+        with:
+          name: product-dmg-frozen
+          path: ${{ runner.temp }}/dmg
+
+      - name: Prove the DMG SHA-256 in this micro shard too
+        shell: bash
+        env:
+          DMG_PATH: ${{ runner.temp }}/dmg/MediVault-0.1.1-firstrun-arm64.dmg
+          DMG_SHA256_FILE: ${{ runner.temp }}/dmg/MediVault-0.1.1-firstrun-arm64.dmg.sha256
+        run: |
+          set -euo pipefail
+          EXPECTED="$(awk '{print $1}' "$DMG_SHA256_FILE")"
+          ACTUAL="$(shasum -a 256 "$DMG_PATH" | awk '{print $1}')"
+          [ "$EXPECTED" = "$ACTUAL" ] || { echo "::error::micro shard ${MICRO}: DMG hash mismatch"; exit 1; }
+          echo "micro shard ${MICRO} frozen DMG verified: ${ACTUAL}"
+
+      - name: Run the micro-shard battery (QA_FOCUS=micro:<name>; the full clean gateway + honest first-red)
+        shell: bash
+        env:
+          DMG_PATH: ${{ runner.temp }}/dmg/MediVault-0.1.1-firstrun-arm64.dmg
+          DMG_SHA256_FILE: ${{ runner.temp }}/dmg/MediVault-0.1.1-firstrun-arm64.dmg.sha256
+        run: |
+          set -uo pipefail
+          rc=0
+          QA_FOCUS="micro:${MICRO}" bash macos/scripts/exploratory-qa.sh || rc=$?
+          echo "micro shard ${MICRO}: exited ${rc} (2=P0 stop, 3=P1 first-red, 4=P2 first-red, 5=ENV stop; the OTHER matrix entries continue — fail-fast=false)"
+          # provisional-mode marking (the §3 contract): evidence from a
+          # not-yet-GREEN source run is stamped before it can ever be
+          # mistaken for accepted product evidence
+          if [ "${PROVISIONAL}" = "true" ] && [ -d gui-evidence ]; then
+            { echo "PROVISIONAL — AWAITING SOURCE GREEN"
+              echo ""
+              echo "- micro shard: ${MICRO}"
+              echo "- source run: ${SOURCE_RUN_ID} (not completed+success when this shard was dispatched — allow_in_progress_source=true)"
+              echo "- frozen DMG SHA-256 (proved in-shard): ${FROZEN_DMG_SHA}"
+              echo "- promotion rule: this evidence becomes ACCEPTED only if the source run later completes GREEN and used the SAME DMG SHA-256. A REAL product regression found by the source run blocks promotion and triggers targeted micro-shard reruns after the fix (per qa-registry/impact-map.json); a D-class harness finding preserves this evidence."
+            } > gui-evidence/PROVISIONAL-MARKER.md
+          fi
+          exit "$rc"
+
+      - name: Job summary — capability report
+        if: always()
+        shell: bash
+        run: |
+          if [ -f gui-evidence/qa-capability-report.md ]; then
+            { echo "## micro:${MICRO} — capability report"; echo '```'; cat gui-evidence/qa-capability-report.md; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Job summary — bug register
+        if: always()
+        shell: bash
+        run: |
+          if [ -f gui-evidence/BUG-REGISTER.md ]; then
+            { echo "## micro:${MICRO} — bug register"; echo '```'; cat gui-evidence/BUG-REGISTER.md; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Job summary — surface map
+        if: always()
+        shell: bash
+        run: |
+          if [ -f gui-evidence/SURFACE-MAP.md ]; then
+            { echo "## micro:${MICRO} — live surface map"; echo '```'; cat gui-evidence/SURFACE-MAP.md; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Job summary — provisional-mode banner
+        if: always()
+        shell: bash
+        run: |
+          if [ "${PROVISIONAL}" = "true" ]; then
+            { echo "## PROVISIONAL — AWAITING SOURCE GREEN"
+              echo ""
+              echo "micro:${MICRO} ran against the immutable DMG (SHA-256 ${FROZEN_DMG_SHA}) of source run ${SOURCE_RUN_ID} while that run was not completed+success (allow_in_progress_source=true)."
+              echo "Promote to ACCEPTED only if the source run completes GREEN at the SAME DMG SHA-256."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Stage the micro-shard evidence (always — red or green)
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          if [ ! -d gui-evidence ]; then
+            echo "(no gui-evidence dir — the harness may have stopped before evidence; listing cwd)"
+            ls -1 || true
+            exit 0
+          fi
+          # the directive-§9 artifact name for THIS shard: qa-<micro-shard>
+          zip -qr "qa-${MICRO}.zip" gui-evidence
+          echo "zipped gui-evidence -> qa-${MICRO}.zip ($(stat -f%z "qa-${MICRO}.zip" 2>/dev/null || stat -c%s "qa-${MICRO}.zip" 2>/dev/null || echo '?')B)"
+
+      - name: Upload the micro-shard evidence artifact (qa-<micro-shard>, directive names)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-${{ matrix.micro }}
+          retention-days: 14
+          path: qa-${{ matrix.micro }}.zip
+          if-no-files-found: warn
+
+  combined-gallery:
+    name: "Combined post-run evidence gallery (micro wave)"
+    needs: [validate-source, micro-shard, prep-micro-shards]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all micro-shard evidence (qa-<micro-shard> artifact names)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: qa-*
+          merge-multiple: false
+          path: shards
+
+      - name: Download sibling wave-run evidence (cross-shard aggregation)
+        if: github.event.inputs.sibling_run_ids != ''
+        shell: bash
+        env:
+          SIBLINGS: ${{ github.event.inputs.sibling_run_ids }}
+        run: |
+          set -euo pipefail
+          for rid in $(printf '%s' "$SIBLINGS" | tr ',' ' '); do
+            [ -n "$rid" ] || continue
+            echo "pulling qa-* evidence from sibling run $rid"
+            # REST download of each qa-* artifact zip (expired/missing skipped)
+            while read -r zid zname; do
+              [ -n "$zid" ] || continue
+              dest="shards/${zname}-sibling${rid}"
+              mkdir -p "$dest"
+              curl -sfL -H "Authorization: Bearer ${{ github.token }}" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/$zid/zip" -o "$dest/a.zip"
+              (cd "$dest" && unzip -q a.zip && rm -f a.zip)
+              echo "  staged $dest"
+            done < <(curl -sf -H "Authorization: Bearer ${{ github.token }}" \
+                 -H "Accept: application/vnd.github+json" \
+                 "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/$rid/artifacts?per_page=100" \
+                 | python3 -c "import json,sys; [print(a['id'], a['name']) for a in json.load(sys.stdin).get('artifacts',[]) if a['name'].startswith('qa-') and not a['expired']]")
+          done
+          ls -1 shards/ || true
+
+      - name: Build the combined gallery (index.html + manifest + reports)
+        shell: bash
+        env:
+          SOURCE_RUN_ID: ${{ github.event.inputs.source_run_id }}
+          SOURCE_SHA: ${{ github.event.inputs.source_sha }}
+          PARALLEL_RUN_ID: ${{ github.run_id }}
+        run: bash macos/scripts/build-combined-gallery.sh
+
+      - name: Stamp the provisional banner into the gallery (opt-in mode only)
+        if: always() && needs.validate-source.outputs.provisional == 'true'
+        shell: bash
+        env:
+          SOURCE_RUN_ID: ${{ github.event.inputs.source_run_id }}
+        run: |
+          set -euo pipefail
+          [ -d combined-gallery ] || { echo "(no combined-gallery dir — nothing to stamp)"; exit 0; }
+          { echo "# PROVISIONAL — AWAITING SOURCE GREEN"
+            echo ""
+            echo "This micro wave was dispatched with allow_in_progress_source=true while source run ${SOURCE_RUN_ID} was not completed+success, against its already-built immutable DMG."
+            echo "Promotion rule: every micro-shard result below becomes ACCEPTED only when source run ${SOURCE_RUN_ID} completes GREEN and the DMG SHA-256 recorded in the shard evidence matches. A REAL product regression found by the source run blocks promotion and triggers targeted micro-shard reruns after the fix (per qa-registry/impact-map.json)."
+          } > combined-gallery/PROVISIONAL-README.md
+          if [ -f combined-gallery/index.html ]; then
+            python3 - <<'PYEOF'
+          import io
+          p = "combined-gallery/index.html"
+          html = io.open(p, encoding="utf-8").read()
+          banner = ('<div style="background:#7c2d12;color:#fff;padding:12px 18px;font-weight:bold;'
+                    'border-bottom:3px solid #c2410c">'
+                    'PROVISIONAL — AWAITING SOURCE GREEN '
+                    '(source run not completed+success; promote only on source GREEN at the same DMG SHA-256)'
+                    '</div>')
+          if "PROVISIONAL" not in html:
+              html = html.replace("<body>", "<body>" + banner, 1)
+              io.open(p, "w", encoding="utf-8").write(html)
+              print("index.html: provisional banner injected")
+          else:
+              print("index.html: already marked")
+          PYEOF
+          fi
+
+      - name: Upload the combined gallery
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-micro-combined-gallery
+          retention-days: 14
+          path: combined-gallery/
+          if-no-files-found: warn

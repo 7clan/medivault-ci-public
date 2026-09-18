@@ -28,6 +28,7 @@ import {
   MessageSquare,
 } from 'lucide-react'
 import { VisitScheduler, type VisitData } from './visit-scheduler'
+import { useI18n } from '@/i18n'
 import {
   Dialog,
   DialogContent,
@@ -68,6 +69,17 @@ interface VisitHistoryProps {
 
 export function VisitHistory({ patientId, patientName, onCreatePrescription }: VisitHistoryProps) {
   const { toast } = useToast()
+  const { t, formatDate } = useI18n()
+  // Same stored-value contract as the scheduler: raw API values localize for
+  // display only; unknown custom values pass through verbatim.
+  const tVisitType = (value: string) => {
+    const label = t(`visits.type.${value}`)
+    return label.startsWith('visits.type.') ? value : label
+  }
+  const tVisitStatus = (value: string) => {
+    const label = t(`visits.status.${value}`)
+    return label.startsWith('visits.status.') ? value : label
+  }
   const [visits, setVisits] = useState<VisitData[]>([])
   const [loading, setLoading] = useState(true)
   const [schedulerOpen, setSchedulerOpen] = useState(false)
@@ -106,10 +118,10 @@ export function VisitHistory({ patientId, patientName, onCreatePrescription }: V
       if (res.ok) {
         const updated = await res.json()
         setVisits((prev) => prev.map((v) => (v.id === visit.id ? updated : v)))
-        toast({ title: 'Visit Completed' })
+        toast({ title: t('visits.visitCompleted') })
       }
     } catch {
-      toast({ title: 'Error', variant: 'destructive' })
+      toast({ title: t('auth.toast.errorTitle'), variant: 'destructive' })
     }
   }
 
@@ -123,10 +135,10 @@ export function VisitHistory({ patientId, patientName, onCreatePrescription }: V
       if (res.ok) {
         const updated = await res.json()
         setVisits((prev) => prev.map((v) => (v.id === visit.id ? updated : v)))
-        toast({ title: 'Visit Cancelled' })
+        toast({ title: t('visits.visitCancelled') })
       }
     } catch {
-      toast({ title: 'Error', variant: 'destructive' })
+      toast({ title: t('auth.toast.errorTitle'), variant: 'destructive' })
     }
   }
 
@@ -137,10 +149,10 @@ export function VisitHistory({ patientId, patientName, onCreatePrescription }: V
       const res = await fetch(`/api/visits/${deleteConfirm.id}`, { method: 'DELETE' })
       if (res.ok) {
         setVisits((prev) => prev.filter((v) => v.id !== deleteConfirm.id))
-        toast({ title: 'Visit Deleted' })
+        toast({ title: t('visits.visitDeleted') })
       }
     } catch {
-      toast({ title: 'Error', variant: 'destructive' })
+      toast({ title: t('auth.toast.errorTitle'), variant: 'destructive' })
     }
     setDeleting(false)
     setDeleteConfirm(null)
@@ -168,7 +180,7 @@ export function VisitHistory({ patientId, patientName, onCreatePrescription }: V
 
   const handleScheduleFollowUp = (visit: VisitData) => {
     setFollowUpPatientId(patientId)
-    setFollowUpComplaint(`Follow-up for ${visit.visitType} on ${formatDate(visit.visitDate)}`)
+    setFollowUpComplaint(t('visits.followUpPrefill', { type: tVisitType(visit.visitType), date: formatDate(visit.visitDate) }))
     setSchedulerOpen(true)
   }
 
@@ -189,7 +201,7 @@ export function VisitHistory({ patientId, patientName, onCreatePrescription }: V
       <div className="flex items-center justify-between">
         <h3 className="text-base font-semibold text-gray-900 dark:text-white flex items-center gap-2">
           <Calendar className="h-4 w-4 text-emerald-600" />
-          Visit History
+          {t('visits.history')}
           <Badge variant="secondary" className="text-xs bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400">
             {visits.length}
           </Badge>
@@ -199,8 +211,8 @@ export function VisitHistory({ patientId, patientName, onCreatePrescription }: V
           onClick={() => { setEditVisit(null); setSchedulerOpen(true) }}
           className="bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-teal-600 text-white"
         >
-          <CalendarPlus className="h-3.5 w-3.5 mr-1.5" />
-          Schedule Visit
+          <CalendarPlus className="h-3.5 w-3.5 me-1.5" />
+          {t('visits.scheduleVisit')}
         </Button>
       </div>
 
@@ -218,22 +230,24 @@ export function VisitHistory({ patientId, patientName, onCreatePrescription }: V
               >
                 <Calendar className="h-8 w-8 text-emerald-400" />
               </motion.div>
-              <p className="text-sm text-muted-foreground">No visits recorded yet</p>
+              <p className="text-sm text-muted-foreground">{t('visits.noVisitsYet')}</p>
               <Button
                 variant="link"
                 size="sm"
                 className="mt-1 text-emerald-600"
                 onClick={() => { setEditVisit(null); setSchedulerOpen(true) }}
               >
-                Schedule first visit
+                {t('visits.scheduleFirst')}
               </Button>
             </CardContent>
           </Card>
         </motion.div>
       ) : (
         <div className="relative">
-          {/* Gradient Timeline line */}
-          <div className="gradient-timeline-line" />
+          {/* Gradient Timeline line — inline logical utilities (RTL-safe,
+              mirrors patient-timeline's rail; the .gradient-timeline-line CSS
+              class is physical left-only) */}
+          <div className="absolute start-[15px] top-2 bottom-2 w-0.5 bg-gradient-to-b from-emerald-300 via-teal-300 to-teal-400 dark:from-emerald-700 dark:via-teal-700 dark:to-teal-600 opacity-60" />
 
           <AnimatePresence>
             {visits.map((visit, index) => {
@@ -249,10 +263,10 @@ export function VisitHistory({ patientId, patientName, onCreatePrescription }: V
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0, x: 20 }}
                   transition={{ duration: 0.2, delay: index * 0.04 }}
-                  className="relative pl-10 pb-4"
+                  className="relative ps-10 pb-4"
                 >
                   {/* Timeline dot with gradient ring */}
-                  <div className="absolute left-[7px] top-3">
+                  <div className="absolute start-[7px] top-3">
                     <motion.div
                       className={`w-4 h-4 rounded-full border-[2.5px] ${
                         visit.status === 'completed' ? 'border-emerald-200 dark:border-emerald-800 bg-gradient-to-br from-emerald-400 to-emerald-600' :
@@ -266,10 +280,10 @@ export function VisitHistory({ patientId, patientName, onCreatePrescription }: V
                   </div>
 
                   <Card className={`hover:shadow-md transition-all duration-200 ${
-                    visit.status === 'completed' ? 'border-l-[3px] border-l-emerald-500' :
-                    visit.status === 'scheduled' ? 'border-l-[3px] border-l-sky-500' :
-                    visit.status === 'cancelled' ? 'border-l-[3px] border-l-red-400 opacity-70' :
-                    'border-l-[3px] border-l-gray-400 opacity-60'
+                    visit.status === 'completed' ? 'border-s-[3px] border-s-emerald-500' :
+                    visit.status === 'scheduled' ? 'border-s-[3px] border-s-sky-500' :
+                    visit.status === 'cancelled' ? 'border-s-[3px] border-s-red-400 opacity-70' :
+                    'border-s-[3px] border-s-gray-400 opacity-60'
                   }`}>
                     <CardContent className="p-3 sm:p-4">
                       <div className="flex items-start justify-between gap-2">
@@ -280,11 +294,11 @@ export function VisitHistory({ patientId, patientName, onCreatePrescription }: V
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2 flex-wrap">
                               <span className="font-medium text-sm text-gray-900 dark:text-white">
-                                {visit.visitType}
+                                {tVisitType(visit.visitType)}
                               </span>
                               <Badge className={`text-[10px] rounded-full bg-gradient-to-r ${statusStyle.color}`}>
-                                <StatusIcon className="h-3 w-3 mr-0.5" />
-                                {visit.status}
+                                <StatusIcon className="h-3 w-3 me-0.5" />
+                                {tVisitStatus(visit.status)}
                               </Badge>
                             </div>
                             <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
@@ -350,7 +364,7 @@ export function VisitHistory({ patientId, patientName, onCreatePrescription }: V
                                 <div className="flex items-start gap-2">
                                   <FileText className="h-3.5 w-3.5 text-emerald-600 mt-0.5 flex-shrink-0" />
                                   <div>
-                                    <p className="text-xs font-medium text-gray-700 dark:text-gray-300">Diagnosis</p>
+                                    <p className="text-xs font-medium text-gray-700 dark:text-gray-300">{t('visits.diagnosis')}</p>
                                     <p className="text-xs text-muted-foreground">{visit.diagnosis}</p>
                                   </div>
                                 </div>
@@ -359,7 +373,7 @@ export function VisitHistory({ patientId, patientName, onCreatePrescription }: V
                                 <div className="flex items-start gap-2">
                                   <Pill className="h-3.5 w-3.5 text-amber-600 mt-0.5 flex-shrink-0" />
                                   <div>
-                                    <p className="text-xs font-medium text-gray-700 dark:text-gray-300">Prescription</p>
+                                    <p className="text-xs font-medium text-gray-700 dark:text-gray-300">{t('visits.prescriptionLabel')}</p>
                                     <p className="text-xs text-muted-foreground">{visit.prescription}</p>
                                   </div>
                                 </div>
@@ -368,7 +382,7 @@ export function VisitHistory({ patientId, patientName, onCreatePrescription }: V
                                 <div className="flex items-center gap-2">
                                   <CalendarPlus className="h-3.5 w-3.5 text-teal-600 flex-shrink-0" />
                                   <p className="text-xs text-muted-foreground">
-                                    Follow-up: {formatDate(visit.followUpDate)}
+                                    {t('visits.followUpOn', { date: formatDate(visit.followUpDate) })}
                                     {visit.followUpNotes ? ` — ${visit.followUpNotes}` : ''}
                                   </p>
                                 </div>
@@ -377,7 +391,7 @@ export function VisitHistory({ patientId, patientName, onCreatePrescription }: V
                                 <div className="flex items-start gap-2">
                                   <MessageSquare className="h-3.5 w-3.5 text-gray-500 mt-0.5 flex-shrink-0" />
                                   <div>
-                                    <p className="text-xs font-medium text-gray-700 dark:text-gray-300">Notes</p>
+                                    <p className="text-xs font-medium text-gray-700 dark:text-gray-300">{t('patients.notes')}</p>
                                     <p className="text-xs text-muted-foreground">{visit.notes}</p>
                                   </div>
                                 </div>
@@ -393,8 +407,8 @@ export function VisitHistory({ patientId, patientName, onCreatePrescription }: V
                                       className="text-xs h-7 border-emerald-200 dark:border-emerald-800 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/20"
                                       onClick={() => handleMarkComplete(visit)}
                                     >
-                                      <CheckCircle2 className="h-3 w-3 mr-1" />
-                                      Mark Complete
+                                      <CheckCircle2 className="h-3 w-3 me-1" />
+                                      {t('visits.markComplete')}
                                     </Button>
                                     <Button
                                       size="sm"
@@ -402,8 +416,8 @@ export function VisitHistory({ patientId, patientName, onCreatePrescription }: V
                                       className="text-xs h-7 border-red-200 dark:border-red-800 text-red-600 hover:bg-red-50 dark:hover:bg-red-950/20"
                                       onClick={() => handleCancel(visit)}
                                     >
-                                      <XCircle className="h-3 w-3 mr-1" />
-                                      Cancel
+                                      <XCircle className="h-3 w-3 me-1" />
+                                      {t('common.cancel')}
                                     </Button>
                                     {onCreatePrescription && (
                                       <Button
@@ -412,8 +426,8 @@ export function VisitHistory({ patientId, patientName, onCreatePrescription }: V
                                         className="text-xs h-7 border-amber-200 dark:border-amber-800 text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950/20"
                                         onClick={() => onCreatePrescription(visit.id!)}
                                       >
-                                        <Pill className="h-3 w-3 mr-1" />
-                                        Create Prescription
+                                        <Pill className="h-3 w-3 me-1" />
+                                        {t('visits.createPrescription')}
                                       </Button>
                                     )}
                                   </>
@@ -426,8 +440,8 @@ export function VisitHistory({ patientId, patientName, onCreatePrescription }: V
                                       className="text-xs h-7 border-teal-200 dark:border-teal-800 text-teal-600 hover:bg-teal-50 dark:hover:bg-teal-950/20"
                                       onClick={() => handleScheduleFollowUp(visit)}
                                     >
-                                      <CalendarPlus className="h-3 w-3 mr-1" />
-                                      Schedule Follow-up
+                                      <CalendarPlus className="h-3 w-3 me-1" />
+                                      {t('visits.scheduleFollowUp')}
                                     </Button>
                                     {onCreatePrescription && (
                                       <Button
@@ -436,8 +450,8 @@ export function VisitHistory({ patientId, patientName, onCreatePrescription }: V
                                         className="text-xs h-7 border-amber-200 dark:border-amber-800 text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950/20"
                                         onClick={() => onCreatePrescription(visit.id!)}
                                       >
-                                        <Pill className="h-3 w-3 mr-1" />
-                                        Create Prescription
+                                        <Pill className="h-3 w-3 me-1" />
+                                        {t('visits.createPrescription')}
                                       </Button>
                                     )}
                                   </>
@@ -474,16 +488,16 @@ export function VisitHistory({ patientId, patientName, onCreatePrescription }: V
       <Dialog open={!!deleteConfirm} onOpenChange={() => setDeleteConfirm(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Delete Visit</DialogTitle>
+            <DialogTitle>{t('visits.deleteVisit')}</DialogTitle>
             <DialogDescription>
-              Are you sure you want to delete this {deleteConfirm?.visitType || ''} visit on {deleteConfirm ? formatDate(deleteConfirm.visitDate) : ''}? This cannot be undone.
+              {t('visits.deleteConfirm', { type: tVisitType(deleteConfirm?.visitType || ''), date: deleteConfirm ? formatDate(deleteConfirm.visitDate) : '' })}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteConfirm(null)}>Cancel</Button>
+            <Button variant="outline" onClick={() => setDeleteConfirm(null)}>{t('common.cancel')}</Button>
             <Button variant="destructive" onClick={handleDelete} disabled={deleting}>
-              {deleting ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-              Delete
+              {deleting ? <Loader2 className="h-4 w-4 animate-spin me-2" /> : null}
+              {t('common.delete')}
             </Button>
           </DialogFooter>
         </DialogContent>

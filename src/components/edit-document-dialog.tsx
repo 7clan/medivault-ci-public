@@ -17,6 +17,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import type { DocumentInfo } from '@/store/app-store'
+import { useI18n } from '@/i18n'
 
 interface EditDocumentDialogProps {
   document: DocumentInfo | null
@@ -27,6 +28,7 @@ interface EditDocumentDialogProps {
 
 export function EditDocumentDialog({ document, open, onOpenChange, onSaved }: EditDocumentDialogProps) {
   const { toast } = useToast()
+  const { t, tCategory } = useI18n()
   const [title, setTitle] = useState(document?.title || '')
   const [category, setCategory] = useState(document?.category || 'General')
   const [notes, setNotes] = useState(document?.notes || '')
@@ -50,13 +52,13 @@ export function EditDocumentDialog({ document, open, onOpenChange, onSaved }: Ed
       if (res.ok) {
         const updated = await res.json()
         onSaved(updated)
-        toast({ title: 'Document Updated', description: 'Changes saved successfully.' })
+        toast({ title: t('documents.updatedTitle'), description: t('documents.updatedDesc') })
       } else {
         const data = await res.json()
-        toast({ title: 'Update Failed', description: data.error || 'Could not update document.', variant: 'destructive' })
+        toast({ title: t('documents.updateFailedTitle'), description: data.error || t('errors.updateDocFailed'), variant: 'destructive' })
       }
     } catch {
-      toast({ title: 'Error', description: 'Failed to update document.', variant: 'destructive' })
+      toast({ title: t('auth.toast.errorTitle'), description: t('errors.updateDocFailed'), variant: 'destructive' })
     }
     setSaving(false)
   }
@@ -67,25 +69,25 @@ export function EditDocumentDialog({ document, open, onOpenChange, onSaved }: Ed
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <FileText className="h-5 w-5 text-emerald-600" />
-            Edit Document
+            {t('documents.editDocument')}
           </DialogTitle>
           <DialogDescription>
-            Update the title, category, or add notes for &quot;{document?.fileName}&quot;
+            {t('documents.editDescription', { name: document?.fileName || '' })}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4 py-2">
           <div className="space-y-2">
-            <Label>Title</Label>
+            <Label>{t('documents.titleLabel')}</Label>
             <Input
-              placeholder="e.g. Lab Results - Blood Work"
+              placeholder={t('documents.titlePlaceholder')}
               value={title}
               onChange={(e) => setTitle(e.target.value)}
             />
           </div>
 
           <div className="space-y-2">
-            <Label>Category</Label>
+            <Label>{t('documents.categories')}</Label>
             <Select value={category} onValueChange={setCategory}>
               <SelectTrigger>
                 <SelectValue />
@@ -93,7 +95,7 @@ export function EditDocumentDialog({ document, open, onOpenChange, onSaved }: Ed
               <SelectContent>
                 {DOCUMENT_CATEGORIES.map((cat) => (
                   <SelectItem key={cat} value={cat}>
-                    {cat}
+                    {tCategory(cat)}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -101,9 +103,9 @@ export function EditDocumentDialog({ document, open, onOpenChange, onSaved }: Ed
           </div>
 
           <div className="space-y-2">
-            <Label>Notes</Label>
+            <Label>{t('patients.notes')}</Label>
             <Textarea
-              placeholder="Add notes about this document..."
+              placeholder={t('documents.docNotesPlaceholder')}
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               rows={3}
@@ -112,14 +114,14 @@ export function EditDocumentDialog({ document, open, onOpenChange, onSaved }: Ed
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>{t('common.cancel')}</Button>
           <Button
             className="bg-emerald-600 hover:bg-emerald-700 text-white"
             onClick={handleSave}
             disabled={saving || !title.trim()}
           >
-            {saving ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Save className="h-4 w-4 mr-2" />}
-            Save Changes
+            {saving ? <Loader2 className="h-4 w-4 animate-spin me-2" /> : <Save className="h-4 w-4 me-2" />}
+            {t('common.saveChanges')}
           </Button>
         </DialogFooter>
       </DialogContent>
