@@ -2256,6 +2256,7 @@ submit_focused_return() { # Return in whatever field currently holds focus
 # the same reason: press_escape() is defined later in the file.)
 # =============================================================================
 TOUR_GATEWAY_STATE="pending" # pending → dismissed (markTourDismissed persists it for the install)
+LANG_PROMPT_STATE="pending" # pending → dismissed (the i18n first-run prompt — BUG-PD32)
 # FEATURE D (i18n): the first-run LANGUAGE PROMPT ('Choose your language',
 # English / العربية) mounts with the authenticated shell exactly like the
 # tour offer — and stays up until answered. (Run 35395609098: it sat through
