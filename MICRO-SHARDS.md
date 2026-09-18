@@ -59,7 +59,7 @@ Status legend:
 | CORE / STARTUP | `micro:core-startup` | `qa-core-startup` | mapped-to-parent | `focus_surface` (the first-run/onboarding walk) |
 | AUTH | `micro:auth` | `qa-auth-en` | mapped-to-parent | `focus_account` (login/logout/session/wrong-password) |
 | PATIENT (isolation) | `micro:patient-isolation` | `qa-patient-isolation` | mapped-to-parent | `focus_patients` |
-| NEW PATIENT MANAGEMENT | `micro:bulk-delete` | `qa-bulk-delete` | mapped-to-parent | `focus_documents` (DB13 select mode / batch delete). The new bulk patient-management UI is in flight on `feature/bulk-patient-management` — its dedicated shard lands with that feature |
+| NEW PATIENT MANAGEMENT | `micro:bulk-delete` | `qa-bulk-delete` | **implemented** | `micro_bulk_delete` — the DIRECTIVE §20 matrix: the 5-patient cohort (ALPHA/BRAVO/CHARLIE/DELTA 'Bulk' + the out-of-filter sentinel Echo Standalone), fixtures (docs + one visit for the survivor + the deleted), Select Patients → select BRAVO+DELTA only → the strong confirmation (count + names + warning + Cancel-first proof) → delete → the survivor gates (P0 BULK_DELETE_WRONG_PATIENT on any missing survivor/document/visit) → the filtered select-all re-run (search 'Bulk' → only the filtered rows selected; Echo never selected) |
 | VISITS | `micro:visits` | `qa-visits` | mapped-to-parent | `focus_clinical` |
 | CLINICAL (notes / prescriptions) | `micro:clinical-notes`, `micro:prescriptions` | `qa-clinical-notes`, `qa-prescriptions` | mapped-to-parent | `focus_clinical` |
 | REPORTS (clinical) | `micro:reports` | `qa-reports` | mapped-to-parent | `focus_clinical` |
@@ -82,7 +82,7 @@ Status legend:
 | SETTINGS | `micro:settings` | `qa-settings-en` | mapped-to-parent | `focus_settings` |
 | PERSISTENCE | `micro:persistence` | `qa-persistence` | **implemented** (granularity fits: the parent battery IS the shard) | `focus_persistence` (the h-series quit/reopen battery) |
 | SECURITY | `micro:security` | `qa-security` | **implemented** | `micro_security` — no-credential 401 probes, logout → protected-UI gone, loopback-only binds, relogin (the FINAL section re-proves loopback + crash watch at teardown) |
-| TOUR | `micro:tour-en` | `qa-tour-en` | pending-feature | the guided-tour capability is in flight on `feature/guided-tour`. **Gateway opt-out:** this shard sets `TOUR_GATEWAY=skip` at the top `QA_FOCUS` case — the first-login offer is the shard's own test subject, so the gateway's `tour_dismiss_if_present` must NOT clear it before the shard body runs |
+| TOUR | `micro:tour-en` | `qa-tour-en` | **implemented** | `micro_tour_en` — the DIRECTIVE §21 walk: the first-login offer (TOUR_GATEWAY=skip keeps it) → Next/Back/progress ('Step 2 of 20' + the step titles) → Skip (overlay unmounts; the plain UI works) → Help & Guide (replay + jump-to-section) → the completion persistence after a logout/login cycle. **Gateway opt-out:** this shard sets `TOUR_GATEWAY=skip` — the offer is the shard's own subject |
 | TOUR (Arabic) | `micro:tour-ar` | `qa-tour-ar` | pending-feature | same — `TOUR_GATEWAY=skip` (the offer survives for the shard; the shard itself exercises/dismisses it through the product's affordances) |
 | LANGUAGE / RTL | `micro:rtl` | `qa-rtl-layout` | pending-feature | the i18n infrastructure is in flight on `feature/i18n`. Keeps the DEFAULT `TOUR_GATEWAY=on`: this shard's subject is the app's RTL layout, not the tour — at the first shell mount the offer is English (default locale), so the gateway dismissal needle works and the battery runs on the plain RTL UI |
 

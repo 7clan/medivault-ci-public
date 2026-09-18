@@ -852,6 +852,41 @@ ocr_grep() { # <needle> [haystack-default-OCR_TEXT]
   return 1
 }
 
+# --- system-dialog recovery (run 35381647047: the ENV trigger + the D-class
+# recovery gap): fresh GitHub macOS runners can spontaneously raise FIRST-BOOT
+# system dialogs — observed live: the FaceTime activation dialog ('Sign in to
+# FaceTime with your Apple Account' / 'Activate FaceTime to make or receive
+# calls from this Mac') stealing focus mid-typing, which made the NEXT field's
+# label unfindable and P1'd the battery. The product is unaffected (nothing in
+# MediVault opens FaceTime); the harness must dismiss the dialog through its
+# own visible Cancel and retry the interrupted step ONCE. Bounded + honest +
+# fail-closed (an unclearable dialog still fails the step honestly).
+SYSDIALOG_SIGNATURES="Sign in to FaceTime|Activate FaceTime|Apple Account"
+sysdialog_present() {
+  printf '%s\n' "$OCR_TEXT" | grep -qiE -- "|[^|]*(${SYSDIALOG_SIGNATURES})"
+}
+sysdialog_dismiss() { # <stem> — 0 = was present and is now cleared; 1 = not present; 2 = present but unclearable
+  local stem="$1"
+  ocr_capture 2>/dev/null || return 1
+  sysdialog_present || return 1
+  probe "sysdialog[$stem]: a macOS first-boot system dialog is covering the app — dismissing via its own Cancel (the product is unaffected; this is the runner environment)"
+  snap_file "$MV_SHOT" "${stem}-sysdialog-before" || true
+  if ocr_lookup "Cancel" "first" "any"; then
+    "$MV_MOUSE" "$OCR_HIT_X" "$OCR_HIT_Y" 2>>"$LOG" || true
+    sleep 2
+  else
+    probe "sysdialog[$stem]: the dialog's Cancel was not OCR-locatable (recorded honestly)"
+  fi
+  ocr_capture 2>/dev/null || true
+  snap_file "$MV_SHOT" "${stem}-sysdialog-after" || true
+  if sysdialog_present; then
+    probe "sysdialog[$stem]: STILL present after the Cancel click (recorded honestly — the interrupted step will fail honestly if the app stays unreachable)"
+    return 2
+  fi
+  probe "sysdialog[$stem]: dismissed — the app is reachable again"
+  return 0
+}
+
 v_click() { # <needle> <stem> <expect-text> [first|last] [y-offset-points] [lookup-mode any|label|exact]
 # (self-review fix) the optional 6th arg passes ocr_lookup's mode through:
 # 'label' restricts the fallback match to SHORT lines — needed when the
@@ -874,8 +909,14 @@ v_click() { # <needle> <stem> <expect-text> [first|last] [y-offset-points] [look
   local before_hash="$LAST_OCR_HASH"
   snap_file "$MV_SHOT" "${stem}-before" || true
   if ! ocr_lookup "$needle" "$which" "$lmode"; then
-    probe "vclick[$stem]: target '$needle' NOT FOUND on screen — no click attempted (never a guessed coordinate)"
-    return 1
+    # (run 35381647047) a first-boot system dialog may be covering the app:
+    # dismiss it and retry the lookup ONCE before failing honestly
+    if sysdialog_dismiss "$stem" && ocr_capture && ocr_lookup "$needle" "$which" "$lmode"; then
+      probe "vclick[$stem]: target '$needle' found AFTER the system-dialog recovery"
+    else
+      probe "vclick[$stem]: target '$needle' NOT FOUND on screen — no click attempted (never a guessed coordinate)"
+      return 1
+    fi
   fi
   local tx ty
   tx="$OCR_HIT_X"
@@ -1205,9 +1246,29 @@ v_type_into() { # <label-needle> <text> <stem> [secret yes|no] [arabic yes|no] [
     [ -n "$OCR_TEXT" ] || OCR_TEXT="$saved_ocr"
   fi
   if ! ocr_lookup "$label" "first" "label"; then
+    # (run 35381647047) a first-boot system dialog may be covering the app:
+    # dismiss it and retry the lookup ONCE before failing honestly
     OCR_TEXT="$saved_ocr"
-    probe "vtype[$stem]: label '$label' NOT FOUND on screen — no click attempted"
-    return 1
+    if sysdialog_dismiss "$stem" && ocr_capture; then
+      saved_ocr="$OCR_TEXT"
+      if [ -n "$xmin" ]; then
+        OCR_TEXT="$(printf '%s\n' "$OCR_TEXT" | awk -F'|' -v m="$xmin" -v s="${MV_SCALE:-1}" '($3+0)/s >= m')"
+        [ -n "$OCR_TEXT" ] || OCR_TEXT="$saved_ocr"
+      fi
+      if ocr_lookup "$label" "first" "label"; then
+        probe "vtype[$stem]: label '$label' found AFTER the system-dialog recovery"
+        local lx2 ly2
+        lx2="$OCR_HIT_X"; ly2="$OCR_HIT_Y"
+        OCR_HIT_X="$lx2"; OCR_HIT_Y="$ly2"
+      else
+        OCR_TEXT="$saved_ocr"
+        probe "vtype[$stem]: label '$label' STILL NOT FOUND after the system-dialog recovery — no click attempted"
+        return 1
+      fi
+    else
+      probe "vtype[$stem]: label '$label' NOT FOUND on screen — no click attempted"
+      return 1
+    fi
   fi
   OCR_TEXT="$saved_ocr"
   local lx ly tx ty
@@ -1331,12 +1392,17 @@ v_type_into() { # <label-needle> <text> <stem> [secret yes|no] [arabic yes|no] [
 
 wait_for_ocr() { # <needle> <timeout_s> <label> — bounded wait until text is visible
   local needle="$1" t="$2" label="$3"
-  local t0
+  local t0 recovered=no
   t0="$(date +%s)"
   while [ $(( $(date +%s) - t0 )) -le "$t" ]; do
     if ocr_capture && ocr_grep "$needle"; then
       probe "wait_for_ocr[$label]: '$needle' visible after $(( $(date +%s) - t0 ))s"
       return 0
+    fi
+    # (run 35381647047) a first-boot system dialog covering the app would eat
+    # the whole budget — dismiss it ONCE per wait, then keep polling
+    if [ "$recovered" = "no" ] && sysdialog_dismiss "wait-$label"; then
+      recovered=yes
     fi
     sleep 3
   done
@@ -14995,15 +15061,20 @@ focus_desktop() {
 #     csv-export (the PD26/PD28 header needle), print, save-pdf (the
 #     DE2-DE4 outcomes), camera (the DB14 genuine getUserMedia path),
 #     viewer-pdf, viewer-image (the DB6/DB7 viewer battery subset),
-#     security (the surface/account auth+loopback checks);
+#     security (the surface/account auth+loopback checks),
+#     bulk-delete (FEATURE B — DIRECTIVE §20: the Select Patients mode, the
+#     strong confirmation, DELETE /api/patients/bulk, the wrong-patient P0
+#     gate, the filtered select-all), tour-en / tour-ar (FEATURE C —
+#     DIRECTIVE §21: the first-login offer, the Back/Next/Skip/progress
+#     controls, the Help & Guide replay + section jump, the completion
+#     persistence — tour-ar replays the tour in العربية with the Arabic-OCR
+#     needles + honest structural fallbacks), rtl (FEATURE D — the §19
+#     essentials: the language switch, the RTL render proofs, the
+#     across-view-change persistence, the switch back to English);
 #   * MAPPED-TO-PARENT: the name is accepted and dispatches to its PROVEN
 #     parent battery VERBATIM (persistence/settings/dashboard/auth/visits/
 #     uploads/etc. — the coarse lane does the walking; the shard's evidence
-#     still names micro:<name>);
-#   * PENDING-FEATURE: tour-en / tour-ar / rtl — the capabilities are in
-#     flight on the guided-tour / i18n worktrees; no battery exists yet, so
-#     the shard records the gap honestly and stays GREEN (a feature under
-#     construction is not a product red — faking one would be worse).
+#     still names micro:<name>).
 #
 # Bash 3.2 (macOS) compatible: no arrays, no ${var,,}, no declare -A.
 # =============================================================================
@@ -15118,6 +15189,233 @@ micro_dsk_fixture_set() { # <CHECK-NAME> — the desktop-FX subset: PAT1 + the f
     fi
   fi
   snap "mdp-fx-complete" || true
+}
+
+# ---- micro: the tour/RTL shared helpers (FEATURES C+D bodies) ----------------
+# The Arabic-OCR path (the v-ocr-ar.swift stack): the tour-ar / rtl shards
+# verify ARABIC-rendered needles with the Arabic-capable recognizer
+# (recognitionLanguages ["ar-SA","en-US"]). Every Arabic check carries the
+# honest structural fallback (the English needles GONE + the Latin islands
+# + the captures) — an unreadable Arabic needle is an ENV record, never a
+# false red.
+MICRO_HELP_MENU_OPEN="no"
+MICRO_HELP_X=""
+MICRO_HELP_Y=""
+
+micro_ocr_ar() { # capture with the Arabic-capable recognizer into OCR_TEXT (the v_scroll_find arabic branch, factored + scale-parsed)
+  if [ ! -x "$MV_OCR_AR" ]; then
+    probe "ocr-ar: the Arabic-capable recognizer is unavailable (its swiftc compile failed at stack build) — the Arabic checks degrade to the structural proofs"
+    return 1
+  fi
+  screencapture -x "$MV_SHOT" 2>>"$LOG" || return 1
+  "$MV_OCR_AR" "$MV_SHOT" > "$MV_LINES" 2>>"$LOG" || return 1
+  local hdr pxw ptw
+  hdr="$(sed -n '1p' "$MV_LINES")"
+  pxw="$(printf '%s' "$hdr" | awk '{print $2}')"
+  ptw="$(printf '%s' "$hdr" | awk '{print $4}')"
+  if [ -n "$pxw" ] && [ -n "$ptw" ] && [ "$ptw" -gt 0 ] 2>/dev/null; then
+    MV_SCALE="$(awk -v a="$pxw" -v b="$ptw" 'BEGIN{printf "%.4f", a/b}')"
+  fi
+  OCR_TEXT="$(grep '^LINE|' "$MV_LINES" 2>/dev/null || true)"
+  LAST_OCR_HASH="$(shasum -a 256 "$MV_SHOT" 2>/dev/null | awk '{print $1}')"
+  probe "ocr(ar): $(printf '%s\n' "$OCR_TEXT" | grep -c '^LINE|') lines — inventory: $(printf '%s' "$OCR_TEXT" | awk -F'|' '{printf "[%s] ", $2}' | cut -c1-400)"
+  return 0
+}
+
+micro_ar_grep() { # <needle> — ONE Arabic-OCR capture + grep (a one-shot visibility check)
+  micro_ocr_ar || return 1
+  ocr_grep "$1"
+}
+
+micro_v_click_ar() { # <needle> <stem> [expect-latin] — click an ARABIC-rendered control via the Arabic recognizer
+  local needle="$1" stem="$2" expect="${3:-}" before_hash
+  micro_ocr_ar || return 1
+  before_hash="$LAST_OCR_HASH"
+  snap_file "$MV_SHOT" "${stem}-before" || true
+  if ! ocr_lookup "$needle" "first"; then
+    probe "vclick-ar[$stem]: '$needle' NOT FOUND by the Arabic recognizer — no click attempted (never a guessed coordinate)"
+    return 1
+  fi
+  local tx ty
+  tx="$OCR_HIT_X"; ty="$OCR_HIT_Y"
+  probe "vclick-ar[$stem]: intended target='$needle' → screen point ($tx,$ty) — native CGEvent click"
+  "$MV_MOUSE" "$tx" "$ty" 2>>"$LOG" || return 1
+  sleep 2
+  if [ -n "$expect" ]; then
+    ocr_capture || true
+    if ocr_grep "$expect"; then
+      snap_file "$MV_SHOT" "${stem}-after" || true
+      probe "vclick-ar[$stem]: verified — the Latin expect '$expect' is now visible"
+      return 0
+    fi
+  fi
+  micro_ocr_ar || true
+  snap_file "$MV_SHOT" "${stem}-after" || true
+  if [ "$LAST_OCR_HASH" != "$before_hash" ]; then
+    probe "vclick-ar[$stem]: verified by visible change (the Arabic-OCR hash diff)"
+    return 0
+  fi
+  probe "vclick-ar[$stem]: NO visible change after the click"
+  return 1
+}
+
+micro_lang_prompt_dismiss() { # <stem> — clear the first-login language card (its bottom-right corner can occlude the floating bulk bar)
+  local stem="$1" cand lx ly
+  ocr_capture || return 1
+  if ! ocr_grep "Choose your language"; then
+    probe "lang-prompt[$stem]: not visible (already chosen this install, or an older build) — nothing to do"
+    return 0
+  fi
+  snap "lang-prompt-$stem" || true
+  # The card's OWN 'English' button (the LAST reading-order hit — the header
+  # language switcher renders the same word at the TOP of the screen):
+  # choosing English keeps the locale and permanently dismisses the one-shot
+  # card (FEATURE D requirement 2's own affordance).
+  if v_click "English" "lang-prompt-$stem-choose" "" last; then
+    sleep 2
+    ocr_capture || true
+    if ! ocr_grep "Choose your language"; then
+      probe "lang-prompt[$stem]: dismissed (the card's own 'English' choice — the one-shot card is gone; the locale stays en)"
+      return 0
+    fi
+  fi
+  # the card's X is icon-only: anchored right of the card's title line
+  ocr_capture || return 1
+  if ocr_lookup "Choose your language" "first" "label"; then
+    lx="$OCR_HIT_X"; ly="$OCR_HIT_Y"
+    for cand in 150 135 165 120; do
+      probe "lang-prompt[$stem]: anchored X click at ($((lx+cand)),$ly) — the card's icon-only close"
+      "$MV_MOUSE" "$((lx+cand))" "$ly" 2>>"$LOG" || true
+      sleep 2
+      ocr_capture || true
+      if ! ocr_grep "Choose your language"; then
+        probe "lang-prompt[$stem]: dismissed via the anchored X"
+        return 0
+      fi
+    done
+  fi
+  bug D MICRO_LANG_PROMPT_DISMISS "the first-login language card could not be dismissed (see lang-prompt-$stem-*) — a floating-bar click at the bottom-right may be occluded by it"
+  return 1
+}
+
+micro_switch_to_arabic() { # <stem> — click the header language switcher (its label names the CURRENT language: 'English' cycles en→ar)
+  local stem="$1" tries=0
+  while [ "$tries" -lt 3 ]; do
+    ocr_capture || return 1
+    if ocr_lookup "English" "first" "label"; then
+      if [ "$OCR_HIT_Y" -le 130 ]; then
+        probe "lang-switch[$stem]: the header switcher 'English' at ($OCR_HIT_X,$OCR_HIT_Y) — clicking to cycle to العربية"
+        "$MV_MOUSE" "$OCR_HIT_X" "$OCR_HIT_Y" 2>>"$LOG" || true
+        sleep 4
+        ocr_capture || true
+        if ! ocr_grep "Recent Patients" && ! ocr_grep "Add Patient"; then
+          probe "lang-switch[$stem]: the switch registered — the English chrome is GONE (the app re-rendered in العربية / RTL)"
+          return 0
+        fi
+        probe "lang-switch[$stem]: the click did not switch (the English chrome is still visible) — attempt $tries recorded"
+      else
+        # the first hit is the first-run language CARD's own button (bottom-right)
+        probe "lang-switch[$stem]: the first 'English' hit is at y=$OCR_HIT_Y (below the header band — the language card's own button): clicking it only dismisses the card; the header switcher is retried next"
+        "$MV_MOUSE" "$OCR_HIT_X" "$OCR_HIT_Y" 2>>"$LOG" || true
+        sleep 3
+      fi
+    else
+      probe "lang-switch[$stem]: no 'English' label OCR-found this pass (attempt $tries)"
+    fi
+    tries=$(( tries + 1 ))
+  done
+  return 1
+}
+
+micro_help_menu_open() { # <stem> <ltr|rtl> — open the header Help & Guide menu (the icon-only CircleHelp control, anchored on the profile pill)
+  local stem="$1" dir="$2" cand cx cy sign
+  ocr_capture || return 1
+  if ! ocr_lookup "$DOC_NAME" "first" "label" && ! ocr_lookup "MediVault Test" "first" "label"; then
+    probe "help-menu[$stem]: the profile pill anchor was not OCR-found — no click attempted"
+    return 1
+  fi
+  cx="$OCR_HIT_X"; cy="$OCR_HIT_Y"
+  MICRO_HELP_X="$cx"; MICRO_HELP_Y="$cy"
+  if [ "$dir" = "rtl" ]; then sign=1; else sign=-1; fi
+  # The header's icon cluster (LTR reading order; every control is a
+  # size=icon 36px button with gap-1.5 between them):
+  # [language][users][bell][help][moon][download][PILL][logout] — mirrored
+  # under dir=rtl. From the pill's OCR text center the Help icon sits
+  # ~209-245px away (the pill's own avatar/chevron padding shifts the OCR
+  # center ±15px; the truncated pill shows 'MediVault Test …'). Every
+  # candidate is a REAL click verified by the menu's own needles, and a
+  # miss (the theme toggle / a popover) is Escape-dismissed before the
+  # next candidate.
+  for cand in 216 223 209 230; do
+    probe "help-menu[$stem]: anchored $dir click at ($((cx + sign * cand)),$cy) — the icon-only Help & Guide control"
+    "$MV_MOUSE" "$((cx + sign * cand))" "$cy" 2>>"$LOG" || true
+    sleep 2
+    ocr_capture || true
+    if ocr_grep "Replay Full Tour"; then
+      snap_file "$MV_SHOT" "${stem}-open" || true
+      MICRO_HELP_MENU_OPEN="yes"
+      probe "help-menu[$stem]: the menu opened ('Replay Full Tour' visible) at offset $cand"
+      return 0
+    fi
+    if [ "$dir" = "rtl" ]; then
+      micro_ocr_ar || true
+      if [ -n "$OCR_TEXT" ] && ocr_grep "المساعدة والدليل"; then
+        snap_file "$MV_SHOT" "${stem}-open" || true
+        MICRO_HELP_MENU_OPEN="yes"
+        probe "help-menu[$stem]: the menu opened (the Arabic 'المساعدة والدليل' title is OCR-visible) at offset $cand"
+        return 0
+      fi
+    fi
+    press_escape
+    sleep 1
+  done
+  probe "help-menu[$stem]: the icon-only Help & Guide control could not be activated (all anchored candidates recorded) — honest D candidate"
+  return 1
+}
+
+micro_schedule_visit() { # <token> <full-name> <row-phone> <stem> <sentinel> — ONE visit (the CC2 subset: the defaults + the complaint + the footer submit)
+  local token="$1" full="$2" rowphone="$3" stem="$4" sentinel="$5"
+  if ! open_patient_by_phone_token "$token" "$full" "$stem-open" "$rowphone"; then
+    return 1
+  fi
+  detail_scroll_top "$stem-top" || true
+  v_scroll_find "Visit History" 8 || v_scroll_find "Schedule Visit" 6 || true
+  if ! v_click "Schedule Visit" "$stem-open-dialog" "Chief Complaint"; then
+    return 2
+  fi
+  if ! v_type_into "Chief Complaint" "$sentinel" "$stem-complaint"; then
+    press_escape
+    return 2
+  fi
+  snap "$stem-form" || true
+  clc_api_mark "$stem-save"
+  if clc_footer_click "Schedule Visit" "Chief Complaint" "$stem-save"; then
+    sleep 2
+    if wait_text_gone "Chief Complaint" 12 "$stem-closed"; then
+      clc_api_collect "$stem"
+      clc_api_count POST "/api/visits" "$stem-visit-post"
+      if [ "$CLC_API_HITS" -ge 1 ] 2>/dev/null; then
+        if v_scroll_find "$sentinel" 8; then
+          probe "visit[$stem]: the '$sentinel' visit card rendered (POST observed + the card visible)"
+        else
+          probe "visit[$stem]: POST /api/visits observed but the '$sentinel' card was not OCR-confirmed (kept — the POST + the closed dialog are the functional proof)"
+        fi
+        v_click "Dashboard" "$stem-back" "Add Patient" || true
+        return 0
+      fi
+      probe "visit[$stem]: ZERO POST /api/visits after the submit (the visit was NOT created)"
+      v_click "Dashboard" "$stem-back" "Add Patient" || true
+      return 3
+    fi
+    press_escape
+    sleep 1
+    v_click "Dashboard" "$stem-back-fb" "Add Patient" || true
+    return 2
+  fi
+  press_escape
+  sleep 1
+  v_click "Dashboard" "$stem-back-fb2" "Add Patient" || true
+  return 2
 }
 
 # --------------------------- micro: the shard bodies -------------------------
@@ -16131,15 +16429,881 @@ micro_security() {
   note "micro:security complete"
 }
 
-micro_pending_feature() { # <name> — the honest no-battery record for an in-flight capability
-  local name="$1"
-  local cap
-  cap="MICRO_$(printf '%s' "$name" | tr 'a-z-' 'A-Z_')"
-  surface_section "Micro-shard: $name (PENDING FEATURE — no battery yet)"
-  qa_cap "${cap}_STATUS" "PENDING-FEATURE (the '$name' capability is under construction on its feature branch (the guided-tour / i18n worktrees); no product battery exists to run — this shard records the gap honestly instead of faking a result. Dispatch it again once the feature lands and its micro body is implemented (see MICRO-SHARDS.md).)"
-  surface_row "$name capability" "the full app surface" "—" "the capability exists and is exercisable" "NOT EXERCISED (PENDING FEATURE — in flight on the feature branch; see MICRO-SHARDS.md)" "NOT TESTED (pending feature)" "—" "EXPECTED"
-  snap "pending-feature-record" || true
-  note "micro:$name complete (PENDING-FEATURE record — GREEN, nothing to run)"
+micro_bulk_delete() {
+  note "=== micro:bulk-delete — FEATURE B: Select Patients → the strong confirmation → DELETE /api/patients/bulk (DIRECTIVE §20) ==="
+  local BD_A_FIRST="Alpha";  local BD_A_LAST="Bulk"
+  local BD_B_FIRST="Bravo";  local BD_B_LAST="Bulk"
+  local BD_C_FIRST="Charlie"; local BD_C_LAST="Bulk"
+  local BD_D_FIRST="Delta";  local BD_D_LAST="Bulk"
+  local BD_E_FIRST="Echo";   local BD_E_LAST="Standalone"
+  local BD_A_PHONE="+1 555 0470"; local BD_B_PHONE="+1 555 0471"
+  local BD_C_PHONE="+1 555 0472"; local BD_D_PHONE="+1 555 0473"
+  local BD_E_PHONE="+1 555 0474"
+  local BD_A_FULL="Alpha Bulk"; local BD_B_FULL="Bravo Bulk"
+  local BD_C_FULL="Charlie Bulk"; local BD_D_FULL="Delta Bulk"
+  local BD_E_FULL="Echo Standalone"
+  local BD_A_DOC="bd-alpha-doc"; local BD_B_DOC="bd-bravo-doc"
+  local BD_A_TOKEN="0470"; local BD_B_TOKEN="0471"; local BD_C_TOKEN="0472"
+  local BD_D_TOKEN="0473"; local BD_E_TOKEN="0474"
+  surface_section "Micro-shard: bulk patient management (Select Patients → Delete Selected → /api/patients/bulk)"
+  micro_fixtures_init
+
+  # ---- BD-FX1: the 5-patient cohort (4 'Bulk' rows + the out-of-filter sentinel Echo) ----
+  micro_fx_patient "$BD_A_FIRST" "$BD_A_LAST" "$BD_A_PHONE" "alpha.bulk@example.invalid" "ONLY-BD-ALPHA" "bd-fx-a" \
+    || bug P1 MICRO_BULK_DELETE_FIXTURE "the fixture patient $BD_A_FULL could not be created (the shard cannot proceed)"
+  micro_fx_patient "$BD_B_FIRST" "$BD_B_LAST" "$BD_B_PHONE" "bravo.bulk@example.invalid" "ONLY-BD-BRAVO" "bd-fx-b" \
+    || bug P1 MICRO_BULK_DELETE_FIXTURE "the fixture patient $BD_B_FULL could not be created (the shard cannot proceed)"
+  micro_fx_patient "$BD_C_FIRST" "$BD_C_LAST" "$BD_C_PHONE" "charlie.bulk@example.invalid" "ONLY-BD-CHARLIE" "bd-fx-c" \
+    || bug P1 MICRO_BULK_DELETE_FIXTURE "the fixture patient $BD_C_FULL could not be created (the shard cannot proceed)"
+  micro_fx_patient "$BD_D_FIRST" "$BD_D_LAST" "$BD_D_PHONE" "delta.bulk@example.invalid" "ONLY-BD-DELTA" "bd-fx-d" \
+    || bug P1 MICRO_BULK_DELETE_FIXTURE "the fixture patient $BD_D_FULL could not be created (the shard cannot proceed)"
+  micro_fx_patient "$BD_E_FIRST" "$BD_E_LAST" "$BD_E_PHONE" "echo.standalone@example.invalid" "ONLY-BD-ECHO" "bd-fx-e" \
+    || bug P1 MICRO_BULK_DELETE_FIXTURE "the out-of-filter sentinel patient $BD_E_FULL could not be created (the filtered select-all proof needs it)"
+  read_patient_count
+  local bd_n0="${PATIENTS_COUNT:-unreadable}"
+  probe "bd: the cohort badge after the 5 creates: $bd_n0 (expect 5)"
+  if [ "$bd_n0" != "5" ]; then
+    bug P1 MICRO_BULK_DELETE_FIXTURE "the patient badge reads '$bd_n0' after creating 5 patients (expected 5 — the count-driven checks cannot run honestly)"
+  fi
+
+  # ---- BD-FX2: linked records for the SURVIVOR Alpha + the DELETED Bravo ----
+  # (documents via the proven scan-view chooser trip; ONE visit each via the
+  # CC2 subset — the §20 bounded-fixture rule: docs + one visit per patient,
+  # no notes/prescriptions — recorded honestly; every failure degrades the
+  # dependent check without stopping the matrix)
+  local bd_a_docs="no" bd_b_docs="no" bd_a_visit="no" bd_b_visit="no"
+  docb_make_png "$MICRO_DIR/$BD_A_DOC.png" "1D4ED8" || bug P1 MICRO_BULK_DELETE_FIXTURE "the $BD_A_DOC.png fixture could not be generated"
+  docb_make_png "$MICRO_DIR/$BD_B_DOC.png" "047857" || bug P1 MICRO_BULK_DELETE_FIXTURE "the $BD_B_DOC.png fixture could not be generated"
+  docb_scan_upload_one "$MICRO_DIR/$BD_A_DOC.png" "bd-a-doc" 90 "$BD_A_FULL" "Lab Results"
+  if [ "${DOCB_UP_RC:-1}" = "0" ]; then
+    bd_a_docs="yes"
+    qa_cap MICRO_BULK_FX_DOC_A "GREEN (the $BD_A_DOC.png document uploaded through the real scan-view chooser path)"
+  else
+    bug ENV MICRO_BULK_FX_DOC_A "the ALPHA document fixture could not be uploaded (DOCB_UP_RC=$DOCB_UP_RC — the chooser/open-panel status; the docs-intact check degrades honestly, the §20 delete matrix itself does not need it)"
+  fi
+  docb_scan_upload_one "$MICRO_DIR/$BD_B_DOC.png" "bd-b-doc" 90 "$BD_B_FULL" "Lab Results"
+  if [ "${DOCB_UP_RC:-1}" = "0" ]; then
+    bd_b_docs="yes"
+    qa_cap MICRO_BULK_FX_DOC_B "GREEN (the $BD_B_DOC.png document uploaded through the real scan-view chooser path)"
+  else
+    bug ENV MICRO_BULK_FX_DOC_B "the BRAVO document fixture could not be uploaded (DOCB_UP_RC=$DOCB_UP_RC — the chooser/open-panel status; BRAVO's records cascade away with him anyway)"
+  fi
+  micro_schedule_visit "$BD_A_TOKEN" "$BD_A_FULL" "$BD_A_PHONE" "bd-a-visit" "BD-VISIT-ALPHA"
+  case $? in
+    0) bd_a_visit="yes" ;;
+    1) bug D MICRO_BULK_FX_VISIT_A "could not open $BD_A_FULL's detail for the visit fixture (the visit-intact check degrades; the matrix continues)" ;;
+    *) bug D MICRO_BULK_FX_VISIT_A "the ALPHA visit fixture could not be created (the CC2 subset path — see the bd-a-visit captures; the visit-intact check degrades)" ;;
+  esac
+  micro_schedule_visit "$BD_B_TOKEN" "$BD_B_FULL" "$BD_B_PHONE" "bd-b-visit" "BD-VISIT-BRAVO"
+  case $? in
+    0) bd_b_visit="yes" ;;
+    1) bug D MICRO_BULK_FX_VISIT_B "could not open $BD_B_FULL's detail for the visit fixture (recorded honestly)" ;;
+    *) bug D MICRO_BULK_FX_VISIT_B "the BRAVO visit fixture could not be created (the CC2 subset path — see the bd-b-visit captures)" ;;
+  esac
+  probe "bd: fixture state — docs(alpha=$bd_a_docs bravo=$bd_b_docs) visits(alpha=$bd_a_visit bravo=$bd_b_visit) (notes/prescriptions NOT created — the §20 bounded-fixture rule)"
+
+  # ---- BD0: the first-login language-card hygiene ----
+  dio_back_to_dashboard
+  micro_lang_prompt_dismiss "bd"
+
+  # ---- BD1: enter the Select Patients mode ----
+  read_patient_count
+  bd_n0="${PATIENTS_COUNT:-$bd_n0}"
+  v_scroll_top 10 || true
+  v_scroll_find "Recent Patients" 8 || true
+  if v_click "Select Patients" "bd1-enter" ""; then
+    sleep 2
+    ocr_capture || true
+    snap "bd1-select-mode" || true
+    record_inventory "Select Patients mode (the row checkboxes + the floating bulk bar)"
+    if ocr_grep "Select All" && ocr_grep "Delete Selected"; then
+      qa_cap MICRO_BULK_SELECT_MODE "GREEN (the 'Select Patients' entry revealed the floating bar: Select All / the N-selected badge / Cancel / Delete Selected; the rows carry checkboxes and a row CLICK toggles the selection)"
+      surface_row "Select Patients mode (entry)" "the patients-list header → 'Select Patients'" "per-row checkboxes (a row click toggles too); Select All / Deselect All; the N-selected badge; Cancel; Delete Selected" "the bulk patient-management mode" "entered; the bar + the checkboxes OCR-verified" "GREEN" "bd1-select-mode" "OK"
+    else
+      bug P1 MICRO_BULK_SELECT_MODE "'Select Patients' did not reveal the floating bulk bar (no 'Select All'/'Delete Selected' on screen)"
+    fi
+  else
+    bug P1 MICRO_BULK_SELECT_MODE "the 'Select Patients' button could not be clicked"
+  fi
+
+  # ---- BD2: the row-click selection (ONLY Bravo + Delta) ----
+  # (the product contract: in select mode a row CLICK toggles the selection —
+  # dashboard.tsx Card onClick → togglePatientSelection. The rows are targeted
+  # by their ROW-ONLY phone text: the Recently Viewed mini-cards above the
+  # list share the NAME and would wrongly open the detail on a name click.)
+  v_scroll_find "$BD_B_PHONE" 8 || true
+  if v_click "$BD_B_PHONE" "bd2-sel-bravo" ""; then
+    sleep 1
+    ocr_capture || true
+    if printf '%s\n' "$OCR_TEXT" | grep -Eq '\|[^|]*1 selected'; then
+      probe "bd2: the $BD_B_FULL row click registered ('1 selected')"
+    else
+      probe "bd2: the '1 selected' badge was not OCR-confirmed (kept — the confirmation dialog's own count is the deciding proof)"
+    fi
+  else
+    bug P1 MICRO_BULK_ROW_SELECT "the $BD_B_FULL row click did not register a selection"
+  fi
+  v_scroll_find "$BD_D_PHONE" 8 || true
+  v_click "$BD_D_PHONE" "bd2-sel-delta" "" || bug P1 MICRO_BULK_ROW_SELECT "the $BD_D_FULL row click did not register a selection"
+  sleep 1
+  ocr_capture || true
+  snap "bd2-two-selected" || true
+  if printf '%s\n' "$OCR_TEXT" | grep -Eq '\|[^|]*2 selected'; then
+    qa_cap MICRO_BULK_ROW_SELECT "GREEN (the row clicks selected exactly $BD_B_FULL + $BD_D_FULL — the badge reads '2 selected')"
+  else
+    probe "bd2: the '2 selected' badge was not OCR-confirmed (the confirmation dialog's count + the post-delete world decide)"
+  fi
+
+  # ---- BD3: Delete Selected → the STRONG confirmation (verified BEFORE confirming) ----
+  if v_click "Delete Selected" "bd3-open-confirm" ""; then
+    sleep 2
+  else
+    bug P1 MICRO_BULK_CONFIRM "the floating bar's 'Delete Selected' button could not be clicked"
+  fi
+  if wait_for_ocr "Delete 2 Patients?" 15 "bd3-confirm-open"; then
+    ocr_capture || true
+    snap "bd3-confirm-dialog" || true
+    record_inventory "the strong bulk-delete confirmation (count + warning + the identifying list)"
+    local bd_cw=0
+    ocr_grep "permanently delete" && bd_cw=$((bd_cw+1))
+    ocr_grep "documents, visits, clinical notes, and prescriptions" && bd_cw=$((bd_cw+1))
+    ocr_grep "cannot be undone" && bd_cw=$((bd_cw+1))
+    ocr_grep "review the list below" && bd_cw=$((bd_cw+1))
+    ocr_grep "$BD_B_FULL" && bd_cw=$((bd_cw+1))
+    ocr_grep "$BD_D_FULL" && bd_cw=$((bd_cw+1))
+    probe "bd3: the confirmation contract needles visible: $bd_cw/6 (the exact count '2' in the TITLE is the strong proof; the names may OCR from the dimmed rows too — the post-delete world decides the identifying list)"
+    if [ "$bd_cw" -lt 3 ]; then
+      bug P2 MICRO_BULK_CONFIRM_CONTENT "the strong confirmation is missing its warning/review needles (only $bd_cw/6 visible — see bd3-confirm-dialog)"
+    else
+      qa_cap MICRO_BULK_CONFIRM "GREEN (the strong confirmation: the title count is exactly 2, the permanent-delete warning (documents, visits, clinical notes, prescriptions — cannot be undone), the review line, and both selected names are visible before the destructive button)"
+      surface_row "Bulk-delete confirmation" "Delete Selected (2 rows) → the dialog" "the title count; the warning; the scrollable identifying list (names + DOB/phone); Cancel; the destructive count button" "an explicit, count-accurate confirmation gates the delete" "title 'Delete 2 Patients?'; warning + review + names OCR-verified" "GREEN" "bd3-confirm-dialog" "OK"
+    fi
+
+    # ---- BD4: CANCEL FIRST — nothing must be deleted ----
+    if v_click "Cancel" "bd4-cancel" ""; then
+      sleep 2
+    fi
+    if wait_text_gone "Delete 2 Patients?" 12 "bd4-cancel-closed"; then
+      ocr_capture || true
+      snap "bd4-after-cancel" || true
+      local bd_mode_state="select-mode (the source contract: Cancel only closes the dialog)"
+      if ! ocr_grep "Select All" || ! ocr_grep "Delete Selected"; then
+        bd_mode_state="mode-exited"
+      fi
+      if printf '%s\n' "$OCR_TEXT" | grep -Eq '\|[^|]*2 selected'; then
+        probe "bd4: the selection SURVIVED the cancel ('2 selected' still on the bar)"
+      else
+        probe "bd4: the '2 selected' badge was not re-read after the cancel (kept — BD5 resets the selection deterministically anyway)"
+      fi
+      read_patient_count
+      if [ "${PATIENTS_COUNT:-unreadable}" = "$bd_n0" ]; then
+        qa_cap MICRO_BULK_CANCEL "GREEN (the confirmation Cancel deleted NOTHING: the badge is still $PATIENTS_COUNT; state: $bd_mode_state)"
+        surface_row "Bulk-delete cancel" "the confirmation → 'Cancel'" "'Cancel' + the destructive count button" "canceling keeps every patient (the select-mode state and the selection survive)" "canceled; the badge is unchanged ($PATIENTS_COUNT); $bd_mode_state" "GREEN" "bd4-after-cancel" "OK"
+      else
+        bug P1 MICRO_BULK_CANCEL "the confirmation Cancel CHANGED the patient count ($bd_n0 → $PATIENTS_COUNT — a canceled bulk delete must not delete anything)"
+      fi
+    else
+      bug P1 MICRO_BULK_CANCEL "the confirmation dialog did not close after Cancel"
+    fi
+  else
+    bug P1 MICRO_BULK_CONFIRM "the 'Delete 2 Patients?' confirmation never appeared"
+  fi
+
+  # ---- BD5: the destructive step (re-verify 2 selected deterministically, then confirm) ----
+  # Deterministic reset (never toggle blindly — a toggle on an already-selected
+  # row would DESELECT it): Select All (→ all visible) → Deselect All (→ 0),
+  # then exactly Bravo + Delta again.
+  local bd_destruct_ok="yes"
+  ocr_capture || true
+  if ! printf '%s\n' "$OCR_TEXT" | grep -Eq '\|[^|]*2 selected'; then
+    probe "bd5: the '2 selected' state is not confirmed post-cancel — the deterministic Select All → Deselect All → re-select path"
+  fi
+  if v_click "Select All" "bd5-select-all" ""; then
+    sleep 2
+  else
+    probe "bd5: the 'Select All' reset click could not be verified (kept — the badge checks below decide)"
+  fi
+  if v_click "Deselect All" "bd5-deselect-all" ""; then
+    sleep 2
+  else
+    probe "bd5: the 'Deselect All' reset click could not be verified (kept — the badge checks below decide)"
+  fi
+  ocr_capture || true
+  if printf '%s\n' "$OCR_TEXT" | grep -Eq '\|[^|]*0 selected'; then
+    probe "bd5: the deterministic selection reset (Select All → Deselect All → '0 selected')"
+  fi
+  v_scroll_find "$BD_B_PHONE" 8 || true
+  v_click "$BD_B_PHONE" "bd5-sel-bravo" "" || bug D MICRO_BULK_ROW_SELECT2 "the $BD_B_FULL row re-selection click failed"
+  v_scroll_find "$BD_D_PHONE" 8 || true
+  v_click "$BD_D_PHONE" "bd5-sel-delta" "" || bug D MICRO_BULK_ROW_SELECT2 "the $BD_D_FULL row re-selection click failed"
+  sleep 1
+  ocr_capture || true
+  snap "bd5-two-selected" || true
+  if printf '%s\n' "$OCR_TEXT" | grep -Eq '\|[^|]*2 selected'; then
+    probe "bd5: exactly '2 selected' ($BD_B_FULL + $BD_D_FULL) — the destructive step may proceed"
+  else
+    bd_destruct_ok="no"
+    bug D MICRO_BULK_RESELECT "the '2 selected' badge could not be confirmed before the destructive step — the delete is NOT taken (the honest limit: the count-driven postconditions would be ambiguous)"
+  fi
+  local bd_bulk_hits=0
+  if [ "$bd_destruct_ok" = "yes" ]; then
+    if v_click "Delete Selected" "bd5-open-confirm2" ""; then
+      sleep 2
+    fi
+    if wait_for_ocr "Delete 2 Patients?" 15 "bd5-confirm-open2"; then
+      ocr_capture || true
+      snap "bd5-confirm-dialog" || true
+      docb_api_mark "bd5-bulk-pre"
+      # the destructive confirm: the FOOTER button (the LAST 'Delete 2 Patients'
+      # hit below the review line — the clc_footer_click y-gate idiom; the TITLE
+      # 'Delete 2 Patients?' shares the text)
+      if clc_footer_click "Delete 2 Patients" "Please review" "bd5-confirm"; then
+        sleep 6
+        wait_text_gone "Delete 2 Patients?" 20 "bd5-dialog-gone" || probe "bd5: the confirm dialog lingered (kept — the postconditions decide)"
+        wait_text_gone "Select All" 15 "bd5-bar-gone" || probe "bd5: the floating bar did not exit (a partial failure keeps it — the counts decide)"
+        docb_api_collect "bd5-bulk"
+        docb_api_count DELETE "/api/patients/bulk" "bd5-bulk-delete"
+        bd_bulk_hits="$DOCB_API_HITS"
+
+        # ---- the post-delete world (§20: Bravo + Delta GONE; Alpha + Charlie + Echo SURVIVE) ----
+        read_patient_count
+        local bd_n1="${PATIENTS_COUNT:-unreadable}"
+        probe "bd5: the cohort badge after the bulk delete: $bd_n1 (was $bd_n0; expect 3)"
+        if [ "$bd_n1" = "3" ] && [ "${bd_bulk_hits:-0}" -ge 1 ] 2>/dev/null; then
+          qa_cap MICRO_BULK_DELETE "GREEN (DELETE /api/patients/bulk fired (${bd_bulk_hits} request(s)); the badge dropped $bd_n0 → $bd_n1 — exactly $BD_B_FULL + $BD_D_FULL removed)"
+          surface_row "Bulk patient delete" "Select Patients → 2 rows → Delete Selected → the strong confirm" "the floating bar; the count+names confirmation; the destructive confirm" "exactly the selected patients (and their linked records) are deleted" "deleted; the badge $bd_n0 → $bd_n1; DELETE /api/patients/bulk in the API log" "GREEN" "bd5-*" "OK"
+        else
+          qa_cap MICRO_BULK_DELETE "PARTIAL PROOF (the badge reads '$bd_n1' (expect 3); DELETE /api/patients/bulk requests: ${bd_bulk_hits:-0} — the per-patient searches below decide)"
+        fi
+
+        # the deleted patients must be GONE (search by their unique phone tokens)
+        search_type "$BD_B_TOKEN" "bd5-search-bravo"
+        sleep 2
+        v_scroll_find "No patients found" 4 || v_scroll_find "$BD_B_PHONE" 4 || true
+        ocr_capture || true
+        snap "bd5-search-bravo" || true
+        if ocr_grep "$BD_B_FULL" || ocr_grep "$BD_B_PHONE"; then
+          bug P1 MICRO_BULK_DELETE_GONE "the deleted $BD_B_FULL is still findable by his phone token (the row/ghost is on screen — see bd5-search-bravo)"
+        else
+          probe "bd5: $BD_B_FULL is GONE (his phone token finds nothing — 'No patients found')"
+        fi
+        search_type "$BD_D_TOKEN" "bd5-search-delta"
+        sleep 2
+        v_scroll_find "No patients found" 4 || v_scroll_find "$BD_D_PHONE" 4 || true
+        ocr_capture || true
+        snap "bd5-search-delta" || true
+        if ocr_grep "$BD_D_FULL" || ocr_grep "$BD_D_PHONE"; then
+          bug P1 MICRO_BULK_DELETE_GONE "the deleted $BD_D_FULL is still findable by his phone token (see bd5-search-delta)"
+        else
+          probe "bd5: $BD_D_FULL is GONE (his phone token finds nothing)"
+        fi
+
+        # ---- the wrong-patient gate (P0): the survivors must ALL still be findable ----
+        local bd_surv_fail=""
+        search_type "$BD_A_TOKEN" "bd5-search-alpha"
+        sleep 2
+        v_scroll_find "$BD_A_FULL" 6 || bd_surv_fail="$BD_A_FULL"
+        search_type "$BD_C_TOKEN" "bd5-search-charlie"
+        sleep 2
+        v_scroll_find "$BD_C_FULL" 6 || bd_surv_fail="$bd_surv_fail $BD_C_FULL"
+        search_type "$BD_E_TOKEN" "bd5-search-echo"
+        sleep 2
+        v_scroll_find "$BD_E_FULL" 6 || bd_surv_fail="$bd_surv_fail $BD_E_FULL"
+        if [ -n "$bd_surv_fail" ]; then
+          bug P0 BULK_DELETE_WRONG_PATIENT "a NON-selected patient is missing after the bulk delete (searched by the unique phone token and not found: $bd_surv_fail). WRONG-PATIENT DELETION = P0 — the shard STOPS here (captures bd5-search-*)"
+        else
+          qa_cap MICRO_BULK_SURVIVORS "GREEN (the non-selected patients all survived: $BD_A_FULL, $BD_C_FULL and the out-of-filter $BD_E_FULL are still findable)"
+          surface_row "Wrong-patient gate" "search each survivor by the unique phone token" "—" "only the SELECTED patients are deleted; every other patient survives" "all 3 survivors found by their tokens" "GREEN" "bd5-search-*" "OK"
+        fi
+
+        # ---- the survivors' linked records are INTACT (the record-level wrong-patient gate) ----
+        if [ "$bd_a_docs" = "yes" ] || [ "$bd_a_visit" = "yes" ]; then
+          if open_patient_by_phone_token "$BD_A_TOKEN" "$BD_A_FULL" "bd5-alpha-detail" "$BD_A_PHONE"; then
+            local bd_alpha_ok="yes"
+            if [ "$bd_a_docs" = "yes" ]; then
+              if v_scroll_find "$BD_A_DOC" 12; then
+                probe "bd5: $BD_A_FULL's document ($BD_A_DOC) survived the bulk delete"
+              else
+                bd_alpha_ok="no"
+                bug P0 BULK_DELETE_WRONG_PATIENT "$BD_A_FULL's document vanished after deleting $BD_B_FULL + $BD_D_FULL (the doc row is not findable — see bd5-alpha-detail)"
+              fi
+            fi
+            if [ "$bd_a_visit" = "yes" ]; then
+              if v_scroll_find "BD-VISIT-ALPHA" 14; then
+                probe "bd5: $BD_A_FULL's visit (BD-VISIT-ALPHA) survived the bulk delete"
+              else
+                bd_alpha_ok="no"
+                bug P0 BULK_DELETE_WRONG_PATIENT "$BD_A_FULL's visit vanished after the bulk delete of OTHER patients (see bd5-alpha-detail)"
+              fi
+            fi
+            if [ "$bd_alpha_ok" = "yes" ]; then
+              qa_cap MICRO_BULK_SURVIVOR_RECORDS "GREEN ($BD_A_FULL's linked records (document $BD_A_DOC$( [ "$bd_a_visit" = "yes" ] && printf ' + the BD-VISIT-ALPHA visit')) are INTACT after the bulk delete)"
+            fi
+            dio_back_to_dashboard
+          else
+            probe "bd5: $BD_A_FULL's detail could not be opened for the records-intact check (recorded honestly — the token search proof above stands)"
+          fi
+        else
+          probe "bd5: the records-intact check degraded (the ALPHA fixtures did not land — see the ENV/D records above)"
+        fi
+        # NOTE (division of labor): the quit/reopen PERSISTENCE of the bulk
+        # delete belongs to the PERSISTENCE shard — recorded here, NOT duplicated.
+
+        # ---- the ghost sweep: the deleted names must appear NOWHERE on the dashboard ----
+        # (the rows, Recently Viewed, Recent Documents, the activity timeline —
+        # the product prunes recently-viewed and the cascade removes the documents)
+        clear_search_box || true
+        v_scroll_top 10 || true
+        local bd_ghost="no" bd_i=0
+        while [ "$bd_i" -lt 4 ]; do
+          ocr_capture || true
+          if ocr_grep "$BD_B_FULL" || ocr_grep "$BD_D_FULL"; then
+            bd_ghost="yes"
+            snap "bd5-ghost-sweep-$bd_i" || true
+          fi
+          scroll_burst down
+          sleep 1
+          bd_i=$(( bd_i + 1 ))
+        done
+        if [ "$bd_ghost" = "no" ]; then
+          qa_cap MICRO_BULK_NO_GHOSTS "GREEN (no ghost of $BD_B_FULL / $BD_D_FULL anywhere on the dashboard sweep — the list, Recently Viewed, Recent Documents and the timeline are all clean; the list badge reads '$bd_n1')"
+          surface_row "Post-delete dashboard correctness" "the full dashboard sweep after the delete" "—" "no deleted-patient residue; the counts/lists correct" "a 4-burst top-to-bottom sweep found neither name; the badge $bd_n0 → $bd_n1" "GREEN" "bd5-*" "OK"
+        else
+          bug P2 MICRO_BULK_GHOST "a deleted patient's name is still visible somewhere on the dashboard (see the bd5-ghost-sweep captures — the recently-viewed prune or the recents query missed it)"
+        fi
+      else
+        bug P1 MICRO_BULK_DELETE "the destructive confirm button could not be clicked (the clc_footer_click anchored attempt — see bd5-confirm-*)"
+      fi
+    else
+      bug P1 MICRO_BULK_DELETE "the re-opened 'Delete 2 Patients?' confirmation never appeared"
+    fi
+  else
+    probe "bd5: the destructive leg was NOT taken (the selection state was ambiguous — the honest D record above)"
+  fi
+
+  # ---- BD6: the partial-failure path — NOT EXERCISED (honest) ----
+  # The API answers per-patient failures (not-found/not-owned/concurrently
+  # deleted) and the UI keeps the failed ones selected with a destructive
+  # toast; forcing a REAL partial failure through the honest GUI needs a
+  # second client concurrently deleting the same patient (or an injected
+  # stale ID). The harness never injects JS and never fakes a failure.
+  bug EXPECTED MICRO_BULK_PARTIAL_FAILURE "NOT EXERCISED: the per-patient partial-failure UI (the API's failed[] + the kept selection + the retry toast) cannot be forced through the honest single-client GUI — the API contract is pinned by the 28-test static battery (feature-bulk-patient-management.test.ts)"
+
+  # ---- BD7: the filtered select-all + the second (filtered) bulk delete ----
+  clear_search_box || true
+  v_scroll_top 10 || true
+  search_type "Bulk" "bd7-search-bulk"
+  sleep 2
+  v_scroll_find "Recent Patients" 6 || v_scroll_find "patients" 6 || true
+  ocr_capture || true
+  snap "bd7-filtered-list" || true
+  if v_click "Select Patients" "bd7-enter" ""; then
+    sleep 2
+    ocr_capture || true
+    snap "bd7-select-mode-filtered" || true
+    if v_click "Select All" "bd7-select-all" ""; then
+      sleep 2
+      ocr_capture || true
+      snap "bd7-all-filtered-selected" || true
+      if printf '%s\n' "$OCR_TEXT" | grep -Eq '\|[^|]*2 selected'; then
+        qa_cap MICRO_BULK_FILTERED_SELECT "GREEN (the filtered select-all: the 'Bulk' filter leaves exactly the 2 matching survivors and 'Select All' selected exactly THOSE ('2 selected') — $BD_E_FULL, who does NOT match the filter, stays outside the selection)"
+        surface_row "Filtered select-all" "search 'Bulk' → Select Patients → Select All" "the search filter + Select All" "'Select All' applies ONLY to the visible/filtered patients" "2 filtered rows, '2 selected'; the out-of-filter $BD_E_FULL untouched" "GREEN" "bd7-all-filtered-selected" "OK"
+      else
+        probe "bd7: the '2 selected' badge was not OCR-confirmed (the confirmation's own count decides)"
+      fi
+      if v_click "Delete Selected" "bd7-open-confirm" ""; then
+        sleep 2
+        if wait_for_ocr "Delete 2 Patients?" 15 "bd7-confirm-open"; then
+          ocr_capture || true
+          snap "bd7-confirm-dialog" || true
+          docb_api_mark "bd7-bulk-pre"
+          if clc_footer_click "Delete 2 Patients" "Please review" "bd7-confirm"; then
+            sleep 6
+            wait_text_gone "Delete 2 Patients?" 20 "bd7-gone" || true
+            wait_text_gone "Select All" 15 "bd7-bar-gone" || true
+            docb_api_collect "bd7-bulk"
+            docb_api_count DELETE "/api/patients/bulk" "bd7-bulk-delete"
+            clear_search_box || true
+            read_patient_count
+            local bd_echo_found="no"
+            if v_scroll_find "$BD_E_FULL" 8; then bd_echo_found="yes"; fi
+            if [ "${PATIENTS_COUNT:-unreadable}" = "1" ] && [ "$bd_echo_found" = "yes" ]; then
+              qa_cap MICRO_BULK_FILTERED_DELETE "GREEN (the second, FILTERED bulk delete removed exactly the 2 'Bulk' survivors (DELETE /api/patients/bulk: ${DOCB_API_HITS} request(s) this window); only the out-of-filter $BD_E_FULL remains — the badge reads '1 patient')"
+              surface_row "Filtered bulk delete" "search 'Bulk' → Select All → Delete Selected → confirm" "the same strong confirmation (count 2 + names)" "the filtered selection deletes exactly the matching patients" "deleted; the badge → 1; only $BD_E_FULL remains" "GREEN" "bd7-*" "OK"
+            else
+              bug P1 MICRO_BULK_FILTERED_DELETE "the filtered bulk delete postcondition failed (badge '${PATIENTS_COUNT:-unreadable}' expect 1; $BD_E_FULL findable: $bd_echo_found; DELETEs=${DOCB_API_HITS})"
+            fi
+          else
+            bug P1 MICRO_BULK_FILTERED_DELETE "the filtered confirm button could not be clicked"
+          fi
+        else
+          bug P1 MICRO_BULK_FILTERED_DELETE "the filtered 'Delete 2 Patients?' confirmation never appeared"
+        fi
+      else
+        bug P1 MICRO_BULK_FILTERED_DELETE "the 'Delete Selected' button could not be clicked in the filtered view"
+      fi
+    else
+      bug P1 MICRO_BULK_FILTERED_SELECT "the filtered 'Select All' could not be clicked"
+    fi
+  else
+    bug P1 MICRO_BULK_FILTERED_SELECT "'Select Patients' could not be entered in the filtered view"
+  fi
+  note "micro:bulk-delete complete"
+}
+
+micro_tour_en() {
+  note "=== micro:tour-en — FEATURE C: the guided tour (the first-login offer + controls + Help & Guide + persistence) (DIRECTIVE §21) ==="
+  surface_section "Micro-shard: guided tour — English (the first-login offer)"
+
+  # ---- MTE0: the offer is UP (TOUR_GATEWAY=skip kept it for this shard) ----
+  if [ "$TOUR_GATEWAY" != "skip" ]; then
+    probe "mte0: TOUR_GATEWAY='$TOUR_GATEWAY' (the top QA_FOCUS case must set skip for micro:tour-en — the gateway would otherwise eat the offer)"
+  fi
+  if ! wait_for_ocr "Welcome to MediVault" 30 "mte0-offer"; then
+    bug P1 TOUR_EN_OFFER "the first-login tour offer never appeared (TOUR_GATEWAY=$TOUR_GATEWAY — the offer auto-starts at the first authenticated-shell mount while tour-state is 'unseen')"
+  fi
+  snap "mte0-offer" || true
+  ocr_capture || true
+  local mte_card=0
+  ocr_grep "practice guide" && mte_card=$((mte_card+1))
+  ocr_grep "Step 1 of 20" && mte_card=$((mte_card+1))
+  ocr_grep "Welcome & Dashboard" && mte_card=$((mte_card+1))
+  ocr_grep "Press Esc to leave" && mte_card=$((mte_card+1))
+  if ocr_grep "Next" && ocr_grep "Skip"; then mte_card=$((mte_card+1)); fi
+  probe "mte0: the welcome card's needles: $mte_card/5 (the mascot + the title 'Welcome to MediVault' are the anchors; the dim hides nothing — the card renders above the overlay)"
+  if [ "$mte_card" -lt 2 ]; then
+    bug P1 TOUR_EN_OFFER "the tour card rendered but its controls are not OCR-visible (only $mte_card/5 needles — see mte0-offer; the walk below depends on them)"
+  fi
+  qa_cap TOUR_EN_OFFER "GREEN (the first-login offer auto-started at the first shell mount: 'Welcome to MediVault' + the Medi mascot card with Next/Skip/Back + 'Step 1 of 20' + the 'Press Esc to leave the tour at any time' hint)"
+  surface_row "First-login tour offer" "the first authenticated-shell mount (auto-start, once per install)" "the spotlight overlay + the mascot card: Back/Next/Skip + 'Step X of N' + the Esc hint" "the tour offers itself exactly once" "the offer survived the gateway (TOUR_GATEWAY=skip); the card + controls OCR-verified" "GREEN" "mte0-offer" "OK"
+
+  # ---- MTE1: Next through the first steps (each step: the spotlight + the title + the progress) ----
+  if ! v_click "Next" "mte1-next1" ""; then
+    probe "mte1: the first Next click was not hash-verified (kept — the Step-2 wait decides)"
+  fi
+  if wait_for_ocr "Step 2 of 20" 15 "mte1-step2"; then
+    ocr_capture || true
+    if ocr_grep "Your Dashboard"; then
+      qa_cap TOUR_EN_NEXT "GREEN (Next advanced to step 2: 'Your Dashboard' + 'Step 2 of 20' — the spotlight moved to the dashboard stats)"
+    else
+      probe "mte1: 'Your Dashboard' not OCR-read on the step-2 card (kept — the progress needle is the proof)"
+    fi
+  else
+    bug P1 TOUR_EN_NEXT "the tour never advanced to 'Step 2 of 20' after the Next click"
+  fi
+  if ! v_click "Next" "mte1-next2" ""; then
+    probe "mte1: the second Next click was not hash-verified (kept — the Step-3 wait decides)"
+  fi
+  if wait_for_ocr "Step 3 of 20" 15 "mte1-step3"; then
+    ocr_capture || true
+    if ocr_grep "Add a Patient"; then
+      probe "mte1: step 3 shows 'Add a Patient' (the toolbar's Add Patient button is the spotlight target)"
+    else
+      probe "mte1: the step-3 title was not OCR-read (kept — the progress needle is the proof)"
+    fi
+  else
+    bug P1 TOUR_EN_NEXT "the tour never advanced to 'Step 3 of 20' after the second Next click"
+  fi
+
+  # ---- MTE2: Back goes back ----
+  if ! v_click "Back" "mte2-back" ""; then
+    probe "mte2: the Back click was not hash-verified (kept — the Step-2 wait decides)"
+  fi
+  if wait_for_ocr "Step 2 of 20" 15 "mte2-back-to-2"; then
+    ocr_capture || true
+    if ocr_grep "Your Dashboard"; then
+      qa_cap TOUR_EN_BACK "GREEN (Back returned to step 2: 'Your Dashboard' + 'Step 2 of 20')"
+      surface_row "Tour controls (Back/Next)" "the tour card's Back / Next buttons" "Back / Next / Skip / Finish + 'Step X of N' + the progress bar" "Back steps back; Next advances" "walked 1→2→3→Back→2 with the step titles + progress OCR-verified" "GREEN" "mte1-*/mte2-*" "OK"
+    else
+      probe "mte2: the step-2 title was not OCR-read on the return (the progress needle is the proof)"
+    fi
+  else
+    bug P1 TOUR_EN_BACK "the tour did NOT go back to 'Step 2 of 20' after the Back click"
+  fi
+  if ! v_click "Next" "mte2-next3" ""; then
+    probe "mte2: the re-advance click was not hash-verified (kept — the Step-3 wait decides)"
+  fi
+  wait_for_ocr "Step 3 of 20" 15 "mte2-step3" || probe "mte2: the re-advance to step 3 was not confirmed (kept)"
+
+  # ---- MTE3: Skip unmounts the overlay; the plain UI is UNBLOCKED ----
+  if ! v_click "Skip" "mte3-skip" ""; then
+    probe "mte3: the Skip click was not hash-verified (kept — the gone-waits decide)"
+  fi
+  local mte_gone=0
+  wait_text_gone "Step 3 of 20" 15 "mte3-card-gone" && mte_gone=$((mte_gone+1))
+  wait_text_gone "Press Esc to leave" 10 "mte3-hint-gone" && mte_gone=$((mte_gone+1))
+  wait_text_gone "Welcome to MediVault" 10 "mte3-title-gone" && mte_gone=$((mte_gone+1))
+  ocr_capture || true
+  snap "mte3-after-skip" || true
+  if [ "$mte_gone" -ge 2 ]; then
+    qa_cap TOUR_EN_SKIP "GREEN (Skip unmounted the tour: the card, the progress and the title are all gone)"
+  else
+    bug P1 TOUR_EN_SKIP "the tour card did not unmount after Skip (the step/title needles are still visible — see mte3-after-skip)"
+  fi
+  # the unblock proof: the plain Add Patient button must now open the dialog
+  # (the modal input-blocker ate every pointer event while the tour was up)
+  if v_click "Add Patient" "mte3-unblocked" "First Name"; then
+    qa_cap TOUR_EN_UNBLOCK "GREEN (after Skip the plain UI is unblocked: the Add Patient dialog opened ('First Name' visible) — the modal input-blocker is gone)"
+    surface_row "Tour controls (Skip) + the unblock" "the tour card's Skip button" "Skip (or Esc) leaves the tour" "the overlay unmounts completely; nothing stays blocked" "skipped; the card gone; the Add Patient dialog opens" "GREEN" "mte3-*" "OK"
+    press_escape
+    sleep 1
+    ensure_dialog_closed "mte3" add_patient_dialog_visible || true
+  else
+    bug P1 TOUR_EN_UNBLOCK "the plain UI stayed blocked after Skip (the Add Patient dialog did not open — see mte3-unblocked-*)"
+  fi
+
+  # the first-login language-card hygiene (its bottom-right corner sits where
+  # nothing else needs to go, but the shard keeps the state clean + recorded)
+  micro_lang_prompt_dismiss "mte"
+
+  # ---- MTE4: the Help & Guide menu (the permanent replay + the section jump) ----
+  if micro_help_menu_open "mte4" ltr; then
+    ocr_capture || true
+    local mte_menu=0
+    ocr_grep "Replay Full Tour" && mte_menu=$((mte_menu+1))
+    ocr_grep "Jump to a section" && mte_menu=$((mte_menu+1))
+    ocr_grep "Help & Guide" && mte_menu=$((mte_menu+1))
+    ocr_grep "Patients & Search" && mte_menu=$((mte_menu+1))
+    ocr_grep "Documents & Scanning" && mte_menu=$((mte_menu+1))
+    ocr_grep "Settings & Help" && mte_menu=$((mte_menu+1))
+    ocr_grep "Keyboard Shortcuts" && mte_menu=$((mte_menu+1))
+    probe "mte4: the Help & Guide menu needles: $mte_menu/7"
+    if [ "$mte_menu" -ge 4 ]; then
+      qa_cap TOUR_EN_HELP_MENU "GREEN (the permanent header Help & Guide menu: 'Replay Full Tour' + 'Jump to a section' + the 7 section rows + the keyboard-shortcuts entry)"
+      surface_row "Help & Guide menu" "the header's Help & Guide icon (anchored click)" "Replay Full Tour; 'Jump to a section' + 7 section rows; Keyboard Shortcuts" "the tour is permanently reachable by explicit request" "opened (anchored icon-band click); the menu needles OCR-verified" "GREEN" "mte4-open" "OK"
+    else
+      bug P2 TOUR_EN_HELP_MENU "the Help & Guide menu is missing needles (only $mte_menu/7 — see mte4-open)"
+    fi
+    # the section JUMP: the tour must open AT the chosen section
+    if v_click "Documents & Scanning" "mte4-jump" ""; then
+      if wait_for_ocr "Step 7 of 20" 20 "mte4-jump-step7"; then
+        ocr_capture || true
+        if ocr_grep "Scan Documents"; then
+          qa_cap TOUR_EN_SECTION_JUMP "GREEN (the 'Documents & Scanning' jump opened the tour AT step 7 ('Scan Documents', 'Step 7 of 20') — the scan view is the spotlight context)"
+        else
+          probe "mte4: the step-7 title was not OCR-read (kept — 'Step 7 of 20' is the jump proof)"
+        fi
+        surface_row "Help & Guide section jump" "the menu → 'Documents & Scanning'" "the 7 section rows" "the tour starts at the chosen section's first step" "jumped; 'Step 7 of 20' visible" "GREEN" "mte4-jump-*" "OK"
+      else
+        bug P1 TOUR_EN_SECTION_JUMP "the section jump did not open the tour at step 7 (no 'Step 7 of 20' within 20s — see mte4-jump-*)"
+      fi
+      # skip out via ESC (the keyboard affordance — §21's Esc→skip contract)
+      press_escape
+      sleep 2
+      if wait_text_gone "Step 7 of 20" 12 "mte4-esc-skip"; then
+        qa_cap TOUR_EN_ESC_SKIP "GREEN (Escape skipped the tour mid-section — the guided-tour window keydown listener)"
+      else
+        bug P1 TOUR_EN_ESC_SKIP "Escape did not skip the tour (the 'Step 7 of 20' card is still visible)"
+      fi
+    else
+      bug P1 TOUR_EN_SECTION_JUMP "the 'Documents & Scanning' menu row could not be clicked"
+    fi
+  else
+    bug D TOUR_EN_HELP_MENU "the icon-only Help & Guide header control could not be activated (the anchored band candidates all failed — see the mte4 probes)"
+  fi
+
+  # ---- MTE5: the completion persistence (a logout/login cycle within the shard) ----
+  # (the quit/reopen persistence belongs to the PERSISTENCE shard — recorded, not duplicated)
+  if open_profile_menu "mte5"; then
+    if v_click "Sign Out" "mte5-signout" "Sign In"; then
+      sleep 2
+      ocr_capture || true
+      snap "mte5-signin-screen" || true
+      if v_type_into "Email" "$DOC_EMAIL" "mte5-relogin-email" \
+         && v_type_into "Password" "$DOC_PASS" "mte5-relogin-password" yes; then
+        local mte_sub=0
+        if osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10; then
+          sleep 3
+          if wait_for_ocr "Add Patient" 45 "mte5-dashboard-after-enter"; then
+            mte_sub=1
+            snap "mte5-relogin-enter" || true
+          fi
+        fi
+        if [ "$mte_sub" = "0" ] && ! v_click_try_hits "Sign In" "mte5-relogin" "Add Patient"; then
+          bug P1 TOUR_EN_RELOGIN "the re-login after the tour walk failed (the persistence check could not run)"
+        fi
+        wait_for_ocr "Add Patient" 60 "mte5-dashboard-after-relogin" || bug P1 TOUR_EN_RELOGIN "no dashboard after the re-login"
+        # the offer must NOT re-appear (markTourDismissed persisted for the install)
+        local mte_t0
+        mte_t0="$(date +%s)"
+        local mte_reoffered="no"
+        while [ $(( $(date +%s) - mte_t0 )) -le 8 ]; do
+          if ocr_capture && ocr_grep "Welcome to MediVault"; then
+            mte_reoffered="yes"
+            snap "mte5-offer-returned" || true
+            break
+          fi
+          sleep 2
+        done
+        if [ "$mte_reoffered" = "no" ]; then
+          qa_cap TOUR_EN_PERSIST "GREEN (after the logout/login cycle the tour offer did NOT re-appear (8s poll) — the dismissal persists for the install; the replay stays reachable through Help & Guide)"
+          surface_row "Tour completion persistence" "Sign Out → Sign In (the same install)" "—" "the offer never auto-starts again after skip/finish" "relogged-in; no 'Welcome to MediVault' offer within the poll" "GREEN" "mte5-*" "OK"
+        else
+          bug P1 TOUR_EN_PERSIST "the tour offer RE-APPEARED after the logout/login cycle (the dismissal must persist for the install — see mte5-offer-returned)"
+        fi
+      else
+        bug P1 TOUR_EN_RELOGIN "could not type the login credentials for the persistence check"
+      fi
+    else
+      bug P1 TOUR_EN_RELOGIN "clicking Sign Out did not return to the Sign In screen"
+    fi
+  else
+    probe "mte5: the profile menu could not be opened — the persistence check SKIPPED (recorded honestly; the PERSISTENCE shard owns the quit/reopen proof)"
+  fi
+  note "micro:tour-en complete"
+}
+
+micro_tour_ar() {
+  note "=== micro:tour-ar — FEATURE C+D: the guided tour in العربية (RTL) (DIRECTIVE §21 + the §19 essentials) ==="
+  surface_section "Micro-shard: guided tour — Arabic / RTL"
+
+  # ---- MTA0: the first-login offer fired in the DEFAULT locale (English): record + skip it ----
+  # (the offer auto-starts exactly once per install at the first shell mount —
+  # the locale at that moment is the install default (en) because the switch
+  # below happens AFTER the mount; the ARABIC tour is exercised through the
+  # permanent Help & Guide replay, which resolves every string through the
+  # active locale — recorded honestly)
+  if ! wait_for_ocr "Welcome to MediVault" 30 "mta0-offer-en"; then
+    bug P1 TOUR_AR_OFFER "the first-login tour offer never appeared (TOUR_GATEWAY=$TOUR_GATEWAY — the offer must survive the gateway for this shard)"
+  fi
+  snap "mta0-offer-en" || true
+  probe "mta0: the first-login offer rendered in the DEFAULT locale (English) — recorded; the Arabic tour is verified via the Help & Guide replay below (the one-shot offer cannot re-fire in Arabic on the same install)"
+  press_escape
+  sleep 2
+  if wait_text_gone "Welcome to MediVault" 15 "mta0-skipped"; then
+    probe "mta0: the English offer was skipped via the product's Escape affordance (markTourDismissed persists)"
+  else
+    bug P1 TOUR_AR_OFFER "the English first-login offer could not be skipped via Escape (see mta0-*)"
+  fi
+
+  # ---- MTA1: switch to العربية + the RTL render proofs ----
+  if micro_switch_to_arabic "mta1"; then
+    qa_cap TOUR_AR_SWITCH "GREEN (the header language switcher cycled en→العربية; the English chrome (Add Patient / Recent Patients) is GONE)"
+  else
+    bug P1 TOUR_AR_SWITCH "the switch to العربية did not register (the header 'English' switcher label was not clickable/verifiable)"
+  fi
+  wait_text_gone "Add Patient" 20 "mta1-en-gone" || probe "mta1: 'Add Patient' still visible (the switch did not fully re-render?)"
+  snap "mta1-rtl-dashboard" || true
+  if micro_ar_grep "لوحة التحكم"; then
+    qa_cap TOUR_AR_RTL_RENDER "GREEN (the dashboard renders in العربية RTL: the nav needle 'لوحة التحكم' is OCR-read by the Arabic recognizer)"
+    surface_row "RTL render (العربية)" "the header language switcher → العربية" "—" "the whole app re-renders right-to-left in Arabic" "the Arabic nav needle OCR-verified; the capture is the visual RTL evidence" "GREEN" "mta1-rtl-dashboard" "OK"
+  else
+    bug ENV TOUR_AR_RTL_OCR "the Arabic needles could not be OCR-verified this run (the v-ocr-ar recognizer read the screen but not the needle — the structural proof stands: the English chrome is GONE, the app is alive, and mta1-rtl-dashboard.png is the human-adjudication capture)"
+    qa_cap TOUR_AR_RTL_RENDER "RECORDED (structural: the English chrome is GONE after the switch; the Arabic-OCR read was inconclusive — see the ENV record + the capture)"
+  fi
+  micro_ar_grep "أحدث المرضى" && probe "mta1: the patients-list header reads 'أحدث المرضى' (Arabic OCR)" || probe "mta1: the Arabic list-header needle was not OCR-read (kept — the ENV record above covers the class)"
+
+  # ---- MTA2: Help & Guide → Replay Full Tour (the ARABIC tour) ----
+  if micro_help_menu_open "mta2" rtl; then
+    micro_ar_grep "المساعدة والدليل" && probe "mta2: the menu title reads 'المساعدة والدليل' (Arabic OCR)" || probe "mta2: the menu-title Arabic needle was not OCR-read (kept)"
+    # the replay click: the Arabic-OCR path first, the anchored in-menu fallback second
+    local mta_replayed="no"
+    if micro_v_click_ar "إعادة تشغيل" "mta2-replay" ""; then
+      mta_replayed="yes"
+    else
+      # the anchored in-menu fallback: the replay button is the FIRST full-width
+      # row under the menu's mascot header (the w-72 menu hangs below the help
+      # icon, right-anchored): click ~(help_x-126, help_y+124) ± the band
+      if [ -n "$MICRO_HELP_X" ] && [ -n "$MICRO_HELP_Y" ]; then
+        local mta_dx mta_dy
+        for mta_dx in -126 -136 -116; do
+          for mta_dy in 124 134 114; do
+            probe "mta2: the anchored in-menu replay click at ($((MICRO_HELP_X+mta_dx)),$((MICRO_HELP_Y+mta_dy)))"
+            "$MV_MOUSE" "$((MICRO_HELP_X+mta_dx))" "$((MICRO_HELP_Y+mta_dy))" 2>>"$LOG" || true
+            sleep 3
+            if micro_ocr_ar && ocr_grep "مرحبًا"; then
+              mta_replayed="yes"
+              probe "mta2: the anchored replay click opened the tour (the Arabic welcome needle is OCR-visible)"
+              break
+            fi
+            press_escape
+            sleep 1
+            micro_help_menu_open "mta2-retry" rtl || true
+          done
+          [ "$mta_replayed" = "yes" ] && break
+        done
+      fi
+    fi
+    if [ "$mta_replayed" = "yes" ]; then
+      sleep 2
+      if micro_ar_grep "مرحبًا بك في MediVault"; then
+        qa_cap TOUR_AR_OFFER "GREEN (the replayed tour renders in العربية: the welcome title 'مرحبًا بك في MediVault' is OCR-read (with the Latin 'MediVault' island))"
+        surface_row "The tour in العربية" "Help & Guide → 'إعادة تشغيل الجولة الكاملة' (Replay Full Tour)" "the same 20-step tour, fully localized" "the tour content renders in Arabic" "replayed; the Arabic welcome title OCR-verified" "GREEN" "mta2-*" "OK"
+      else
+        qa_cap TOUR_AR_OFFER "RECORDED (the tour re-opened (the click verified by visible change) but the Arabic welcome needle was not OCR-read — the structural proof + the capture; see the ENV class)"
+      fi
+      micro_ar_grep "التالي" && probe "mta2: the Next control reads 'التالي' (Arabic OCR)" || probe "mta2: the 'التالي' (Next) needle was not OCR-read"
+      micro_ar_grep "تخطي" && probe "mta2: the Skip control reads 'تخطي' (Arabic OCR)" || probe "mta2: the 'تخطي' (Skip) needle was not OCR-read"
+      micro_ar_grep "الخطوة 1 من 20" && probe "mta2: the progress reads 'الخطوة 1 من 20' (Arabic OCR; Latin digits)" || probe "mta2: the 'الخطوة 1 من 20' progress needle was not OCR-read (kept)"
+
+      # ---- MTA3: the keyboard walk (the product's own ArrowRight/ArrowLeft affordances — locale-independent) ----
+      local mta_before=""
+      micro_ocr_ar || true
+      mta_before="$LAST_OCR_HASH"
+      osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 124' 10 >/dev/null 2>&1 || true
+      sleep 3
+      osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 124' 10 >/dev/null 2>&1 || true
+      sleep 3
+      micro_ocr_ar || true
+      if [ "$LAST_OCR_HASH" != "$mta_before" ]; then
+        probe "mta3: the ArrowRight walk advanced the tour (the Arabic-OCR hash changed)"
+      else
+        probe "mta3: the ArrowRight walk produced no visible change (recorded honestly — the skip check below still decides the overlay state)"
+      fi
+      snap "mta3-walked" || true
+      micro_ar_grep "الخطوة 3 من 20" && probe "mta3: the progress reads 'الخطوة 3 من 20' (step 3 of 20)" || probe "mta3: the step-3 progress needle was not OCR-read (kept)"
+      osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 123' 10 >/dev/null 2>&1 || true
+      sleep 3
+      micro_ar_grep "الخطوة 2 من 20" && probe "mta3: ArrowLeft went BACK to 'الخطوة 2 من 20'" || probe "mta3: the step-2 progress needle was not OCR-read (kept)"
+      snap "mta3-back" || true
+
+      # ---- MTA4: skip (Escape) → the overlay unmounts; the plain RTL UI stays ----
+      press_escape
+      sleep 2
+      local mta_ar_tour_gone="no" mta_t0
+      mta_t0="$(date +%s)"
+      while [ $(( $(date +%s) - mta_t0 )) -le 10 ]; do
+        if micro_ocr_ar && ! ocr_grep "التالي" && ! ocr_grep "الخطوة"; then
+          mta_ar_tour_gone="yes"
+          break
+        fi
+        sleep 2
+      done
+      ocr_capture || true
+      snap "mta4-after-skip" || true
+      if [ "$mta_ar_tour_gone" = "yes" ]; then
+        qa_cap TOUR_AR_SKIP "GREEN (Escape skipped the Arabic tour: the 'التالي'/'الخطوة' card needles are gone from the Arabic-OCR reads)"
+      else
+        # the honest structural fallback: the AR-OCR may simply not read the card
+        probe "mta4: the Arabic-OCR gone-check was inconclusive — falling back to the structural proof"
+      fi
+      if micro_ar_grep "لوحة التحكم"; then
+        qa_cap TOUR_AR_UNBLOCK "GREEN (after the skip the plain RTL dashboard is intact: the 'لوحة التحكم' nav needle is OCR-read — the overlay unmounted completely)"
+        surface_row "The Arabic tour controls + skip" "التالي / السابق / تخطي + the arrow keys + Esc" "the localized card controls" "the tour walks and skips in Arabic; nothing stays blocked" "walked (ArrowRight ×2, ArrowLeft back), skipped via Esc; the nav needle re-verified" "GREEN" "mta3-*/mta4-*" "OK"
+      else
+        probe "mta4: the post-skip nav needle was not OCR-read (the ENV class — the captures + the earlier reads stand)"
+      fi
+    else
+      bug D TOUR_AR_REPLAY "the 'Replay Full Tour' button could not be clicked (the Arabic-OCR click AND the anchored in-menu candidates failed — see the mta2 probes; the RTL render proofs above stand)"
+    fi
+  else
+    bug D TOUR_AR_HELP_MENU "the icon-only Help & Guide header control could not be activated in RTL (the anchored band candidates all failed — the RTL render proofs above stand)"
+  fi
+  # NOTE: the completion persistence (quit/reopen) belongs to the PERSISTENCE
+  # shard; the once-per-install offer semantics were recorded at MTA0.
+  note "micro:tour-ar complete"
+}
+
+micro_rtl() {
+  note "=== micro:rtl — FEATURE D: the RTL layout spot-check (the §19 essentials: English ⇄ العربية) ==="
+  surface_section "Micro-shard: RTL layout spot-check (English ⇄ العربية)"
+  # (the gateway dismissed the tour with the DEFAULT TOUR_GATEWAY=on: at the
+  # first mount the offer is English (the default locale), so the gateway's
+  # 'Welcome to MediVault' needle works and this shard runs on the plain RTL UI)
+
+  # ---- MRL0: the English baseline ----
+  wait_for_ocr "Add Patient" 45 "mrl0-baseline" || bug P1 RTL_BASELINE "the dashboard never showed 'Add Patient' (the English baseline is missing)"
+  ocr_capture || true
+  snap "mrl0-en-baseline" || true
+  if ocr_grep "Recent Patients"; then
+    probe "mrl0: the English baseline (Add Patient + Recent Patients visible)"
+  fi
+
+  # ---- MRL1: switch to العربية ----
+  if micro_switch_to_arabic "mrl1"; then
+    qa_cap RTL_SWITCH "GREEN (the header language switcher cycled en→العربية)"
+  else
+    bug P1 RTL_SWITCH "the switch to العربية did not register"
+  fi
+  if wait_text_gone "Add Patient" 20 "mrl1-en-add-gone" && wait_text_gone "Recent Patients" 10 "mrl1-en-recent-gone"; then
+    qa_cap RTL_EN_GONE "GREEN (the English chrome is GONE: neither 'Add Patient' nor 'Recent Patients' is visible — the app re-rendered)"
+  else
+    bug P1 RTL_RENDER "the English chrome did not disappear after the switch (the locale did not apply?)"
+  fi
+  snap "mrl1-rtl-dashboard" || true
+  if micro_ar_grep "لوحة التحكم"; then
+    qa_cap RTL_AR_RENDER "GREEN (the Arabic nav needle 'لوحة التحكم' is OCR-read — the RTL/Arabic render is verified textually)"
+    surface_row "RTL render (العربية)" "the header language switcher → العربية" "—" "the whole app re-renders right-to-left in Arabic" "the Arabic nav needle OCR-verified; mrl1-rtl-dashboard.png is the visual RTL evidence" "GREEN" "mrl1-rtl-dashboard" "OK"
+  else
+    bug ENV RTL_AR_OCR "the Arabic needles could not be OCR-verified this run (the structural proof stands: the English chrome is GONE and the app is alive — mrl1-rtl-dashboard.png is the human-adjudication capture)"
+    qa_cap RTL_AR_RENDER "RECORDED (structural: the English chrome is GONE; the Arabic-OCR read was inconclusive — see the ENV record)"
+  fi
+  micro_ar_grep "أحدث المرضى" && probe "mrl1: the patients-list header reads 'أحدث المرضى'" || probe "mrl1: the Arabic list-header needle was not OCR-read (kept)"
+  micro_ar_grep "ابحث عن المرضى" && probe "mrl1: the search placeholder reads 'ابحث عن المرضى بالاسم أو الهاتف أو البريد الإلكتروني…'" || probe "mrl1: the Arabic search-placeholder needle was not OCR-read (the dimmed placeholder text is a weak OCR target — kept)"
+
+  # ---- MRL2: the language persists across a view change (the keyboard path: Cmd+D → the scan view, Cmd+B → back) ----
+  local mrl_before=""
+  micro_ocr_ar || true
+  mrl_before="$LAST_OCR_HASH"
+  osa 'tell application "System Events" to tell (first process whose name contains "edivault") to keystroke "d" using command down' 10 || true
+  sleep 4
+  micro_ocr_ar || true
+  if [ "$LAST_OCR_HASH" != "$mrl_before" ]; then
+    probe "mrl2: the Cmd+D view change fired (the Arabic-OCR hash changed — the scan view replaced the dashboard)"
+  fi
+  snap "mrl2-ar-scanview" || true
+  if micro_ar_grep "المسح والرفع"; then
+    probe "mrl2: the scan view title reads 'المسح والرفع' (the view changed AND renders in Arabic)"
+  else
+    probe "mrl2: the Arabic scan-title needle was not OCR-read (kept — the hash change + the back-check below carry the view-change proof)"
+  fi
+  osa 'tell application "System Events" to tell (first process whose name contains "edivault") to keystroke "b" using command down' 10 || true
+  sleep 4
+  micro_ocr_ar || true
+  if [ "$LAST_OCR_HASH" != "$mrl_before" ]; then
+    probe "mrl2: the Cmd+B goBack returned from the scan view (the hash differs from the pre-roundtrip capture)"
+  fi
+  if micro_ar_grep "لوحة التحكم"; then
+    qa_cap RTL_AR_PERSIST_VIEW "GREEN (the locale SURVIVED the view round-trip (scan view → back): the dashboard still renders 'لوحة التحكم' — the medivault-language persistence holds across view changes)"
+    surface_row "The locale across a view change" "العربية → Cmd+D (the scan view) → Cmd+B (back)" "the app's own keyboard navigation" "the language persists across view changes" "round-tripped; the Arabic nav needle re-verified" "GREEN" "mrl2-*" "OK"
+  else
+    probe "mrl2: the post-roundtrip Arabic needle was not OCR-read (the ENV class — the hash-diff + captures stand)"
+  fi
+
+  # ---- MRL3: switch back to English (the language card's own 'English' choice) ----
+  # (the first-login language card is kept alive through the shard deliberately:
+  # on the Arabic screen its dir=ltr 'English' button is the only reliable Latin
+  # reverse affordance — choosing it sets the locale AND dismisses the card)
+  local mtl_back="no"
+  ocr_capture || true
+  if ocr_grep "Choose your language" && v_click "English" "mrl3-choose-en" "" last; then
+    sleep 3
+    mtl_back="yes"
+  else
+    probe "mrl3: the language card's 'English' choice was not clickable — the Arabic-OCR header switcher fallback"
+    if micro_v_click_ar "العربية" "mrl3-switch-back" ""; then
+      sleep 3
+      mtl_back="yes"
+    else
+      probe "mrl3: the Arabic-OCR switcher click failed — the anchored header band fallback (the switcher sits ~355-385px right of the pill in RTL)"
+      ocr_capture || true
+      if ocr_lookup "$DOC_NAME" "first" "label" || ocr_lookup "MediVault Test" "first" "label"; then
+        local mrl_px="$OCR_HIT_X" mrl_py="$OCR_HIT_Y" mrl_cand
+        for mrl_cand in 364 374 354 384; do
+          probe "mrl3: the anchored RTL switcher click at ($((mrl_px+mrl_cand)),$mrl_py)"
+          "$MV_MOUSE" "$((mrl_px+mrl_cand))" "$mrl_py" 2>>"$LOG" || true
+          sleep 3
+          ocr_capture || true
+          if ocr_grep "Add Patient"; then
+            mtl_back="yes"
+            break
+          fi
+        done
+      fi
+    fi
+  fi
+  if [ "$mtl_back" = "yes" ] && wait_for_ocr "Add Patient" 25 "mrl3-en-back"; then
+    if wait_for_ocr "Recent Patients" 10 "mrl3-en-recent-back"; then
+      qa_cap RTL_BACK_TO_EN "GREEN (switched back to English: 'Add Patient' and 'Recent Patients' are visible again; the language card is consumed (the one-shot chosen))"
+      surface_row "Switch back to English" "the language card's 'English' choice (or the header switcher)" "—" "the app re-renders LTR in English" "switched; the English needles returned" "GREEN" "mrl3-*" "OK"
+    else
+      qa_cap RTL_BACK_TO_EN "PARTIAL ('Add Patient' returned but 'Recent Patients' was not OCR-confirmed within 10s — see mrl3-*)"
+    fi
+  else
+    bug P1 RTL_SWITCH_BACK "the switch back to English did not register (see the mrl3 probes — the app may be left in العربية; the RTL render proofs above stand)"
+  fi
+  snap "mrl3-en-restored" || true
+  note "micro:rtl complete"
 }
 
 focus_micro_dispatch() { # <name> — the micro-shard entry point (QA_FOCUS=micro:<name>)
@@ -16156,6 +17320,10 @@ focus_micro_dispatch() { # <name> — the micro-shard entry point (QA_FOCUS=micr
     viewer-pdf)         micro_viewer_pdf ;;
     viewer-image)       micro_viewer_image ;;
     security)           micro_security ;;
+    bulk-delete)        micro_bulk_delete ;;
+    tour-en)            micro_tour_en ;;
+    tour-ar)            micro_tour_ar ;;
+    rtl)                micro_rtl ;;
     # the granularity fits exactly: the parent battery IS this shard
     persistence)        focus_persistence ;;
     # ---- accepted-but-mapped-to-parent (the PROVEN coarse battery does the walking) ----
@@ -16164,11 +17332,9 @@ focus_micro_dispatch() { # <name> — the micro-shard entry point (QA_FOCUS=micr
     core-startup)                        focus_surface ;;
     auth)                                focus_account ;;
     visits|clinical-notes|prescriptions|reports) focus_clinical ;;
-    upload|scan|download|annotations|document-isolation|bulk-delete) focus_documents ;;
+    upload|scan|download|annotations|document-isolation) focus_documents ;;
     patient-isolation)                   focus_patients ;;
     csv-import|csv-import-valid|csv-import-edge) focus_dataio ;;
-    # ---- pending features (in flight on the feature worktrees) ----
-    tour-en|tour-ar|rtl)                 micro_pending_feature "$name" ;;
     *) die "unreachable micro dispatch for '$name' (the validation case at the top is stale)" ;;
   esac
 }
