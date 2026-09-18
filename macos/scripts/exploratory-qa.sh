@@ -2603,7 +2603,7 @@ if [ "$SUBMITTED" = "0" ]; then
         # it); the click fallback is unnecessary. Fail-closed: the
         # dashboard-after-setup wait below still must confirm it.
         probe "the setup submit had already completed (the dashboard was behind the tour offer; no click fallback needed)"
-      elif sysdialog_dismiss "10-storm-refill" && ocr_grep "Create Your Account" && setup_fill_form "$DOC_NAME" "$DOC_EMAIL" "$DOC_PASS" "$DOC_PASS" "09-refill"; then
+      elif sysdialog_dismiss "10-storm-refill" && ocr_grep "Full Name" && setup_fill_form "$DOC_NAME" "$DOC_EMAIL" "$DOC_PASS" "$DOC_PASS" "09-refill"; then
         # (run 35386829330) the first-boot STORM (FaceTime dialog → the Notes
         # welcome cascade) can interrupt the typing AND swallow the submit
         # Return — the fields may be incomplete and the submit went to a
@@ -2646,7 +2646,10 @@ if ! wait_for_ocr "Add Patient" 90 "dashboard-after-setup"; then
   # dashboard never appears because the form REFUSED. When the setup form
   # is still up, the refill is the honest recovery (idempotent clear=yes).
   ocr_capture || true
-  if ocr_grep "Create Your Account"; then
+  # (run 35393978487) the OCR reads the submit button variously as 'Create
+  # Your Account' / 'Create Account & Start' — the stable form-presence
+  # needle is the FIELD LABEL ('Full Name' — the setup_form_visible idiom)
+  if ocr_grep "Full Name"; then
     probe "dashboard-after-setup: the setup form is STILL UP (validation errors visible — the storm likely ate the masked-field typing) — refilling once"
     if setup_fill_form "$DOC_NAME" "$DOC_EMAIL" "$DOC_PASS" "$DOC_PASS" "09-refill-final"; then
       osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10 || true
