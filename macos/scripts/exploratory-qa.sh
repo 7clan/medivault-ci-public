@@ -2070,6 +2070,11 @@ else
 fi
 snap "08-account-setup-screen" || true
 
+# the deterministic storm weathering: the first-boot tour window lands
+# exactly around this point (~90-120s into the session) — ride it out
+# BEFORE the setup-validation suite or GATEWAY 6 touches the form
+storm_weather "post-handoff"
+
 # SURFACE RECORD: the account setup form (BEFORE consuming it).
 record_inventory "account setup form (Create Your Account)"
 surface_section "Account setup form (API-served origin, one-time)"
@@ -2155,6 +2160,36 @@ setup_form_alive() { # is the one-time setup form still on screen?
 # clear=yes — Cmd+A + Backspace before typing — so residual probe values
 # can never be appended to (run 2's "MediVault Test DoctorMediVault Test
 # Doctor" concatenation was the symptom).
+# (runs 35386829330/35389185554/35390220206) the macOS FIRST-BOOT STORM: the
+# runner generation raises the FaceTime modal → the Notes welcome tour →
+# (any stray keystroke) the Notes main window + the 'Turn On iCloud' modal
+# — landing ~90-120s into every fresh session, exactly while the setup form
+# is being filled. The per-step sysdialog recovery handles strays; the
+# WEATHERING below rides the storm out BEFORE any form interaction: dismiss
+# everything that appears (the modal Cancel → the storm-app Cancel-first +
+# Cmd+Q, via sysdialog_dismiss's cascade loop) until two consecutive clean
+# checks, bounded. Deterministic — no background interleaving with the
+# harness's own typing.
+storm_weather() { # <stem>
+  local stem="$1" clean=0 i=0 rounds=0
+  note "=== storm weathering ($stem): riding out the macOS first-boot tour window ==="
+  while [ "$i" -lt 30 ] && [ "$clean" -lt 2 ]; do
+    i=$(( i + 1 ))
+    if sysdialog_dismiss "weather-$stem-$i"; then
+      rounds=$(( rounds + 1 ))
+      clean=0
+    else
+      clean=$(( clean + 1 ))
+    fi
+    sleep 5
+  done
+  if [ "$rounds" -gt 0 ]; then
+    qa_cap STORM_WEATHER "RODE OUT ($rounds dismissal round(s) over $(( i * 5 ))s — the macOS first-boot tour window is clear; the setup form interactions proceed on a quiet screen)"
+  else
+    probe "storm weathering ($stem): nothing appeared within $(( i * 5 ))s (the runner was already quiet)"
+  fi
+}
+
 setup_fill_form() { # <name> <email> <password> <confirm> <stem-prefix>
   # A real user's flow: scroll to the form top, fill name/email, scroll the
   # lower fields into view, fill password/confirm. On a compact (error-free)
