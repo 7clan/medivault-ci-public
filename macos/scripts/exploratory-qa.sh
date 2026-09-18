@@ -2711,6 +2711,25 @@ qa_cap ACCOUNT_CREATION "GREEN (account created through the real setup form; the
 snap "10-dashboard" || true
 fi # SETUP_CONSUMED guard around GATEWAY 6
 
+# (run 35399043527) the language prompt mounts WITH THE SHELL — the
+# gateway's tour-call checks all ran BEFORE the dashboard existed (the
+# prompt was not OCR-visible yet), so the batteries fought its bottom-right
+# card through their early probes (the OCR shows 'English' in every
+# inventory). The FOCUS dispatch point is the guaranteed-mounted moment:
+# the dashboard is confirmed, the shell is up — poll briefly for the prompt
+# and answer it 'English' before any battery step runs.
+if [ "$TOUR_GATEWAY" != "skip" ] && [ "$LANG_PROMPT_STATE" != "dismissed" ]; then
+  lp_i=0
+  while [ "$lp_i" -lt 5 ]; do
+    if ocr_capture 2>/dev/null && ocr_grep "Choose your language"; then
+      break
+    fi
+    sleep 2
+    lp_i=$(( lp_i + 1 ))
+  done
+  langprompt_dismiss_if_present "focus-start"
+fi
+
 # =============================================================================
 # FOCUS FRAMEWORK (new) — reusable exploratory helpers
 # =============================================================================
