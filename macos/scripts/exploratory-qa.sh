@@ -3753,6 +3753,18 @@ detail_open_proof() { # <stem> — the real detail-open gate: the LIST always sh
   # (run 34930796719, class D): the query-box focus ring changed the screen
   # hash and v_click's hash-diff verify passed a FALSE 'detail opened' —
   # this gate now ends every open-by-token success path.
+  # (run 35338695096 shard E de1i, BUG-PD25 class D): the PD23 scroll-reset
+  # (038ae05; in-DMG since 6e6a80fc) now opens the patient detail at the
+  # TOP — the identity card fills the first screen and the section markers
+  # sit BELOW the fold, so the in-place needle timed out on a perfectly
+  # opened detail (the evidence: detail top visible, search bar gone,
+  # page cut off mid-stats — the old mid-page landing it relied on was
+  # BUG-PD5, now fixed in the product). Fix: when the list is proven GONE
+  # (search bar absent — the strong gate), spend ONE bounded sweep looking
+  # for a detail-only section marker before failing. Position-safety: every
+  # position-dependent caller restores its own position first
+  # (v_click_edit_pencil + scan_detail_multi scroll up; the document-row
+  # lookups scroll down), so the sweep is caller-safe.
   local stem="$1" i
   for i in 1 2 3 4 5; do
     ocr_capture || true
@@ -3764,6 +3776,15 @@ detail_open_proof() { # <stem> — the real detail-open gate: the LIST always sh
     fi
     sleep 2
   done
+  # BUG-PD25: the PD23 top-open puts the markers below the fold — one
+  # bounded sweep (down) finds them; the search-bar-absent gate above
+  # still binds (a list or query-box state never reaches this sweep)
+  if ! ocr_grep "Search patients"; then
+    if v_scroll_find "Visit History" 8 || v_scroll_find "Prescriptions" 8 || v_scroll_find "Clinical Notes" 8; then
+      probe "detail-proof[$stem]: confirmed — the list search bar is absent and a detail section marker was found after one bounded sweep (the PD23 top-open)"
+      return 0
+    fi
+  fi
   return 1
 }
 

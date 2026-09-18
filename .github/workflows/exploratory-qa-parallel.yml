@@ -211,6 +211,14 @@ jobs:
                "focus_list": "dataio", "artifact": "data-io"},
               {"shard": "E", "label": "macOS save/print + error/recovery",
                "focus_list": "desktop", "artifact": "desktop-print"},
+              # Shard P = the definitive patients regression WITHOUT a new
+              # product build (directive 2026-09-18 §13: artifact readiness
+              # and product acceptance are separate concepts). Opt-in only —
+              # the default shards input (A,B,C,D,E) never selects it, and
+              # the SOURCE patients run stays authoritative while it lives
+              # (dispatch P only for a D-class rerun of the SAME frozen DMG)
+              {"shard": "P", "label": "patients (the definitive regression, no rebuild)",
+               "focus_list": "patients", "artifact": "patients"},
           ]
           # a filter token matches a job by SHARD LETTER ("A") or by exact
           # label ("settings") — so "settings,B,C,D,E" reruns only the
@@ -238,7 +246,10 @@ jobs:
     # are simply absent from the matrix; no runner is ever allocated)
     if: needs.prep-shards.outputs.any == 'true'
     runs-on: macos-26
-    timeout-minutes: 150
+    # 240 = the P shard's patients battery needs ~175-185 min (run-24
+    # measurement); the other shards finish in their own time — the cap
+    # only bounds the worst case
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       max-parallel: 5
