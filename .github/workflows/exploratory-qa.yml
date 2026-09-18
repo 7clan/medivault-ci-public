@@ -42,6 +42,10 @@ on:
           - search
           - settings
           - persistence
+          - documents
+          - clinical
+          - dataio
+          - desktop
 
 permissions:
   contents: read
