@@ -102,12 +102,19 @@ jobs:
           [ "$HEAD" = "${SOURCE_SHA}" ] || { echo "::error::source run head ${HEAD} != expected ${SOURCE_SHA} (stale-head guard)"; exit 1; }
 
           PROVISIONAL=false
-          if [ "$STATUS" = "completed" ]; then
+          if [ "$STATUS" = "completed" ] && [ "$CONCL" = "success" ]; then
             # STRICT DEFAULT — unchanged behavior (also the only path when allow_in_progress_source=false)
-            [ "$CONCL" = "success" ] || { echo "::error::source run is not GREEN — patients must be definitively GREEN first"; exit 1; }
             echo "source gate: STRICT PASS (run completed + success at the expected head)"
-          elif [ "$STATUS" = "in_progress" ] && [ "${ALLOW_IN_PROGRESS}" = "true" ]; then
-            echo "source gate: PROVISIONAL MODE (allow_in_progress_source=true, run in_progress) — proving immutable artifact readiness instead"
+          elif [ "${ALLOW_IN_PROGRESS}" = "true" ] && { [ "$STATUS" = "in_progress" ] || { [ "$STATUS" = "completed" ] && [ -n "$CONCL" ] && [ "$CONCL" != "success" ]; } }; then
+            # OPT-IN ARTIFACT-READINESS MODE (directive 2026-09-18 §13: artifact
+            # readiness and product acceptance are separate concepts). Accepts
+            # an in_progress source OR a completed NON-GREEN source (e.g. a
+            # D-class harness first-red whose battery must be rerun) — in both
+            # cases ONLY on proof that the immutable DMG is already built. The
+            # shards' evidence stays PROVISIONAL; the DMG's acceptance must be
+            # established separately by a GREEN battery at the same SHA-256
+            # (typically the affected shard's own rerun).
+            echo "source gate: PROVISIONAL MODE (allow_in_progress_source=true, status=${STATUS}/conclusion=${CONCL}) — proving immutable artifact readiness instead"
             JOBS_JSON="$(curl -sf -H "Authorization: Bearer $GH_TOKEN" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/jobs?per_page=100")"

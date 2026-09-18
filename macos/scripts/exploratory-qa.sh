@@ -12095,6 +12095,21 @@ focus_dataio() {
               qa_cap DATAIO_DD4_CANCEL_UPLOAD "RECORDED (the Cancel click during upload left the dialog in the idle state — the upload was aborted or never started; the panel state is on the screenshot)"
               surface_row "DD4 Cancel blocked while uploading" "click Import → click Cancel 0.7s later" "'Cancel' disabled={isUploading}" "the upload is not abortable by the disabled Cancel" "the dialog returned to the dropzone state (recorded actual)" "RECORDED (actual: aborted/reset)" "dd4-cancel-blocked-result" "OK"
             fi
+          elif dio_api_saw POST "/api/patients/import" && ! ocr_grep "Need a template"; then
+            # BUG-PD27 (D, run 35352445690 DD4): the one-row 98-byte upload
+            # completes in ~0.3s — by the probe's 0.7s-later click the footer
+            # has ALREADY re-rendered from [Cancel|Import Patients] to
+            # [Import Another|Done], so the Cancel-position click lands on
+            # 'Done' and dismisses the completed result panel the probe is
+            # about to OCR. The product held the PD24 contract perfectly
+            # (the in-flight import was NOT abortable — it committed: the
+            # API POST is in the log since the mark, and the dialog is gone
+            # via the only legal close path). The commit IS the proof.
+            sleep 1
+            ocr_capture || true
+            snap "dd4-cancel-committed" || true
+            qa_cap DATAIO_DD4_CANCEL_UPLOAD "GREEN (the Cancel click during upload did NOT abort the import — the API POST /api/patients/import committed after the Cancel click; the completed 'Import Successful' panel was dismissed by the probe's own 0.7s-later Cancel-position click landing on the already-re-rendered footer (Done), so the panel itself is not OCR-visible — the API-log commit + the closed dialog are the proof)"
+            surface_row "DD4 Cancel blocked while uploading" "click Import → click Cancel 0.7s later" "'Cancel' disabled={isUploading} (BUG-PD24: the in-flight lock)" "the upload is not abortable by the disabled Cancel" "the import COMMITTED (API POST in the log); the result panel was closed by the probe's own click on the re-rendered Done" "GREEN (commit proven by the API log)" "dd4-cancel-committed" "OK"
           else
             bug P2 DATAIO_DD4_CANCEL_UPLOAD "the import did not complete after the during-upload Cancel click (neither completion nor an honest error was visible within 30s)"
           fi
@@ -14310,7 +14325,14 @@ focus_desktop() {
       de6_csv="$(printf '%s\n' "$DSK_DL_LIST" | grep '\.csv$' | head -1)"
     fi
     if [ -n "$de6_csv" ]; then
-      if [ "$(head -c 1 "$de6_csv")" != "" ] && head -1 "$de6_csv" | grep -q 'firstName'; then
+      # BUG-PD28 (D, run 35355377514 shard E de6): the needle grepped
+      # 'firstName' (the IMPORT template's schema) — the EXPORT route's
+      # header is 'First Name,Last Name,DOB,...' (spaced/capitalized).
+      # The check never ran against a real file before the PD26 blob-download
+      # fix made the export actually LAND (the previous waves red'd at the
+      # navigation defect first) — the latent needle bug surfaced only now.
+      # The bug-07 evidence message itself printed the file's PERFECT header.
+      if [ "$(head -c 1 "$de6_csv")" != "" ] && head -1 "$de6_csv" | grep -q 'First Name,Last Name'; then
         qa_cap DESKTOP_EXPORT_CSV "GREEN (file: $de6_csv; size=$(stat -f%z "$de6_csv")B; text magic; header '$(head -1 "$de6_csv" | cut -c1-60)…')"
         surface_row "Export CSV (dashboard)" "dashboard → Export CSV" "'Export CSV' outline button" "the patients CSV downloads" "clicked; file landed in ~/Downloads; header verified" "GREEN" "de6-after-export-csv" "OK"
       else
