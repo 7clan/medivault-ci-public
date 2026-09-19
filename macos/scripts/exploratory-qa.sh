@@ -16401,10 +16401,11 @@ dsk_click_viewer_save_pdf() { # <doc-title> <stem> — the ff-2b viewer "Save as
     return 1
   fi
   local ty="$OCR_HIT_Y" cand
-  # the ff toolbar: zoomOut|zoomIn|Download|Print|SavePdf|Info|Ann|Fullscreen —
-  # the Save glyph sits RIGHT of Print (≈880-940); every candidate is verified
-  # by the NATIVE save panel (Where/New Folder/Tags needles) and escaped on miss.
-  for cand in 910 890 930 870 950 850; do
+  # the ff toolbar (VLM-mapped from the run 35464211588 evidence): the Save
+  # glyph sits at ~975-990 — the RIGHTMOST icon before Fullscreen (Print ≈
+  # 880-920). Every candidate is verified by the NATIVE save panel
+  # (Where/New Folder/Tags needles) and escaped on miss.
+  for cand in 980 970 990 960 1000 940 920; do
     probe "dsk-viewersave[$stem]: anchored candidate ($cand,$ty) — verified click"
     "$MV_MOUSE" "$cand" "$ty" 2>>"$LOG" || true
     sleep 3
@@ -16647,7 +16648,7 @@ micro_print_prescription() { # ff-2b: the rx Print → generatePrescriptionPdf �
         ocr_capture || true
         snap "mpx-preview-dialog" || true
         dsk_print_temp_mark
-        if v_click_try_hits "Print" "mpx-rx-print" ""; then
+        if micro_rx_preview_print "mpx"; then
           if dsk_print_temp_newest "mpx" 40; then
             dsk_pdf_verify "$DSK_PTMP_FILE" "$MICRO_RX_MED" "$MICRO_PAT2_NOTE" "mpx"
             if [ "$DSK_PTMP_MAGIC" = "pdf" ] && [ "$DSK_PTMP_SIZE" -gt 1000 ]; then
@@ -17374,6 +17375,36 @@ micro_click_viewer_print() { # <doc-title> <stem> — the viewer Print icon → 
     sleep 1
   done
   probe "dsk-viewerprint[$stem]: no candidate fired the native print bridge (all attempts recorded)"
+  return 1
+}
+
+
+micro_rx_preview_print() { # <stem> — click the rx preview dialog's PRINT BUTTON (not the 'Print Prescription' title), verified by the native bridge's temp file
+  local stem="$1" hits line px py tx ty
+  ocr_capture || return 1
+  # the EXACT-field 'Print' only — the title line is 'Print Prescription'
+  hits="$(printf '%s\n' "$OCR_TEXT" | grep -i -- "|Print|" || true)"
+  if [ -z "$hits" ]; then
+    probe "dsk-rxprint[$stem]: no exact 'Print' button line on screen — no click"
+    return 1
+  fi
+  dsk_print_temp_mark
+  while IFS= read -r line; do
+    px="$(printf '%s' "$line" | awk -F'|' '{print $3}')"
+    py="$(printf '%s' "$line" | awk -F'|' '{print $4}')"
+    [ -n "$px" ] && [ -n "$py" ] || continue
+    tx="$(awk -v a="$px" -v s="${MV_SCALE:-1}" 'BEGIN{printf "%.0f", a/s}')"
+    ty="$(awk -v a="$py" -v s="${MV_SCALE:-1}" 'BEGIN{printf "%.0f", a/s}')"
+    probe "dsk-rxprint[$stem]: clicking the Print button at ($tx,$ty) — verified by the bridge's temp file"
+    "$MV_MOUSE" "$tx" "$ty" 2>>"$LOG" || true
+    sleep 3
+    if dsk_print_temp_newest "$stem" 12; then
+      probe "dsk-rxprint[$stem]: the Print button FIRED the native bridge"
+      return 0
+    fi
+    ocr_capture || true
+  done <<< "$hits"
+  probe "dsk-rxprint[$stem]: no Print candidate fired the bridge (all hits recorded)"
   return 1
 }
 
