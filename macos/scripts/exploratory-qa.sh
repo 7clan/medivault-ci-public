@@ -14173,9 +14173,17 @@ dsk_native_save_panel_accept() { # <stem> — the ff-2b NATIVE save panel: bound
   fi
   snap "$stem-save-panel" || true
   record_inventory "the native macOS save panel (save_pdf_file)"
+  # (run 35470266728, class D): the panel's suggested name can COLLIDE with
+  # an existing file in the Where-dir (the fixture's OWN source PDF lives in
+  # /tmp/qa-micro-fixtures — the pre-filled 'dsk-fixture-doc' hits it) — the
+  # save then blocks on the 'already exists — Replace?' confirmation. Type a
+  # UNIQUE name over the pre-filled one (the Save As field is selected on
+  # open); the Replace-click handles the residual collision case.
+  local uniq="mv-saved-${stem}-$(date +%H%M%S).pdf"
+  osa "tell application \"System Events\" to tell (first process whose name contains \"edivault\") to keystroke \"$uniq\"" 10 || true
+  sleep 1
   # (run 35468738821, class D): the Return keypress did not land — the
-  # panel's focus state is random and the sheet ignored it (VLM-proven: the
-  # panel still open, 'Preparing PDF…' stale on screen). Click the panel's
+  # panel's focus state is random and the sheet ignored it. Click the panel's
   # OWN 'Save' button (OCR-located — the blue default button); Return as
   # the fallback.
   local sv_saved="no"
@@ -14194,6 +14202,16 @@ dsk_native_save_panel_accept() { # <stem> — the ff-2b NATIVE save panel: bound
       DSK_SPAP_WHY="neither the Save-button click nor the Return keypress worked on the native save panel ($OSA_ERR)"
       press_escape
       return 1
+    fi
+  fi
+  # a residual name-collision confirmation — accept the Replace
+  sleep 1
+  ocr_capture || true
+  if ocr_grep "already exists" || ocr_grep "Do you want to replace"; then
+    probe "dsk-nsave[$stem]: a replace confirmation appeared — clicking Replace"
+    if ocr_lookup "Replace" "first" "any"; then
+      "$MV_MOUSE" "$OCR_HIT_X" "$OCR_HIT_Y" 2>>"$LOG" || true
+      sleep 2
     fi
   fi
   # (run 35461389454, class D — save-pdf-report): the native panel REMEMBERS
@@ -14216,6 +14234,10 @@ dsk_native_save_panel_accept() { # <stem> — the ff-2b NATIVE save panel: bound
   if [ -z "$f" ]; then
     # the bounded find fallback (the whole runner workspace + tmp)
     f="$(find "$HOME" "$PWD" /tmp -maxdepth 6 -name '*.pdf' -newer "$DSK_DL_MARK" 2>/dev/null | head -1 || true)"
+  fi
+  if [ -z "$f" ] && [ -n "$uniq" ]; then
+    # the unique-name search (the typed name can land in the panel's Where-dir)
+    f="$(find "$HOME" "$PWD" /tmp -maxdepth 6 -name "$uniq" 2>/dev/null | head -1 || true)"
   fi
   if [ -z "$f" ]; then
     DSK_SPAP_WHY="no new .pdf in the searched sinks within 30s of accepting the native save panel"
