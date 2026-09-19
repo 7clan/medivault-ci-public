@@ -688,8 +688,14 @@ v_click() { # <needle> <stem> <expect-text> [first|last] [y-offset-points]
   local before_hash="$LAST_OCR_HASH"
   snap_file "$MV_SHOT" "${stem}-before" || true
   if ! ocr_lookup "$needle" "$which"; then
-    probe "vclick[$stem]: target '$needle' NOT FOUND on screen — no click attempted (never a guessed coordinate)"
-    return 1
+    # (the storm class, run 35457105922) an OS dialog may be covering the
+    # app — dismiss + retry the lookup ONCE
+    if sysdialog_dismiss "vclick-$stem" && ocr_lookup "$needle" "$which"; then
+      probe "vclick[$stem]: target '$needle' found after the storm dismissal"
+    else
+      probe "vclick[$stem]: target '$needle' NOT FOUND on screen — no click attempted (never a guessed coordinate)"
+      return 1
+    fi
   fi
   local tx ty
   tx="$OCR_HIT_X"
@@ -994,11 +1000,20 @@ v_type_into() { # <label-needle> <text> <stem> [secret yes|no] [arabic yes|no] [
     probe "vtype[$stem]: visual stack unavailable — skipped"
     return 1
   fi
+  # (the storm class, run 35457105922) a focus-stealing OS dialog would
+  # send the keystrokes into the WRONG app — clear any storm state first.
+  sysdialog_dismiss "pretype-$stem" || true
   ocr_capture || return 1
   snap_file "$MV_SHOT" "${stem}-before" || true
   if ! ocr_lookup "$label" "first" "label"; then
-    probe "vtype[$stem]: label '$label' NOT FOUND on screen — no click attempted"
-    return 1
+    # the storm can land between the pretype guard and the lookup —
+    # dismiss + retry the label lookup ONCE
+    if sysdialog_dismiss "vtype-$stem" && ocr_lookup "$label" "first" "label"; then
+      probe "vtype[$stem]: label '$label' found after the storm dismissal"
+    else
+      probe "vtype[$stem]: label '$label' NOT FOUND on screen — no click attempted"
+      return 1
+    fi
   fi
   local lx ly tx ty
   lx="$OCR_HIT_X"
@@ -1123,15 +1138,125 @@ wait_for_ocr() { # <needle> <timeout_s> <label> — bounded wait until text is v
   local needle="$1" t="$2" label="$3"
   local t0
   t0="$(date +%s)"
+  local recovered=no
   while [ $(( $(date +%s) - t0 )) -le "$t" ]; do
     if ocr_capture && ocr_grep "$needle"; then
       probe "wait_for_ocr[$label]: '$needle' visible after $(( $(date +%s) - t0 ))s"
       return 0
     fi
+    # (run 35457105922) a first-boot system dialog (the FaceTime storm)
+    # covering the app would eat the whole budget — dismiss it ONCE per
+    # wait, then keep polling
+    if [ "$recovered" = "no" ] && sysdialog_dismiss "wait-$label"; then
+      recovered=yes
+    fi
     sleep 3
   done
   probe "wait_for_ocr[$label]: '$needle' NOT visible within ${t}s"
   return 1
+}
+
+
+# =============================================================================
+# (ported from exploratory-qa.sh, runs 35381647047/35386829330/35389185554/
+#  35390220206 — the macos FIRST-BOOT STORM) the runner generation raises the
+# FaceTime activation modal (the 2026-09-19 macos-26 image re-introduced it)
+# → its Cancel can launch the Notes welcome tour → a stray keystroke lands
+# in the Notes main window + the 'Turn On iCloud' modal — typically 60-120s
+# into EVERY fresh GUI session, exactly while the setup form is being
+# filled. Run 35457105922's class-A stop was exactly this: the FaceTime
+# modal covered the app between the Password click and the Confirm lookup.
+# =============================================================================
+STORM_APPS="FaceTime Notes Photos Music TV Reminders Freeform Maps News Stocks Weather Home Contacts"
+
+sysdialog_present() {
+  printf '%s\n' "$OCR_TEXT" | grep -qi -- "|[^|]*Sign in to FaceTime" && return 0
+  printf '%s\n' "$OCR_TEXT" | grep -qi -- "|[^|]*Activate FaceTime" && return 0
+  printf '%s\n' "$OCR_TEXT" | grep -qi -- "|[^|]*Apple Account" && return 0
+  return 1
+}
+
+frontmost_storm_app() { # echoes the frontmost app's name when it is a whitelisted storm app
+  local fm app
+  if ! osa 'tell application "System Events" to get name of first application process whose frontmost is true' 6; then
+    return 1
+  fi
+  fm="$(printf '%s' "$OSA_OUT" | tr -d '[:space:]')"
+  [ -n "$fm" ] || return 1
+  for app in $STORM_APPS; do
+    if [ "$fm" = "$app" ]; then
+      printf '%s' "$fm"
+      return 0
+    fi
+  done
+  return 1
+}
+
+sysdialog_dismiss() { # <stem> — 0 = something was present and is now cleared; 1 = nothing present; 2 = present but unclearable
+  local stem="$1" acted=0 round=0 storm_app
+  while [ "$round" -lt 3 ]; do
+    round=$(( round + 1 ))
+    ocr_capture 2>/dev/null || return 1
+    if sysdialog_present; then
+      acted=1
+      probe "sysdialog[$stem]: a macOS first-boot system dialog is covering the app — dismissing via its own Cancel (the product is unaffected; this is the runner environment)"
+      snap_file "$MV_SHOT" "${stem}-sysdialog-before" || true
+      if ocr_lookup "Cancel" "first" "any"; then
+        "$MV_MOUSE" "$OCR_HIT_X" "$OCR_HIT_Y" 2>>"$LOG" || true
+        sleep 2
+      else
+        probe "sysdialog[$stem]: the dialog's Cancel was not OCR-locatable (recorded honestly)"
+      fi
+      continue
+    fi
+    storm_app="$(frontmost_storm_app)"
+    if [ -n "$storm_app" ]; then
+      acted=1
+      probe "sysdialog[$stem]: the first-boot storm app '$storm_app' is frontmost, covering the app — dismissing its modal first, then quitting it (the product is unaffected; the runner environment)"
+      snap_file "$MV_SHOT" "${stem}-storm-${storm_app}" || true
+      if ocr_lookup "Cancel" "first" "any"; then
+        "$MV_MOUSE" "$OCR_HIT_X" "$OCR_HIT_Y" 2>>"$LOG" || true
+        sleep 2
+      fi
+      osa "tell application \"System Events\" to tell (first process whose name is \"$storm_app\") to keystroke \"q\" using command down" 10 || true
+      sleep 2
+      continue
+    fi
+    break
+  done
+  if [ "$acted" = "0" ]; then
+    return 1
+  fi
+  ocr_capture 2>/dev/null || true
+  snap_file "$MV_SHOT" "${stem}-sysdialog-after" || true
+  if sysdialog_present; then
+    probe "sysdialog[$stem]: STILL present after the dismissals (recorded honestly — the interrupted step will fail honestly if the app stays unreachable)"
+    return 2
+  fi
+  osa 'tell application "System Events" to tell (first process whose name contains "edivault") to set frontmost to true' 10 || true
+  sleep 1
+  probe "sysdialog[$stem]: cleared — MediVault re-fronted"
+  return 0
+}
+
+storm_weather() { # <stem> — ride out the first-boot tour window BEFORE any form interaction
+  local stem="$1" clean=0 i=0 rounds=0
+  note "=== storm weathering ($stem): riding out the macOS first-boot tour window ==="
+  while [ "$i" -lt 30 ] && [ "$clean" -lt 2 ]; do
+    i=$(( i + 1 ))
+    if sysdialog_dismiss "weather-$stem-$i"; then
+      rounds=$(( rounds + 1 ))
+      clean=0
+    else
+      clean=$(( clean + 1 ))
+    fi
+    sleep 5
+  done
+  if [ "$rounds" -gt 0 ]; then
+    cap STORM_WEATHER "RODE OUT" "$rounds dismissal round(s) over $(( i * 5 ))s — the first-boot tour window is clear; the form interactions proceed on a quiet screen"
+  else
+    probe "storm weathering ($stem): nothing appeared within $(( i * 5 ))s (the runner was already quiet)"
+  fi
 }
 
 # =============================================================================
@@ -1579,16 +1704,30 @@ snap "08-account-setup-screen" || true
 # =============================================================================
 note "=== PHASE 6: account creation (real UI) ==="
 DOC_PASS="$(cat "$DOC_PASS_FILE")"
-if ! v_type_into "Full Name" "$DOC_NAME" "09-account-name"; then
+# (run 35457105922) weather the first-boot storm BEFORE the form: the
+# FaceTime/Notes cascade lands ~60-120s into a fresh session — exactly
+# while this form is filled. Ride the tour window out first; every field
+# below ALSO has its own storm-recovery retry.
+storm_weather "setup-form"
+
+pft_type_field() { # <label> <text> <stem> <secret> — one field, with a bounded storm-recovery retry
+  local label="$1" text="$2" stem="$3" secret="${4:-no}"
+  if v_type_into "$label" "$text" "$stem" "$secret"; then return 0; fi
+  probe "pft-field[$stem]: the first attempt failed — storm recovery + one retry"
+  sysdialog_dismiss "field-$stem" || true
+  v_type_into "$label" "$text" "$stem-retry" "$secret"
+}
+
+if ! pft_type_field "Full Name" "$DOC_NAME" "09-account-name"; then
   product_red ACCOUNT_CREATION "could not type the account Full Name into the real setup form"
 fi
-if ! v_type_into "Email" "$DOC_EMAIL" "09-account-email"; then
+if ! pft_type_field "Email" "$DOC_EMAIL" "09-account-email"; then
   product_red ACCOUNT_CREATION "could not type the account Email into the real setup form"
 fi
-if ! v_type_into "Password" "$DOC_PASS" "09-account-password" yes; then
+if ! pft_type_field "Password" "$DOC_PASS" "09-account-password" yes; then
   product_red ACCOUNT_CREATION "could not type the account Password into the real setup form"
 fi
-if ! v_type_into "Confirm" "$DOC_PASS" "09-account-confirm" yes; then
+if ! pft_type_field "Confirm" "$DOC_PASS" "09-account-confirm" yes; then
   product_red ACCOUNT_CREATION "could not type the Confirm password into the real setup form"
 fi
 snap "09-account-form-filled" || true
