@@ -13940,7 +13940,11 @@ dsk_pdf_verify() { # <file> <own-needle> <foreign-needle> <stem>
     # (a low printable-ASCII ratio) and degrade honestly to not-verifiable.
     local _plen _garb
     _plen="${#DSK_PDF_TEXT}"
-    _garb="$(printf '%s' "$DSK_PDF_TEXT" | LC_ALL=C tr -d '\\200-\\377' | wc -c | tr -d ' ')"
+    _garb="$(printf '%s' "$DSK_PDF_TEXT" | python3 -c '
+import sys
+data = sys.stdin.buffer.read().decode("utf-8", "replace")
+print(sum(1 for ch in data if ch.isprintable() and ord(ch) < 128))
+' 2>/dev/null || echo 0)"
     if [ "$_garb" -lt $(( _plen * 6 / 10 )) ]; then
       DSK_PDF_TEXT_OK="no"; DSK_PDF_TEXT=""
       probe "dsk-pdf[$stem]: the extracted 'text' is subset-glyph binary (${_garb}/${_plen} printable — pdf-lib embedded-font glyph IDs) — degrading to the not-verifiable branch"
