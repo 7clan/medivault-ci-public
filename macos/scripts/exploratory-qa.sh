@@ -2083,7 +2083,15 @@ while [ "$SSTATE2" != "healthy" ] && [ $(( $(date +%s) - t0s )) -lt 45 ]; do
 done
 PG_PID="$(python3 -c "import json;print(json.load(open('$SUP_STATUS')).get('pg_pid',0))" 2>/dev/null || echo 0)"
 PG_LISTEN="$(lsof -nP -iTCP:$PGPORT 2>/dev/null | grep LISTEN | head -1)"
+# (run 35461389454, class D): the API can bind a moment AFTER PG listens —
+# a single-shot /ready race reds the whole gateway. Bounded retry while the
+# supervisor self-reports healthy.
 READY_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$API/ready" || echo 000)"
+t0r="$(date +%s)"
+while [ "$READY_CODE" != "200" ] && [ "$SSTATE2" = "healthy" ] && [ $(( $(date +%s) - t0r )) -lt 30 ]; do
+  sleep 2
+  READY_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$API/ready" || echo 000)"
+done
 probe "pg proofs: supervisor-state=$SSTATE2 pg_pid=$PG_PID alive=$(kill -0 "$PG_PID" 2>/dev/null && echo yes || echo no) listen='${PG_LISTEN:-none}' /ready=$READY_CODE"
 if [ "$SSTATE2" = "healthy" ] && [ -n "$PG_LISTEN" ] && [ "$READY_CODE" = "200" ]; then
   PG_CAP="GREEN (supervisor self-reports healthy; PG LISTENs on 127.0.0.1:$PGPORT; API /ready=200 performs SELECT 1 through the real DB)"
@@ -13905,8 +13913,20 @@ dsk_pdf_verify() { # <file> <own-needle> <foreign-needle> <stem>
   DSK_PDF_TEXT="$(printf '%s\n' "$raw" | sed -n '2p' | sed 's/^TEXT //')"
   [ -n "$DSK_PDF_PAGES" ] || DSK_PDF_PAGES="?"
   if [ "${#DSK_PDF_TEXT}" -gt 3 ]; then
-    DSK_PDF_TEXT_OK="yes"
-    probe "dsk-pdf[$stem]: text layer EXTRACTED (${#DSK_PDF_TEXT} chars, first 200: $(printf '%s' "$DSK_PDF_TEXT" | cut -c1-200))"
+    # (run 35461389454): pdf-lib's SUBSET-EMBEDDED fonts write glyph-ID text
+    # that a stdlib extractor reads as BINARY GARBAGE (559 chars of it read as
+    # 'text' and false-negatived the content needles). Detect the garbage
+    # (a low printable-ASCII ratio) and degrade honestly to not-verifiable.
+    local _plen _garb
+    _plen="${#DSK_PDF_TEXT}"
+    _garb="$(printf '%s' "$DSK_PDF_TEXT" | LC_ALL=C tr -d '\\200-\\377' | wc -c | tr -d ' ')"
+    if [ "$_garb" -lt $(( _plen * 6 / 10 )) ]; then
+      DSK_PDF_TEXT_OK="no"; DSK_PDF_TEXT=""
+      probe "dsk-pdf[$stem]: the extracted 'text' is subset-glyph binary (${_garb}/${_plen} printable — pdf-lib embedded-font glyph IDs) — degrading to the not-verifiable branch"
+    else
+      DSK_PDF_TEXT_OK="yes"
+      probe "dsk-pdf[$stem]: text layer EXTRACTED (${#DSK_PDF_TEXT} chars, first 200: $(printf '%s' "$DSK_PDF_TEXT" | cut -c1-200))"
+    fi
   else
     probe "dsk-pdf[$stem]: text layer NOT extractable by the stdlib extractor (the honest limit — content verdicts below degrade to not-verifiable)"
   fi
@@ -14136,19 +14156,29 @@ dsk_native_save_panel_accept() { # <stem> — the ff-2b NATIVE save panel: bound
     press_escape
     return 1
   fi
-  local dirs="$DSK_DL_DIR $HOME/Documents $HOME/Desktop $HOME"
+  # (run 35461389454, class D — save-pdf-report): the native panel REMEMBERS
+  # the last-used directory — after the fixture upload panel visited
+  # /tmp/qa-micro-fixtures, the save landed THERE (VLM-proven: 'Where:
+  # qa-micro-fixtures'), not in ~/Downloads. Search the usual sinks + the
+  # panel's own default-dir hint + the fixtures dir, then a bounded find.
+  local dirs="$DSK_DL_DIR $HOME/Documents $HOME/Desktop $HOME /tmp/qa-micro-fixtures ${DSK_SPAP_DEFAULT_DIR:-}"
   local d f
   f=""
   i=0
   while [ "$i" -lt 15 ] && [ -z "$f" ]; do
     for d in $dirs; do
+      [ -d "$d" ] || continue
       f="$(find "$d" -maxdepth 1 -name '*.pdf' -newer "$DSK_DL_MARK" 2>/dev/null | head -1)"
       [ -n "$f" ] && break
     done
     [ -n "$f" ] || { sleep 2; i=$(( i + 1 )); }
   done
   if [ -z "$f" ]; then
-    DSK_SPAP_WHY="no new .pdf in ~/Downloads, ~/Documents, ~/Desktop or ~ within 30s of accepting the native save panel"
+    # the bounded find fallback (the whole runner workspace + tmp)
+    f="$(find "$HOME" "$PWD" /tmp -maxdepth 6 -name '*.pdf' -newer "$DSK_DL_MARK" 2>/dev/null | head -1 || true)"
+  fi
+  if [ -z "$f" ]; then
+    DSK_SPAP_WHY="no new .pdf in the searched sinks within 30s of accepting the native save panel"
     snap "$stem-save-nofile" || true
     press_escape
     return 1
@@ -14293,7 +14323,11 @@ dsk_click_rx_print_icon() { # <stem> — the prescription card's icon-only Print
   fi
   local ty="$OCR_HIT_Y" cand
   dsk_api_mark
-  for cand in 905 885 925 865; do
+  # (run 35461389454, class D): the 905 candidate hit DISCONTINUE — the
+  # card's action cluster is [chevron | Print | Mark Complete | Discontinue |
+  # Delete] with Print the LEFTMOST icon; the leftmost-first ladder avoids
+  # the status-changing/destructive right side entirely.
+  for cand in 800 780 820 760 840; do
     probe "dsk-rx[$stem]: anchored candidate ($cand,$ty) — verified click"
     "$MV_MOUSE" "$cand" "$ty" 2>>"$LOG" || true
     sleep 2
@@ -16342,10 +16376,10 @@ dsk_click_viewer_save_pdf() { # <doc-title> <stem> — the ff-2b viewer "Save as
     return 1
   fi
   local ty="$OCR_HIT_Y" cand
-  # the fitted 1024x700 window: zoomOut|zoomIn|Download|Print|SavePdf|… — the
-  # save glyph sits RIGHT of the old print band; every candidate is verified
+  # the ff toolbar: zoomOut|zoomIn|Download|Print|SavePdf|Info|Ann|Fullscreen —
+  # the Save glyph sits RIGHT of Print (≈880-940); every candidate is verified
   # by the NATIVE save panel (Where/New Folder/Tags needles) and escaped on miss.
-  for cand in 950 925 975 900 980; do
+  for cand in 910 890 930 870 950 850; do
     probe "dsk-viewersave[$stem]: anchored candidate ($cand,$ty) — verified click"
     "$MV_MOUSE" "$cand" "$ty" 2>>"$LOG" || true
     sleep 3
@@ -16470,12 +16504,8 @@ micro_print_document() { # ff-2b: the viewer Print → the native bridge (temp P
   if ! micro_docs_ready "MICRO_PRINT_DOC"; then
     qa_cap MICRO_PRINT_DOCUMENT "NOT-EXERCISED-ENV (the fixture documents are unavailable — see the FX record)"
   elif open_patient_by_phone_token "$MICRO_PAT1_TOKEN" "$MICRO_PAT1_FULL" "mpd1-detail" "$MICRO_PAT1_PHONE"; then
-    v_scroll_find "$MICRO_PDF_TITLE" 16 no down 4 || true
-    if v_click "$MICRO_PDF_TITLE" "mpd1-doc-open" "" || v_click_try_hits "$MICRO_PDF_TITLE" "mpd1-doc-open" ""; then
-      sleep 3
-      wait_text_gone "Loading document" 45 "mpd1-loaded" || true
-      dsk_print_temp_mark
-      if dsk_click_viewer_icon print "$MICRO_PDF_TITLE" "mpd1-printicon"; then
+    if micro_open_doc_in_viewer "$MICRO_PDF_TITLE" "mpd1"; then
+      if micro_click_viewer_print "$MICRO_PDF_TITLE" "mpd1"; then
         if dsk_print_temp_newest "mpd1" 40; then
           dsk_pdf_verify "$DSK_PTMP_FILE" "$MICRO_DOC_SENTINEL" "$MICRO_PAT2_NOTE" "mpd1"
           local mpd1_ok="yes"
@@ -16511,13 +16541,13 @@ micro_print_document() { # ff-2b: the viewer Print → the native bridge (temp P
           fi
           dsk_quit_preview
         else
-          bug P2 MICRO_PRINT_DOCUMENT "the viewer Print did NOT materialize a temp print file within 40s (the native bridge contract failed — see mpd1-printicon-cand-*)"
+          bug P2 MICRO_PRINT_DOCUMENT "the viewer Print did NOT materialize a temp print file within 40s (the native bridge contract failed)"
         fi
       else
-        bug P2 MICRO_PRINT_DOCUMENT "the viewer Print icon could not be activated (see mpd1-printicon-cand-*)"
+        bug P2 MICRO_PRINT_DOCUMENT "the viewer Print icon could not be activated (see mpd1-cand-*)"
       fi
     else
-      bug P1 MICRO_PRINT_DOCUMENT "the PDF document row could not be opened into the viewer"
+      bug P1 MICRO_PRINT_DOCUMENT "the PDF document card could not be opened into the viewer (see mpd1-*)"
     fi
   else
     bug P1 MICRO_PRINT_DOCUMENT "could not open $MICRO_PAT1_FULL's detail"
@@ -16555,6 +16585,8 @@ micro_print_report() { # ff-2b: the report Print → generatePatientReportPdf �
             else
               qa_cap MICRO_PRINT_REPORT_ISOLATION "GREEN (the foreign sentinel is ABSENT from the report PDF)"
             fi
+          else
+            qa_cap MICRO_PRINT_REPORT_CONTENT "NOT-VERIFIABLE-ENV (the pdf-lib subset-font text layer is not stdlib-extractable — magic+size+pages verified; the generated-content contract is proven by the report-pdf unit tests + the physical checklist)"
           fi
           sleep 3
           dsk_preview_running && qa_cap MICRO_PRINT_REPORT_PREVIEW "GREEN (Preview is running for the report)"
@@ -16610,6 +16642,8 @@ micro_print_prescription() { # ff-2b: the rx Print → generatePrescriptionPdf �
               else
                 qa_cap MICRO_PRINT_RX_ISOLATION "GREEN (the foreign sentinel is ABSENT from the rx PDF)"
               fi
+            else
+              qa_cap MICRO_PRINT_RX_CONTENT "NOT-VERIFIABLE-ENV (the pdf-lib subset-font text layer is not stdlib-extractable — magic+size+pages verified; the generated-content contract is proven by the prescription-pdf unit tests + the physical checklist)"
             fi
             sleep 3
             dsk_preview_running && qa_cap MICRO_PRINT_RX_PREVIEW "GREEN (Preview is running for the prescription)"
@@ -16645,10 +16679,7 @@ micro_save_pdf_document() { # ff-2b: the viewer Save-as-PDF → the NATIVE save 
   if ! micro_docs_ready "MICRO_SAVE_DOC"; then
     qa_cap MICRO_SAVE_PDF_DOCUMENT "NOT-EXERCISED-ENV (the fixture documents are unavailable — see the FX record)"
   elif open_patient_by_phone_token "$MICRO_PAT1_TOKEN" "$MICRO_PAT1_FULL" "msd1-detail" "$MICRO_PAT1_PHONE"; then
-    v_scroll_find "$MICRO_PDF_TITLE" 16 no down 4 || true
-    if v_click "$MICRO_PDF_TITLE" "msd1-doc-open" "" || v_click_try_hits "$MICRO_PDF_TITLE" "msd1-doc-open" ""; then
-      sleep 3
-      wait_text_gone "Loading document" 45 "msd1-loaded" || true
+    if micro_open_doc_in_viewer "$MICRO_PDF_TITLE" "msd1"; then
       if dsk_click_viewer_save_pdf "$MICRO_PDF_TITLE" "msd1-saveicon"; then
         dsk_native_save_panel_accept "msd1"
         if [ "$DSK_SPAP_OK" = "yes" ]; then
@@ -16673,7 +16704,7 @@ micro_save_pdf_document() { # ff-2b: the viewer Save-as-PDF → the NATIVE save 
         bug P2 MICRO_SAVE_PDF_DOCUMENT "the viewer Save-as-PDF icon could not be activated (see msd1-saveicon-cand-*)"
       fi
     else
-      bug P1 MICRO_SAVE_PDF_DOCUMENT "the PDF document row could not be opened into the viewer"
+      bug P1 MICRO_SAVE_PDF_DOCUMENT "the PDF document card could not be opened into the viewer (see msd1-*)"
     fi
   else
     bug P1 MICRO_SAVE_PDF_DOCUMENT "could not open $MICRO_PAT1_FULL's detail"
@@ -16712,6 +16743,8 @@ micro_save_pdf_report() { # ff-2b: the report Save-as-PDF → the NATIVE save pa
             else
               qa_cap MICRO_SAVE_PDF_REPORT_ISOLATION "GREEN (the foreign sentinel is ABSENT from the report PDF)"
             fi
+          else
+            qa_cap MICRO_SAVE_PDF_REPORT_CONTENT "NOT-VERIFIABLE-ENV (the pdf-lib subset-font text layer is not stdlib-extractable — magic+size+pages verified; the generated-content contract is proven by the report-pdf unit tests + the physical checklist)"
           fi
         else
           bug P2 MICRO_SAVE_PDF_REPORT "the native save could not be driven: $DSK_SPAP_WHY"
@@ -16763,6 +16796,8 @@ micro_save_pdf_prescription() { # ff-2b: the rx Save-as-PDF → the NATIVE save 
               else
                 qa_cap MICRO_SAVE_PDF_RX_ISOLATION "GREEN (the foreign sentinel is ABSENT from the rx PDF)"
               fi
+            else
+              qa_cap MICRO_SAVE_PDF_RX_CONTENT "NOT-VERIFIABLE-ENV (the pdf-lib subset-font text layer is not stdlib-extractable — magic+size+pages verified; the generated-content contract is proven by the prescription-pdf unit tests + the physical checklist)"
             fi
           else
             bug P2 MICRO_SAVE_PDF_RX "the native save could not be driven: $DSK_SPAP_WHY"
@@ -17227,6 +17262,75 @@ micro_patients_smoke() { # the light patients regression: create → open → se
     bug D PATIENTS_SMOKE_SEARCH "the search could not be driven"
   fi
   note "micro:patients-smoke complete"
+}
+
+
+# ---- micro: the ff-round viewer helpers (the timeline-ambiguity + the native-bridge signals) ----
+micro_open_doc_in_viewer() { # <doc-title> <stem> — open the DOCUMENT CARD into the viewer (the same title text also renders on the patient TIMELINE — a non-clickable entry; click EVERY OCR hit until the viewer actually opens)
+  local title="$1" stem="$2" try hits line idx px py tx ty
+  for try in 1 2 3; do
+    ocr_capture || return 1
+    hits="$(printf '%s\n' "$OCR_TEXT" | grep -i -- "|[^|]*${title}[^|]*|" || true)"
+    if [ -z "$hits" ]; then
+      v_scroll_find "$title" 10 no down 4 || v_scroll_find "$title" 10 no up 4 || true
+      continue
+    fi
+    idx=0
+    while IFS= read -r line; do
+      idx=$(( idx + 1 ))
+      px="$(printf '%s' "$line" | awk -F'|' '{print $3}')"
+      py="$(printf '%s' "$line" | awk -F'|' '{print $4}')"
+      [ -n "$px" ] && [ -n "$py" ] || continue
+      tx="$(awk -v a="$px" -v s="${MV_SCALE:-1}" 'BEGIN{printf "%.0f", a/s}')"
+      ty="$(awk -v a="$py" -v s="${MV_SCALE:-1}" 'BEGIN{printf "%.0f", a/s}')"
+      probe "modv[$stem]: clicking the title hit #$idx at ($tx,$ty) — verified by the viewer opening"
+      "$MV_MOUSE" "$tx" "$ty" 2>>"$LOG" || true
+      sleep 2
+      if wait_text_gone "Visit History" 8 "${stem}-view-$try-$idx"; then
+        probe "modv[$stem]: the VIEWER opened via hit #$idx (the patient-detail needles are gone)"
+        wait_text_gone "Loading document" 30 "${stem}-loaded" || true
+        return 0
+      fi
+      probe "modv[$stem]: hit #$idx did not open the viewer (the timeline entry?) — the next hit"
+    done <<< "$hits"
+    # every on-screen hit failed — the card is elsewhere: re-anchor on the Documents section
+    v_scroll_find "Upload Files" 8 no down 4 || v_scroll_find "Upload Files" 8 no up 4 || true
+  done
+  probe "modv[$stem]: the document card could not be opened into the viewer"
+  return 1
+}
+
+micro_click_viewer_print() { # <doc-title> <stem> — the viewer Print icon → the NATIVE bridge (verified by the temp print file / Preview — the print sheet NEVER appears in the ff-2b architecture)
+  local title="$1" stem="$2" cand ty
+  ocr_capture || return 1
+  if ! ocr_lookup "$title" "first" "any"; then
+    probe "dsk-viewerprint[$stem]: anchor title '$title' not on screen — no click"
+    return 1
+  fi
+  ty="$OCR_HIT_Y"
+  dsk_print_temp_mark
+  # the ff toolbar: zoomOut|zoomIn|Download|Print|SavePdf|Info|Ann|Fullscreen —
+  # the Print sits LEFT of the inserted Save icon; every candidate is verified
+  # by the TEMP PRINT FILE (the bridge's observable artifact) or Preview.
+  for cand in 860 840 880 900 820 925; do
+    probe "dsk-viewerprint[$stem]: anchored candidate ($cand,$ty) — verified by the native bridge"
+    "$MV_MOUSE" "$cand" "$ty" 2>>"$LOG" || true
+    sleep 3
+    ocr_capture || true
+    snap "$stem-cand-$cand" || true
+    if dsk_print_temp_newest "$stem" 12; then
+      probe "dsk-viewerprint[$stem]: candidate $cand FIRED the native bridge (the temp print file materialized)"
+      return 0
+    fi
+    if dsk_preview_running; then
+      probe "dsk-viewerprint[$stem]: candidate $cand fired the bridge (Preview is running)"
+      return 0
+    fi
+    press_escape || true
+    sleep 1
+  done
+  probe "dsk-viewerprint[$stem]: no candidate fired the native print bridge (all attempts recorded)"
+  return 1
 }
 
 micro_camera() {
