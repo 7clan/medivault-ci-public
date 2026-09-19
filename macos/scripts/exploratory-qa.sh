@@ -16397,23 +16397,26 @@ dsk_click_viewer_save_pdf() { # <doc-title> <stem> — the ff-2b viewer "Save as
     probe "dsk-viewersave[$stem]: anchor title '$title' not on screen — no click"
     return 1
   fi
-  local ty="$OCR_HIT_Y" cand
-  # the ff toolbar (VLM-mapped from the run 35464211588 evidence): the Save
-  # glyph sits at ~975-990 — the RIGHTMOST icon before Fullscreen (Print ≈
-  # 880-920). Every candidate is verified by the NATIVE save panel
+  local ty="$OCR_HIT_Y" cand yoff
+  # (runs 35464211588 + 35466842685, class D): the toolbar's GEOMETRY VARIES
+  # PER RUN (the print icon at (880,164) in one, the whole row at y≈120 with
+  # Save ≈ x845 in another) — a single anchored y is a coin flip. The 2D
+  # ladder: every (x, y-offset) pair, each verified by the NATIVE save panel
   # (Where/New Folder/Tags needles) and escaped on miss.
-  for cand in 980 970 990 960 1000 940 920; do
-    probe "dsk-viewersave[$stem]: anchored candidate ($cand,$ty) — verified click"
-    "$MV_MOUSE" "$cand" "$ty" 2>>"$LOG" || true
-    sleep 3
-    ocr_capture || true
-    snap "$stem-cand-$cand" || true
-    if ocr_grep "New Folder" || ocr_grep "Where" || ocr_grep "Tags"; then
-      probe "dsk-viewersave[$stem]: candidate $cand presented the NATIVE save panel"
-      return 0
-    fi
-    press_escape
-    sleep 1
+  for yoff in 0 -45 -30 -15 -60; do
+    for cand in 845 865 825 885 805 905 925; do
+      probe "dsk-viewersave[$stem]: anchored candidate ($cand,$(( ty + yoff ))) — verified click"
+      "$MV_MOUSE" "$cand" "$(( ty + yoff ))" 2>>"$LOG" || true
+      sleep 3
+      ocr_capture || true
+      snap "$stem-cand-$cand-y$(( ty + yoff ))" || true
+      if ocr_grep "New Folder" || ocr_grep "Where" || ocr_grep "Tags"; then
+        probe "dsk-viewersave[$stem]: candidate ($cand,$(( ty + yoff ))) presented the NATIVE save panel"
+        return 0
+      fi
+      press_escape
+      sleep 1
+    done
   done
   probe "dsk-viewersave[$stem]: no candidate presented the save panel (all attempts recorded)"
   return 1
@@ -17358,25 +17361,28 @@ micro_click_viewer_print() { # <doc-title> <stem> — the viewer Print icon → 
   fi
   ty="$OCR_HIT_Y"
   dsk_print_temp_mark
-  # the ff toolbar: zoomOut|zoomIn|Download|Print|SavePdf|Info|Ann|Fullscreen —
-  # the Print sits LEFT of the inserted Save icon; every candidate is verified
+  # (runs 35464211588 + 35466842685, class D): the toolbar's y varies per run
+  # (164 vs ~120) — the 2D ladder over (x, y-offset), each candidate verified
   # by the TEMP PRINT FILE (the bridge's observable artifact) or Preview.
-  for cand in 860 840 880 900 820 925; do
-    probe "dsk-viewerprint[$stem]: anchored candidate ($cand,$ty) — verified by the native bridge"
-    "$MV_MOUSE" "$cand" "$ty" 2>>"$LOG" || true
-    sleep 3
-    ocr_capture || true
-    snap "$stem-cand-$cand" || true
-    if dsk_print_temp_newest "$stem" 12; then
-      probe "dsk-viewerprint[$stem]: candidate $cand FIRED the native bridge (the temp print file materialized)"
-      return 0
-    fi
-    if dsk_preview_running; then
-      probe "dsk-viewerprint[$stem]: candidate $cand fired the bridge (Preview is running)"
-      return 0
-    fi
-    press_escape || true
-    sleep 1
+  local yoff
+  for yoff in 0 -45 -30 -15 -60; do
+    for cand in 805 825 785 845 865 765; do
+      probe "dsk-viewerprint[$stem]: anchored candidate ($cand,$(( ty + yoff ))) — verified by the native bridge"
+      "$MV_MOUSE" "$cand" "$(( ty + yoff ))" 2>>"$LOG" || true
+      sleep 3
+      ocr_capture || true
+      snap "$stem-cand-$cand-y$(( ty + yoff ))" || true
+      if dsk_print_temp_newest "$stem" 12; then
+        probe "dsk-viewerprint[$stem]: candidate ($cand,$(( ty + yoff ))) FIRED the native bridge (the temp print file materialized)"
+        return 0
+      fi
+      if dsk_preview_running; then
+        probe "dsk-viewerprint[$stem]: candidate ($cand,$(( ty + yoff ))) fired the bridge (Preview is running)"
+        return 0
+      fi
+      press_escape || true
+      sleep 1
+    done
   done
   probe "dsk-viewerprint[$stem]: no candidate fired the native print bridge (all attempts recorded)"
   return 1
@@ -17389,7 +17395,16 @@ micro_rx_preview_print() { # <stem> — click the rx preview dialog's PRINT BUTT
   # the EXACT-field 'Print' only — the title line is 'Print Prescription'
   hits="$(printf '%s\n' "$OCR_TEXT" | grep -i -- "|Print|" || true)"
   if [ -z "$hits" ]; then
-    probe "dsk-rxprint[$stem]: no exact 'Print' button line on screen — no click"
+    # (run 35466842685, class D): the tall rx preview dialog's footer sits
+    # BELOW THE FOLD — the OCR never sees the button. Scroll the DIALOG
+    # content (the BUG-PD34 idiom) and re-look.
+    probe "dsk-rxprint[$stem]: no exact 'Print' button line on screen — scrolling the dialog (the below-the-fold footer)"
+    scroll_burst down 500 400 || true; sleep 1
+    ocr_capture || return 1
+    hits="$(printf '%s\n' "$OCR_TEXT" | grep -i -- "|Print|" || true)"
+  fi
+  if [ -z "$hits" ]; then
+    probe "dsk-rxprint[$stem]: still no exact 'Print' button line — no click"
     return 1
   fi
   dsk_print_temp_mark
