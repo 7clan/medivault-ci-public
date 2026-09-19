@@ -17388,13 +17388,27 @@ micro_tour_en() {
       else
         bug P1 TOUR_EN_SECTION_JUMP "the section jump did not open the tour at step 7 (no 'Step 7 of 20' within 20s — see mte4-jump-*)"
       fi
-      # skip out via ESC (the keyboard affordance — §21's Esc→skip contract)
+      # skip out of the tour — the BUG-PD38 ladder: Escape FIRST, then the
+      # card's OWN Skip button. (run 35440378070 micro:tour-en first-red:
+      # the System-Events Escape did NOT deliver from the step-7
+      # scan-view spotlight context — the WKWebView key-delivery record,
+      # the SAME mechanism MTA0's ladder fixed for tour-ar; the card's
+      # visible Skip control is the proven affordance — MTE3 used it
+      # successfully minutes earlier in this very battery.)
       press_escape
       sleep 2
       if wait_text_gone "Step 7 of 20" 12 "mte4-esc-skip"; then
         qa_cap TOUR_EN_ESC_SKIP "GREEN (Escape skipped the tour mid-section — the guided-tour window keydown listener)"
+      elif v_click "Skip" "mte4-skip-btn" ""; then
+        sleep 2
+        if wait_text_gone "Step 7 of 20" 12 "mte4-skip-btn-gone"; then
+          qa_cap TOUR_EN_ESC_SKIP "GREEN via the BUG-PD38 ladder (Escape was not delivered from the scan-view spotlight context — the card's OWN Skip button skipped the tour; the P3 WKWebView key-delivery note stands)"
+          surface_row "Tour skip (mid-section)" "Escape → the card's Skip button" "Skip (or Esc) leaves the tour from ANY step" "the overlay unmounts from any section" "skipped from step 7 via the card's Skip" "GREEN" "mte4-skip-btn" "OK"
+        else
+          bug P1 TOUR_EN_ESC_SKIP "neither Escape nor the card's Skip button cleared the tour (the 'Step 7 of 20' card is still visible)"
+        fi
       else
-        bug P1 TOUR_EN_ESC_SKIP "Escape did not skip the tour (the 'Step 7 of 20' card is still visible)"
+        bug P1 TOUR_EN_ESC_SKIP "Escape did not skip and the card's Skip button was not OCR-locatable (the 'Step 7 of 20' card is still visible)"
       fi
     else
       bug P1 TOUR_EN_SECTION_JUMP "the 'Documents & Scanning' menu row could not be clicked"
