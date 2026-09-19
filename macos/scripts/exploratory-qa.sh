@@ -4302,11 +4302,32 @@ detail_open_proof() { # <stem> — the real detail-open gate: the LIST always sh
 
 open_patient_by_phone_token() { # <token> <full-name> <stem> [row-phone] — search by the unique phone digits, open via the row
   local token="$1" full="$2" stem="$3" rowphone="${4:-}"
+  # (run 35461389454, class D): the WKWebView can back-navigate to the
+  # tauri:// first-run surface MID-SEARCH (the no-input-focused keystroke
+  # class — the search text goes nowhere, the row never appears). The surface
+  # AUTO-HANDS-OFF back to the API app ("Opening MediVault…"): detect it,
+  # wait for the hand-off, retry the search ONCE. Additive — only fires on
+  # the detected surface.
+  if ocr_grep "first-run setup"; then
+    probe "open-by-token[$stem]: the first-run surface is up (the back-nav class) — waiting for the automatic hand-off"
+    wait_for_ocr "Add Patient" 60 "${stem}-handoff" || true
+  fi
   clear_search_box || true
   v_scroll_top 10 || true
   if ! search_type "$token" "${stem}-search"; then
-    probe "open-by-token[$stem]: could not type the token '$token'"
-    return 1
+    if ocr_grep "first-run setup"; then
+      probe "open-by-token[$stem]: the back-nav hit MID-SEARCH — waiting for the hand-off, then one retry"
+      wait_for_ocr "Add Patient" 60 "${stem}-handoff2" || true
+      clear_search_box || true
+      v_scroll_top 10 || true
+      if ! search_type "$token" "${stem}-search2"; then
+        probe "open-by-token[$stem]: could not type the token '$token' after the hand-off recovery"
+        return 1
+      fi
+    else
+      probe "open-by-token[$stem]: could not type the token '$token'"
+      return 1
+    fi
   fi
   sleep 2
   # (run 34930796719, class D — the pc8 sub-check forensics): the single
@@ -16858,13 +16879,28 @@ micro_toast_feedback() { # ff-2c: the mounted shadcn renderer — use-toast feed
   else
     bug D MICRO_TOAST_PATIENT "the fixture patient could not be created through the GUI (see ttf1-*)"
   fi
-  # TTF2 — the CSV export async toast
-  if dio_toolbar_click "Export CSV" "ttf2-export" "Export Started" || v_click "Export CSV" "ttf2-export" ""; then
-    ocr_capture || true
+  # TTF2 — the CSV export async toast.
+  # (run 35461389454, class D): dio_toolbar_click's own expect-verification
+  # CAUGHT the toast at +4s ('verification: yes — expected text Export
+  # Started is now visible') — the body's redundant 10s re-wait then outlived
+  # the 5s Radix window and false-red'ed. The helper's verified return IS the
+  # toast proof; a tight 1s poll is the fallback only.
+  if dio_toolbar_click "Export CSV" "ttf2-export" "Export Started"; then
+    qa_cap MICRO_TOAST_EXPORT "GREEN (the CSV-export success toast was VISIBLE: 'Export Started' — verified by the toolbar helper's own expect check)"
+    surface_row "Toast: CSV export" "Export CSV" "the rendered toast" "async export feedback reaches the screen" "OCR-verified" "GREEN" "ttf2-after-export" "OK"
+    ttf_ok=$(( ttf_ok + 1 ))
+  elif v_click "Export CSV" "ttf2-export" ""; then
+    local ttf2_i=0 ttf2_seen="no"
+    while [ "$ttf2_i" -lt 6 ]; do
+      ocr_capture || true
+      if ocr_grep "Export Started"; then ttf2_seen="yes"; break; fi
+      sleep 1
+      ttf2_i=$(( ttf2_i + 1 ))
+    done
     snap "ttf2-after-export" || true
-    if wait_for_ocr "Export Started" 10 "ttf2-toast" || ocr_grep "Export Started"; then
-      qa_cap MICRO_TOAST_EXPORT "GREEN (the CSV-export success toast is VISIBLE: 'Export Started')"
-      surface_row "Toast: CSV export" "Export CSV" "the rendered toast" "async export feedback reaches the screen" "OCR-verified" "GREEN" "ttf2-toast" "OK"
+    if [ "$ttf2_seen" = "yes" ]; then
+      qa_cap MICRO_TOAST_EXPORT "GREEN (the CSV-export success toast was VISIBLE: 'Export Started')"
+      surface_row "Toast: CSV export" "Export CSV" "the rendered toast" "async export feedback reaches the screen" "OCR-verified" "GREEN" "ttf2-after-export" "OK"
       ttf_ok=$(( ttf_ok + 1 ))
     else
       bug P2 MICRO_TOAST_EXPORT "the 'Export Started' toast did NOT render after the CSV export (the ff-2c renderer mount regression)"
@@ -17221,10 +17257,17 @@ micro_patients_smoke() { # the light patients regression: create → open → se
   # carousel-race-safe helper (run 35458579008: the bare create hit the tip
   # CTA race and opened the scan view instead of the dialog)
   if micro_gui_create_patient "mps-gui" "Psm" "Guismoke" "ONLY-PSM-GUI"; then
-    sleep 2
-    ocr_capture || true
-    if ocr_grep "Psm" || ocr_grep "Patient Added"; then
-      qa_cap PATIENTS_SMOKE_CREATE "GREEN (a patient was created through the real Add Patient form)"
+    # the tight poll (the 5s Radix toast window; the single +4.4s capture of
+    # run 35461389454 missed it by a breath)
+    local mps_i=0 mps_seen="no"
+    while [ "$mps_i" -lt 8 ]; do
+      ocr_capture || true
+      if ocr_grep "Psm" || ocr_grep "Patient Added"; then mps_seen="yes"; break; fi
+      sleep 1
+      mps_i=$(( mps_i + 1 ))
+    done
+    if [ "$mps_seen" = "yes" ]; then
+      qa_cap PATIENTS_SMOKE_CREATE "GREEN (a patient was created through the real Add Patient form — visibly confirmed on screen)"
     else
       bug P2 PATIENTS_SMOKE_CREATE "the GUI-created patient is not visibly confirmed"
     fi
