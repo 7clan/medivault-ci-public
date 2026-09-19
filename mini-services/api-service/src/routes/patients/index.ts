@@ -10,6 +10,7 @@ import type { FastifyInstance } from 'fastify'
 import { requireAuth, requirePermission } from '../../plugins/auth.js'
 import { validateCsrf } from '../../plugins/csrf.js'
 import { db } from '../../lib/db.js'
+import { validateDateOfBirth } from '../../lib/dob.js'
 import { getStorageService, isValidSha256 } from '../../lib/crypto-helpers.js'
 import { FORMAT_VERSION } from '@medivault/crypto'
 export async function registerPatientRoutes(server: FastifyInstance): Promise<void> {
@@ -517,11 +518,29 @@ export async function registerPatientRoutes(server: FastifyInstance): Promise<vo
         const lastName = cols[lastNameIdx]?.trim()
         if (!firstName || !lastName) { skipped++; errors.push(`Row ${i + 1}: Missing firstName or lastName`); continue }
 
+        // DATAIO_IMPORT_BAD_DOB (P3): an invalid/impossible date of birth must
+        // NOT silently become an accepted patient record. Validate strictly
+        // (strict YYYY-MM-DD, real calendar date incl. the correct leap-year
+        // rule, year >= 1900, not in the future) BEFORE creating the patient;
+        // legitimate historical DOBs (e.g. 1920-02-29) still import verbatim.
+        // An empty DOB cell stays null (DOB is optional).
+        const rawDob = dobIdx >= 0 && cols[dobIdx] ? cols[dobIdx].trim() : ''
+        let dateOfBirth: string | null = null
+        if (rawDob) {
+          const dobCheck = validateDateOfBirth(rawDob)
+          if (!dobCheck.ok) {
+            skipped++
+            errors.push(`Row ${i + 1}: Invalid date of birth "${rawDob}" — expected a real calendar date in YYYY-MM-DD format, year 1900 or later, not in the future`)
+            continue
+          }
+          dateOfBirth = dobCheck.normalized
+        }
+
         try {
           await db.patient.create({
             data: {
               doctorId: session.user.id, firstName, lastName,
-              dateOfBirth: dobIdx >= 0 && cols[dobIdx]?.trim() ? cols[dobIdx].trim() : null,
+              dateOfBirth,
               phone: phoneIdx >= 0 && cols[phoneIdx]?.trim() ? cols[phoneIdx].trim() : null,
               email: emailIdx >= 0 && cols[emailIdx]?.trim() ? cols[emailIdx].trim() : null,
               address: addressIdx >= 0 && cols[addressIdx]?.trim() ? cols[addressIdx].trim() : null,
