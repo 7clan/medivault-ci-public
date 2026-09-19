@@ -1508,6 +1508,40 @@ wait_for_ocr() { # <needle> <timeout_s> <label> — bounded wait until text is v
   probe "wait_for_ocr[$label]: '$needle' NOT visible within ${t}s"
   return 1
 }
+shell_mounted_ok() { # <timeout_s> <label> — the GATEWAY shell-mounted proof
+  # BUG-PD40 (D, run 35435788973 micro:tour-ar first-red): for the
+  # TOUR_GATEWAY=skip shards (tour-en / tour-ar) the tour offer is the
+  # shell-mounted proof. The offer auto-starts at the FIRST authenticated
+  # shell mount, and its spotlight overlay dims the dashboard's
+  # 'Add Patient' out of the OCR until the shard's own tour battery
+  # handles the offer — so the plain 'Add Patient' wait can only pass by
+  # winning the pre-offer mount race (the first flight did; the
+  # storm/refill path mounts the offer first and loses it
+  # deterministically, red'ing ACCOUNT_CREATION at the gateway). The
+  # offer only exists on the mounted shell, so it proves the same mount
+  # fact 'Add Patient' proves — accepted ONLY for the skip shards whose
+  # subject is the tour itself. Every other battery keeps the strict
+  # plain-dashboard needle.
+  local t="$1" label="$2"
+  local t0 recovered=no
+  t0="$(date +%s)"
+  while [ $(( $(date +%s) - t0 )) -le "$t" ]; do
+    if ocr_capture && ocr_grep "Add Patient"; then
+      probe "shell-mounted[$label]: 'Add Patient' visible after $(( $(date +%s) - t0 ))s"
+      return 0
+    fi
+    if [ "$TOUR_GATEWAY" = "skip" ] && [ -n "$OCR_TEXT" ] && ocr_grep "Welcome to MediVault"; then
+      probe "shell-mounted[$label]: the skip-shard tour offer is up after $(( $(date +%s) - t0 ))s — the offer IS the shell-mounted proof (TOUR_GATEWAY=skip; 'Add Patient' stays dimmed under the spotlight until the shard's own tour battery dismisses it)"
+      return 0
+    fi
+    if [ "$recovered" = "no" ] && sysdialog_dismiss "wait-$label"; then
+      recovered=yes
+    fi
+    sleep 3
+  done
+  probe "shell-mounted[$label]: neither 'Add Patient' nor the skip-shard offer within ${t}s"
+  return 1
+}
 app_running() { # case-safe liveness probe (the binary is `medivault`, the LS name is `MediVault`)
   pgrep -f "ediVault.app/Contents/MacOS/" >/dev/null 2>&1
 }
@@ -2627,7 +2661,7 @@ if osa 'tell application "System Events" to tell (first process whose name conta
   # the OCR needles — dismiss it BEFORE the first dashboard wait so the wait
   # never races the dimming overlay.
   tour_dismiss_if_present "g6-submit"
-  if wait_for_ocr "Add Patient" 45 "dashboard-after-enter-submit"; then
+  if shell_mounted_ok 45 "dashboard-after-enter-submit"; then
     SUBMITTED=1
     snap "10-account-submit-enter" || true
     probe "the focused-field Return submitted the setup form (the button was below the fold — a real user's flow)"
@@ -2686,7 +2720,7 @@ if [ "$SUBMITTED" = "0" ]; then
         osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10 || true
         sleep 3
         tour_dismiss_if_present "g6-refill-submit"
-        if wait_for_ocr "Add Patient" 60 "dashboard-after-refill"; then
+        if shell_mounted_ok 60 "dashboard-after-refill"; then
           SUBMITTED=1
           qa_cap SYSDIALOG_RECOVERY "GREEN (the deterministic refill recovered the setup submit — the recovery is no longer gated on a fresh system dialog)"
           snap "10-refill-submitted" || true
@@ -2715,7 +2749,7 @@ fi
 # TOUR_GATEWAY_STATE flag makes this a no-op when the offer was already
 # cleared; the not-found probe is the cheap pre-tour-build path.)
 tour_dismiss_if_present "g6-final"
-if ! wait_for_ocr "Add Patient" 90 "dashboard-after-setup"; then
+if ! shell_mounted_ok 90 "dashboard-after-setup"; then
   # (run 35392966093) the storm can eat the MASKED-field typing: the submit
   # click 'succeeds' (a hash-diff — the form renders its validation errors:
   # 'Fill out this field' / 'Min 6 chars' / 'Repeat password') and the
@@ -2731,16 +2765,16 @@ if ! wait_for_ocr "Add Patient" 90 "dashboard-after-setup"; then
       osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10 || true
       sleep 3
       tour_dismiss_if_present "g6-final-refill"
-      if wait_for_ocr "Add Patient" 60 "dashboard-after-final-refill"; then
+      if shell_mounted_ok 60 "dashboard-after-final-refill"; then
         qa_cap SYSDIALOG_RECOVERY "GREEN (the storm ate the masked-field typing — the form was refilled and resubmitted; the dashboard is up)"
         snap "10-final-refill-ok" || true
       fi
     fi
   fi
 fi
-if ! wait_for_ocr "Add Patient" 30 "dashboard-after-setup-final"; then
+if ! shell_mounted_ok 30 "dashboard-after-setup-final"; then
   snap "10-dashboard-not-visible" || true
-  bug P1 ACCOUNT_CREATION "the dashboard ('Add Patient') never appeared after account creation"
+  bug P1 ACCOUNT_CREATION "the shell never mounted after account creation ('Add Patient' dimmed under a skip-shard tour offer, or absent)"
 fi
 SETUP_API_ATTEMPTS=$(( SETUP_API_ATTEMPTS + 1 ))
 qa_cap ACCOUNT_CREATION "GREEN (account created through the real setup form; the dashboard is visible)"
@@ -14055,17 +14089,29 @@ dsk_click_viewer_icon() { # <mode print|download> <doc-title> <stem>
   return 1
 }
 
-dsk_click_banner_report() { # <patient-full-name> <stem> — the icon-only Generate Report control
+dsk_click_banner_report() { # <patient-full-name> <stem> [ocr-stable-anchor e.g. the banner phone] — the icon-only Generate Report control
   # The banner icon row is [report | EDIT | trash] (white glyphs on the mesh
   # gradient — the SAME scan domain as v_click_edit_pencil). report = the
   # LEFTMOST right-side cluster. Verified by the report dialog title.
-  local name="$1" stem="$2"
+  local name="$1" stem="$2" alt="${3:-}"
   local up=0
   while [ "$up" -lt 8 ]; do scroll_burst up; sleep 1; up=$(( up + 1 )); done
   ocr_capture || return 1
   if ! ocr_lookup "$name" "first"; then
-    probe "dsk-report[$stem]: anchor '$name' not on screen"
-    return 1
+    # BUG-PD43 (D, run 35435788973 micro:save-pdf MS2 first-red): the
+    # banner name 'Micro Printest' systematically OCR'd as 'Micro
+    # Printers' (55:2 in this run — the BUG-PD36 fixture-name class);
+    # the banner's own phone ('+1 555 0460') is the OCR-stable anchor
+    # (the same token the row click used successfully seconds earlier).
+    # The band math never depended on the NAME's y (detail_banner_row
+    # takes the topmost content line) — the anchor is only the
+    # banner-is-on-screen gate, so the phone is an equivalent gate.
+    if [ -n "$alt" ] && ocr_lookup "$alt" "first"; then
+      probe "dsk-report[$stem]: the name anchor OCR'd unreliably — the banner phone anchor '$alt' located the banner (the BUG-PD36 idiom)"
+    else
+      probe "dsk-report[$stem]: anchor '$name' not on screen"
+      return 1
+    fi
   fi
   local band_src band_cy x0
   band_src="$(detail_banner_row)"
@@ -16114,7 +16160,7 @@ micro_print() {
   dsk_dl_manifest "MP2-before"
   if open_patient_by_phone_token "$MICRO_PAT1_TOKEN" "$MICRO_PAT1_FULL" "mp2-detail" "$MICRO_PAT1_PHONE"; then
     detail_scroll_top "mp2-top" || true
-    if dsk_click_banner_report "$MICRO_PAT1_FULL" "mp2-report-open"; then
+    if dsk_click_banner_report "$MICRO_PAT1_FULL" "mp2-report-open" "$MICRO_PAT1_PHONE"; then
       wait_for_ocr "Patient Summary Report" 20 "mp2-report-dialog" || true
       ocr_capture || true
       snap "mp2-report-dialog" || true
@@ -16284,7 +16330,7 @@ micro_save_pdf() {
   dsk_dl_manifest "MS2-before"
   if open_patient_by_phone_token "$MICRO_PAT1_TOKEN" "$MICRO_PAT1_FULL" "ms2-detail" "$MICRO_PAT1_PHONE"; then
     detail_scroll_top "ms2-top" || true
-    if dsk_click_banner_report "$MICRO_PAT1_FULL" "ms2-report-open"; then
+    if dsk_click_banner_report "$MICRO_PAT1_FULL" "ms2-report-open" "$MICRO_PAT1_PHONE"; then
       wait_for_ocr "Patient Summary Report" 20 "ms2-report-dialog" || true
       if v_click "Print Report" "ms2-print-report" ""; then
         sleep 3
@@ -16418,6 +16464,19 @@ micro_camera() {
   # docb_open_patient_docs (the SAME open + the scroll to the Documents
   # section) before the click.
   if docb_open_patient_docs "0463" "$MC_FULL" "$MC_PHONE" "mc-detail"; then
+    # BUG-PD39 (D, run 35435788973 micro:camera first-red): the
+    # ZERO-document patient detail is SHORT — docb_open_patient_docs'
+    # coarse sweep (12-line bursts + the every-3rd-burst Page-Down
+    # assist) leaped entirely over the Action-Buttons row (the BUG-PD21
+    # class, proven by this run's own captures: visits → clinical notes
+    # → the empty state, the row never inside any viewport) and stranded
+    # the view at the page bottom, where 'Scan with Camera' is above
+    # the fold. The FINE sweep (4-line steps — no keyboard assist, the
+    # documented PD21 remedy) recovers the row deterministically: UP
+    # first (the row sits directly above the empty state at the
+    # bottom), DOWN as the fallback for a detail still above the fold.
+    v_scroll_find "Scan with Camera" 8 no up 4 \
+      || v_scroll_find "Scan with Camera" 10 no down 4 || true
     if v_click "Scan with Camera" "mc-open" "Scan & Upload"; then
       sleep 2
       ocr_capture || true
@@ -16951,10 +17010,20 @@ micro_bulk_delete() {
   ocr_capture || true
   snap "bd5-two-selected" || true
   if printf '%s\n' "$OCR_TEXT" | grep -Eq '\|[^|]*2 selected'; then
-    probe "bd5: exactly '2 selected' ($BD_B_FULL + $BD_D_FULL) — the destructive step may proceed"
+    probe "bd5: exactly '2 selected' ($BD_B_FULL + $BD_D_FULL) — the badge corroborates the confirmation's own count below"
   else
-    bd_destruct_ok="no"
-    bug D MICRO_BULK_RESELECT "the '2 selected' badge could not be confirmed before the destructive step — the delete is NOT taken (the honest limit: the count-driven postconditions would be ambiguous)"
+    # BUG-PD41 (D, run 35435788973 micro:bulk-delete): the text-xs
+    # 'N selected' badge rendered correctly (the capture reads '2 sele…')
+    # but Apple Vision never OCR'd it once in the whole run — the
+    # badge-gated destructive step never fired and the shard cascaded
+    # into bd7 with the cohort un-deleted. The authoritative count gate
+    # is the product's OWN confirmation-dialog title ('Delete N
+    # Patients?' — large text, OCR-proven by bd3 in the same run): the
+    # destructive leg opens the confirmation and verifies the count
+    # THERE; a dialog count that is NOT the expected 2 cancels
+    # immediately and P1s (a miscounted destructive confirmation would
+    # be a REAL product red).
+    probe "bd5: the '2 selected' badge was not OCR-confirmed (the BUG-PD41 record) — the confirmation dialog's own title count is the authoritative gate below"
   fi
   local bd_bulk_hits=0
   if [ "$bd_destruct_ok" = "yes" ]; then
@@ -17086,7 +17155,18 @@ micro_bulk_delete() {
         bug P1 MICRO_BULK_DELETE "the destructive confirm button could not be clicked (the clc_footer_click anchored attempt — see bd5-confirm-*)"
       fi
     else
-      bug P1 MICRO_BULK_DELETE "the re-opened 'Delete 2 Patients?' confirmation never appeared"
+      # BUG-PD41 (continued): distinguish a WRONG COUNT (a real product
+      # red — canceled, nothing deleted) from a dialog that never opened
+      ocr_capture || true
+      snap "bd5-confirm-unexpected" || true
+      local bd_dialog_title
+      bd_dialog_title="$(printf '%s\n' "$OCR_TEXT" | grep -oE 'Delete [0-9]+ Patients?' | head -1)"
+      if [ -n "$bd_dialog_title" ] && [ "$bd_dialog_title" != "Delete 2 Patients?" ]; then
+        if v_click "Cancel" "bd5-wrong-count-cancel" ""; then sleep 2; fi
+        bug P1 MICRO_BULK_COUNT_GATE "the bulk-delete confirmation's own count said '$bd_dialog_title' (expected 'Delete 2 Patients?') — CANCELED, nothing deleted (see bd5-confirm-unexpected)"
+      else
+        bug P1 MICRO_BULK_DELETE "the re-opened 'Delete 2 Patients?' confirmation never appeared (no bulk dialog title on screen)"
+      fi
     fi
   else
     probe "bd5: the destructive leg was NOT taken (the selection state was ambiguous — the honest D record above)"
@@ -17105,7 +17185,17 @@ micro_bulk_delete() {
   v_scroll_top 10 || true
   search_type "Bulk" "bd7-search-bulk"
   sleep 2
-  v_scroll_find "Recent Patients" 6 || v_scroll_find "patients" 6 || true
+  # BUG-PD42 (D, run 35435788973 micro:bulk-delete): the old
+  # 'Recent Patients'/'patients' DOWN sweeps (dashboard-flavored
+  # needles) pushed the view 12 bursts to the page BOTTOM — the
+  # 'Select Patients' button lives in the patients-list HEADER at
+  # the TOP and was never re-entered (NOT FOUND → the P1; the
+  # failure capture shows the filtered rows with the header above
+  # the fold). Scroll back to the top after the search, then the
+  # fine sweep (the BUG-PD21 idiom) finds the header button
+  # deterministically.
+  v_scroll_top 10 || true
+  v_scroll_find "Select Patients" 8 no down 4 || v_scroll_find "Select Patients" 8 no up 4 || true
   ocr_capture || true
   snap "bd7-filtered-list" || true
   if v_click "Select Patients" "bd7-enter" ""; then
