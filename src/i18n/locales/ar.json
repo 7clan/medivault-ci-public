@@ -210,6 +210,7 @@
   "importExport.formatHintPrefix": "فقط",
   "importExport.formatHintAnd": "و",
   "importExport.formatHintSuffix": "مطلوبان. بحد أقصى 1000 صف لكل استيراد.",
+  "importExport.dobFormatHint": "يجب أن يكون تاريخ الميلاد تاريخًا تقويميًا حقيقيًا بصيغة YYYY-MM-DD (مثال: 1985-03-25)، من سنة 1900 فما فوق، وليس في المستقبل.",
   "importExport.importAnother": "استيراد آخر",
   "importExport.importing": "جارٍ الاستيراد…",
   "importExport.importFailed": "فشل الاستيراد",
