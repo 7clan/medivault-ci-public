@@ -14173,10 +14173,28 @@ dsk_native_save_panel_accept() { # <stem> — the ff-2b NATIVE save panel: bound
   fi
   snap "$stem-save-panel" || true
   record_inventory "the native macOS save panel (save_pdf_file)"
-  if ! osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10; then
-    DSK_SPAP_WHY="the Return keypress into the native save panel failed ($OSA_ERR)"
-    press_escape
-    return 1
+  # (run 35468738821, class D): the Return keypress did not land — the
+  # panel's focus state is random and the sheet ignored it (VLM-proven: the
+  # panel still open, 'Preparing PDF…' stale on screen). Click the panel's
+  # OWN 'Save' button (OCR-located — the blue default button); Return as
+  # the fallback.
+  local sv_saved="no"
+  if ocr_lookup "Save" "first" "any"; then
+    probe "dsk-nsave[$stem]: clicking the panel's own Save button at ($OCR_HIT_X,$OCR_HIT_Y)"
+    "$MV_MOUSE" "$OCR_HIT_X" "$OCR_HIT_Y" 2>>"$LOG" || true
+    sleep 3
+    ocr_capture || true
+    if ! ocr_grep "New Folder"; then
+      sv_saved="yes"
+      probe "dsk-nsave[$stem]: the panel closed via its Save button"
+    fi
+  fi
+  if [ "$sv_saved" != "yes" ]; then
+    if ! osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10; then
+      DSK_SPAP_WHY="neither the Save-button click nor the Return keypress worked on the native save panel ($OSA_ERR)"
+      press_escape
+      return 1
+    fi
   fi
   # (run 35461389454, class D — save-pdf-report): the native panel REMEMBERS
   # the last-used directory — after the fixture upload panel visited
