@@ -6736,6 +6736,16 @@ docb_fixture_create() { # <first> <last> <phone> <email> <notes> <stem> [arabic 
   if [ "$rc" = "1" ]; then
     probe "docb-fx[$stem]: harness-class create failure (rc=1) — dialog hygiene, then ONE bounded retry (a single anchor/click miss must not red the battery)"
     ensure_dialog_closed "${stem}-fx-hygiene" add_patient_dialog_visible || true
+    # (run 35458579008, class D): the welcome-tip carousel race can land the
+    # failed create on ANOTHER VIEW entirely (the tip-card 'Add Patient' CTA
+    # + the 6s auto-advance → 'Go to Settings' fired; the retry's anchor
+    # then burned its whole wait on a page that has no Add Patient at all).
+    # Recover to the DASHBOARD first — the sidebar item exists on every view.
+    if ! ocr_grep "Add Patient"; then
+      probe "docb-fx[$stem]: no 'Add Patient' visible — navigating back to the Dashboard before the retry"
+      v_click "Dashboard" "${stem}-fx-recover-dash" "Add Patient" || v_click "Dashboard" "${stem}-fx-recover-dash2" "" || true
+      sleep 2
+    fi
     v_scroll_top 10 || true
     wait_for_ocr "Add Patient" 30 "${stem}-fx-retry-anchor" || true
     create_patient_deep "$first" "$last" "$phone" "$email" "" "$notes" "${stem}-retry" "$arabic"
@@ -15596,9 +15606,24 @@ micro_dsk_fixture_set() { # <CHECK-NAME> — the desktop-FX subset: PAT1 + the f
         if v_click "$MICRO_RX_MED" "mdp-fx4-rx-template" "$MICRO_RX_MED"; then
           probe "mdp-fx4: the $MICRO_RX_MED template card filled the medication row"
           snap "mdp-fx4-rx-filled" || true
-          if v_click "Create Prescription" "mdp-fx4-rx-create" ""; then
-            sleep 4
-          fi
+          # (run 35458579008, class D — the first-fix wave's 7 red shards):
+          # Apple Vision INTERMITTENTLY omits the rendered 'Create
+          # Prescription' footer button from its OCR passes (the button IS on
+          # screen — VLM-proven from the failure evidence; wave-7's run read
+          # it at (669,636)). A single-shot click reds the whole fixture; the
+          # retry ladder re-captures (fresh Vision pass) + try-hits + the
+          # BUG-PD34 dialog-scroll assist before giving up.
+          local mdp_rx_created="no" mdp_try
+          for mdp_try in 1 2 3; do
+            if v_click "Create Prescription" "mdp-fx4-rx-create-$mdp_try" ""; then
+              mdp_rx_created="yes"; sleep 4; break
+            fi
+            v_click_try_hits "Create Prescription" "mdp-fx4-rx-create-hits-$mdp_try" "" && { mdp_rx_created="yes"; sleep 4; break; }
+            # scroll the DIALOG content (the BUG-PD34 idiom) then retry
+            scroll_burst down 500 400 || true; sleep 1
+          done
+          scroll_burst up 500 400 || true; sleep 1
+          [ "$mdp_rx_created" = "yes" ] || probe "mdp-fx4: the Create Prescription click failed all 3 ladder attempts (recorded — the POST count below decides)"
         else
           bug P1 "${check}_FX_RX" "the $MICRO_RX_MED template card could not be clicked in the generator"
         fi
@@ -16237,6 +16262,58 @@ micro_save_pdf() { # the LEGACY name — the ff-2b build replaced the print-shee
 # =============================================================================
 # micro: the ff-round final-fix shards (directive §12 — the 14 targeted reruns)
 # =============================================================================
+# ---- micro: the ff-round shared GUI-create (the carousel-race-safe fast return) ----
+micro_gui_create_patient() { # <stem> <first> <last> <note> — a GUI patient create with the welcome-tip-carousel recovery + a FAST post-submit return (toast-poll callers need the Radix 5s window)
+  local stem="$1" first="$2" last="$3" note="$4" attempt
+  for attempt in 1 2; do
+    # (run 35458579008, class D — print-prescription/patients-smoke): the
+    # tip-card's exact-text 'Add Patient' CTA + the 6s carousel auto-advance
+    # can navigate instead of opening the dialog (Settings/scan). Anchor on
+    # the dashboard, verify the dialog, recover + retry on a miss.
+    wait_for_ocr "Add Patient" 15 "${stem}-mgc-anchor-$attempt" || {
+      probe "mgc[$stem]: no 'Add Patient' visible — navigating to the Dashboard"
+      v_click "Dashboard" "${stem}-mgc-dash-$attempt" "Add Patient" || v_click "Dashboard" "${stem}-mgc-dash2-$attempt" "" || true
+      sleep 2
+    }
+    if v_click "Add Patient" "${stem}-mgc-open-$attempt" "First Name"; then
+      if v_type_into "First Name" "$first" "${stem}-mgc-first" \
+         && v_type_into "Last Name" "$last" "${stem}-mgc-last" \
+         && v_type_into "Notes" "$note" "${stem}-mgc-notes"; then
+        # submit via the First-Name-field Return (the below-the-fold safe path)
+        if ocr_lookup "First Name" "first" "label"; then
+          "$MV_MOUSE" "$OCR_HIT_X" "$(( OCR_HIT_Y + 6 ))" 2>>"$LOG" || true
+          sleep 1
+          osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10 || true
+          sleep 2
+          ocr_capture || true
+          if [ -n "$OCR_TEXT" ] && ! ocr_grep "Add New Patient"; then
+            probe "mgc[$stem]: the patient form submitted (the dialog closed — fast return for the toast window)"
+            return 0
+          fi
+        fi
+        v_click_try_hits "Add Patient" "${stem}-mcc-submit-$attempt" "$first" || { press_escape; continue; }
+        sleep 2
+        ocr_capture || true
+        if ! ocr_grep "Add New Patient"; then
+          probe "mgc[$stem]: the patient form submitted via the button click"
+          return 0
+        fi
+        press_escape || true
+      fi
+    fi
+    # the dialog did not open / the submit failed — hygiene + recovery + retry
+    probe "mgc[$stem]: attempt $attempt failed — hygiene + the dashboard recovery"
+    press_escape || true
+    sleep 1
+    v_click "Dashboard" "${stem}-mgc-recover-$attempt" "Add Patient" || true
+    sleep 2
+    v_scroll_top 6 || true
+  done
+  probe "mgc[$stem]: both create attempts failed"
+  return 1
+}
+
+
 # The final-fix build changes these contracts: (1) the bundle carries
 # NSCameraUsageDescription; (2) the print family is a NATIVE bridge (pdf-lib
 # generation → temp file → /usr/bin/open → Preview) instead of window.print();
@@ -16325,9 +16402,15 @@ micro_camera_software() { # the camera SOFTWARE contract at the ff build: the cl
             ocr_grep "Camera unavailable" && mcs_err="not-supported"
             qa_cap MICRO_CAMERA_SW "GREEN (no camera hardware on this runner — and the ff build shows the CLASSIFIED, VISIBLE error UX: '$mcs_err'; the failure is not silent)"
             surface_row "Camera software (no hardware)" "Open Camera" "a classified visible error + destructive toast" "no camera ≠ a silent dead end" "visible error OCR-verified ($mcs_err); app stayed responsive" "GREEN (software contract)" "mcs-camera-attempt" "OK"
-            # the app must remain fully usable after the camera failure
-            if docb_click_back_arrow "Scan & Upload" "mcs-back" "Add Patient"; then
-              qa_cap MICRO_CAMERA_SW_RECOVERY "GREEN (the app remained usable after the camera failure — the back navigation worked)"
+            # the app must remain fully usable after the camera failure —
+            # the wave-7 camera-shard exit ladder verbatim: the back arrow,
+            # then the sidebar Dashboard fallback; the proof is the scan view
+            # LEFT (the scan entry was from the patient detail, so the return
+            # target is the DETAIL — 'Add Patient' was never the right needle).
+            if docb_click_back_arrow "Scan & Upload" "mcs-back" "Scan with Camera" \
+               || v_click "Dashboard" "mcs-back-fb" "Add Patient" \
+               || { wait_text_gone "Open Camera" 10 "mcs-view-left" && ocr_grep "Patient"; }; then
+              qa_cap MICRO_CAMERA_SW_RECOVERY "GREEN (the app remained usable after the camera failure — the scan view was left via the product's own controls)"
             else
               bug P1 MICRO_CAMERA_SW_RECOVERY "the app was NOT usable after the camera failure (the back navigation did not work)"
             fi
@@ -16708,26 +16791,37 @@ micro_save_pdf_prescription() { # ff-2b: the rx Save-as-PDF → the NATIVE save 
 micro_toast_feedback() { # ff-2c: the mounted shadcn renderer — use-toast feedback is VISIBLE on screen
   note "=== micro:toast-feedback — the toast architecture (the renderer is mounted; feedback is visible) ==="
   surface_section "Micro-shard: toast feedback (the mounted use-toast renderer)"
-  # TTF1 — a patient mutation success toast (the add-patient flow)
+  # TTF1 — a patient mutation success toast (the add-patient flow).
+  # (run 35458579008, class D): the shadcn toast visually auto-closes after
+  # Radix's DEFAULT 5s duration — the generic create helper's post-submit
+  # path (sleep 3 + captures + verify) reaches its first OCR ~6s after the
+  # POST, just PAST the window. The check must poll TIGHTLY (1s cadence)
+  # from the moment the form submits.
   local TTF_FIRST="Toast"; local TTF_LAST="Feedtest"
   local TTF_PHONE="+1 555 0474"; local TTF_FULL="Toast Feedtest"
   local ttf_ok=0
-  if v_click "Dashboard" "ttf1-home" "Add Patient" || v_click "Patients" "ttf1-patients" "Add Patient" || true; then
-    if create_patient "$TTF_FIRST" "$TTF_LAST" "ONLY-TOAST-FEED" "ttf1"; then
+  micro_gui_create_patient "ttf1" "$TTF_FIRST" "$TTF_LAST" "ONLY-TOAST-FEED"
+  local ttf_created=$?
+  if [ "$ttf_created" = "0" ]; then
+    # the tight poll — 1s cadence over 10s from RIGHT NOW (the POST fired
+    # inside the helper's submit; the first poll lands within the 5s window)
+    local ttf_i=0 ttf_seen="no"
+    while [ "$ttf_i" -lt 10 ]; do
       ocr_capture || true
-      snap "ttf1-after-create" || true
-      if wait_for_ocr "Patient Added" 8 "ttf1-toast" || ocr_grep "Patient Added"; then
-        qa_cap MICRO_TOAST_PATIENT "GREEN (the patient-mutation success toast is VISIBLE on screen: 'Patient Added')"
-        surface_row "Toast: patient mutation" "Add Patient → Save" "the rendered toast" "use-toast feedback reaches the screen" "OCR-verified" "GREEN" "ttf1-toast" "OK"
-        ttf_ok=$(( ttf_ok + 1 ))
-      else
-        bug P2 MICRO_TOAST_PATIENT "the 'Patient Added' toast did NOT render after the patient creation (the ff-2c renderer mount regression)"
-      fi
+      if ocr_grep "Patient Added"; then ttf_seen="yes"; break; fi
+      sleep 1
+      ttf_i=$(( ttf_i + 1 ))
+    done
+    snap "ttf1-after-create" || true
+    if [ "$ttf_seen" = "yes" ]; then
+      qa_cap MICRO_TOAST_PATIENT "GREEN (the patient-mutation success toast was VISIBLE on screen: 'Patient Added', caught ${ttf_i}s after the create)"
+      surface_row "Toast: patient mutation" "Add Patient → Save" "the rendered toast" "use-toast feedback reaches the screen" "OCR-verified" "GREEN" "ttf1-after-create" "OK"
+      ttf_ok=$(( ttf_ok + 1 ))
     else
-      bug D MICRO_TOAST_PATIENT "the fixture patient could not be created through the GUI (see ttf1-*)"
+      bug P2 MICRO_TOAST_PATIENT "the 'Patient Added' toast did NOT render within the 5s Radix window after the 201-verified create (the ff-2c renderer mount regression)"
     fi
   else
-    bug D MICRO_TOAST_PATIENT "could not reach the dashboard/patients surface"
+    bug D MICRO_TOAST_PATIENT "the fixture patient could not be created through the GUI (see ttf1-*)"
   fi
   # TTF2 — the CSV export async toast
   if dio_toolbar_click "Export CSV" "ttf2-export" "Export Started" || v_click "Export CSV" "ttf2-export" ""; then
@@ -16858,7 +16952,16 @@ CSV
         else
           bug P2 IMPORT_INVALID_DOB "the DOB contract failed (reject-error-visible=$mdob_reject_ok imported-count-1=$mdob_valid_ok — the panel must show per-row 'Invalid date of birth' errors and import exactly the 1 valid row)"
         fi
-        # the durable truth: only the VALID row exists as a patient
+        # the durable truth: only the VALID row exists as a patient.
+        # (run 35458579008, class D): the WKWebView can back-navigate to the
+        # tauri:// first-run surface during the post-import search (the
+        # documented no-input-focused keystroke class) — the surface
+        # AUTO-HANDS-OFF back to the API app ("Opening MediVault…"): wait for
+        # it, then proceed.
+        if ocr_grep "first-run setup"; then
+          probe "mdob: the app back-navigated to the first-run surface — waiting for the automatic hand-off"
+          wait_for_ocr "Add Patient" 60 "mdob-handoff" || true
+        fi
         if open_patient_by_phone_token "4810" "Dob Validhist" "mdob-valid-detail" "+1 555 4810"; then
           qa_cap IMPORT_DOB_HISTORICAL "GREEN (the legitimate historical DOB 1920-02-29 round-tripped as a patient record)"
           v_click "Dashboard" "mdob-valid-back" "Add Patient" || true
@@ -16924,14 +17027,23 @@ CSV
         dio_back_to_dashboard
         # the second import of the SAME file must create nothing (existing-patient dedupe)
         sleep 2
+        if ocr_grep "first-run setup"; then
+          probe "mdup: the app back-navigated to the first-run surface — waiting for the automatic hand-off"
+          wait_for_ocr "Add Patient" 60 "mdup-handoff" || true
+        fi
         if dio_toolbar_click "Import CSV" "mdup2-open" "Import Patients"; then
           if dio_import_select "$MICRO_DIR/dup-probe.csv" "mdup2-select"; then
             if dio_import_run "mdup2-run"; then
               snap "mdup2-result" || true
+              # (run 35458579008, class D): the anchored-digit count reader
+              # misread the panel's Imported stat ('19' — a clock/date
+              # fragment bleed). The ROBUST zero-creation signal is the
+              # panel's own noneImported text: "No new patients were imported".
               local mdup_match_ok="no" mdup_zero_ok="no"
               ocr_grep "matched existing patients" && mdup_match_ok="yes"
+              if ocr_grep "No new patients were imported"; then mdup_zero_ok="yes"; fi
               [ "$DIO_IMP_IMPORTED" = "0" ] && mdup_zero_ok="yes"
-              probe "mdup(pass 2): imported='${DIO_IMP_IMPORTED:-unreadable}' skipped='${DIO_IMP_SKIPPED:-unreadable}' errors='${DIO_IMP_ERRORS_TXT:-none}'"
+              probe "mdup(pass 2): imported='${DIO_IMP_IMPORTED:-unreadable}' skipped='${DIO_IMP_SKIPPED:-unreadable}' errors='${DIO_IMP_ERRORS_TXT:-none}' noneImported-text=$mdup_zero_ok"
               if [ "$mdup_match_ok" = "yes" ] && [ "$mdup_zero_ok" = "yes" ]; then
                 qa_cap IMPORT_DUPLICATES_EXISTING "GREEN (re-importing the same file created ZERO patients; every row matched the existing records and was reported ('matched existing patients'))"
                 surface_row "Duplicates (existing patients)" "re-import dup-probe.csv" "the matched-existing count row" "idempotent imports; no double records" "imported=0; matches reported" "GREEN" "mdup2-result" "OK"
@@ -17070,8 +17182,10 @@ micro_patients_smoke() { # the light patients regression: create → open → se
   micro_fixtures_init
   micro_fx_patient "$MPS_FIRST" "$MPS_LAST" "$MPS_PHONE" "psm.smoketest@example.invalid" "ONLY-PSM-SMOKE" "mps-fx" \
     || bug P1 PATIENTS_SMOKE_FIXTURE "the fixture patient $MPS_FULL could not be created"
-  # create one MORE patient through the real GUI (the doctor's flow)
-  if create_patient "Psm" "Guismoke" "ONLY-PSM-GUI" "mps-gui"; then
+  # create one MORE patient through the real GUI (the doctor's flow) — the
+  # carousel-race-safe helper (run 35458579008: the bare create hit the tip
+  # CTA race and opened the scan view instead of the dialog)
+  if micro_gui_create_patient "mps-gui" "Psm" "Guismoke" "ONLY-PSM-GUI"; then
     sleep 2
     ocr_capture || true
     if ocr_grep "Psm" || ocr_grep "Patient Added"; then
