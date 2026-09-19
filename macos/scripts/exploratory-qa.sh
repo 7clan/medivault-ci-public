@@ -16443,8 +16443,8 @@ dsk_click_viewer_save_pdf() { # <doc-title> <stem> — the ff-2b viewer "Save as
   # Save ≈ x845 in another) — a single anchored y is a coin flip. The 2D
   # ladder: every (x, y-offset) pair, each verified by the NATIVE save panel
   # (Where/New Folder/Tags needles) and escaped on miss.
-  for yoff in 0 -45 -30 -15 -60; do
-    for cand in 845 865 825 885 805 905 925; do
+  for yoff in -60 -75 -45 -30 -15 0; do
+    for cand in 845 735 865 705 825 765 885 675 805 905 925; do
       probe "dsk-viewersave[$stem]: anchored candidate ($cand,$(( ty + yoff ))) — verified click"
       "$MV_MOUSE" "$cand" "$(( ty + yoff ))" 2>>"$LOG" || true
       sleep 3
@@ -17407,8 +17407,8 @@ micro_click_viewer_print() { # <doc-title> <stem> — the viewer Print icon → 
   # (164 vs ~120) — the 2D ladder over (x, y-offset), each candidate verified
   # by the TEMP PRINT FILE (the bridge's observable artifact) or Preview.
   local yoff
-  for yoff in 0 -45 -30 -15 -60; do
-    for cand in 805 825 785 845 865 765; do
+  for yoff in -60 -75 -45 -30 -15 0; do
+    for cand in 805 735 825 705 785 765 845 675 865; do
       probe "dsk-viewerprint[$stem]: anchored candidate ($cand,$(( ty + yoff ))) — verified by the native bridge"
       "$MV_MOUSE" "$cand" "$(( ty + yoff ))" 2>>"$LOG" || true
       sleep 3
