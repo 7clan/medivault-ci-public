@@ -23,8 +23,12 @@
  *   no interactive actions that could alter patient data.
  * - The overlay is modal while active and unmounts completely on
  *   finish/skip, so nothing stays blocked afterwards.
- * - Esc dismisses at any step; window resize/scroll re-measure the
- *   spotlight; a missing target degrades to a centered card.
+ * - The keydown handlers stay armed (Escape/arrows — a plain-browser
+ *   affordance), but the card never ADVERTISES Escape: on the macOS
+ *   WKWebView shell the key never reaches the DOM (TOUR_ESC_HINT_INOPERATIVE),
+ *   so the visible Skip control is the supported exit everywhere.
+ * - Window resize/scroll re-measure the spotlight; a missing target
+ *   degrades to a centered card.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
@@ -444,9 +448,8 @@ export function GuidedTour() {
       </p>
 
       <div className="mt-3 space-y-2">
-        <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+        <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
           <span className="tabular-nums font-medium">{tourStrings.stepOf(index + 1, total)}</span>
-          <span className="hidden sm:block">{tourStrings.dismissHint}</span>
         </div>
         <Progress value={progress} className="h-1" />
       </div>
