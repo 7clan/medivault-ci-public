@@ -17273,10 +17273,16 @@ micro_patients_smoke() { # the light patients regression: create → open → se
   else
     bug P2 PATIENTS_SMOKE_CREATE "the Add Patient GUI flow failed (see mps-gui-*)"
   fi
-  # open the fixture patient's detail
+  # open the fixture patient's detail.
+  # (run 35464211588, class D): Vision misread the 3-letter first name 'Psm'
+  # as 'Pam' — the surname + the phone + the note sentinel are the robust
+  # name-corroboration needles (all three OCR-reliable).
   if open_patient_by_phone_token "0475" "$MPS_FULL" "mps-detail" "$MPS_PHONE"; then
-    ocr_grep "$MPS_FULL" && qa_cap PATIENTS_SMOKE_OPEN "GREEN (the patient detail opened and shows the patient's name)" \
-      || bug P2 PATIENTS_SMOKE_OPEN "the opened detail does not show the patient's name"
+    if ocr_grep "$MPS_LAST" || ocr_grep "+1 555 0475" || ocr_grep "ONLY-PSM-SMOKE"; then
+      qa_cap PATIENTS_SMOKE_OPEN "GREEN (the patient detail opened and shows the patient's identity — the surname/phone/note corroborated)"
+    else
+      bug P2 PATIENTS_SMOKE_OPEN "the opened detail does not show the patient's identity"
+    fi
     # the isolation echo: the FOREIGN fixture patient must not appear on this detail
     ocr_capture || true
     if ocr_grep "Foreign Micro"; then
@@ -17288,13 +17294,14 @@ micro_patients_smoke() { # the light patients regression: create → open → se
   else
     bug P2 PATIENTS_SMOKE_OPEN "could not open $MPS_FULL's detail"
   fi
-  # search round-trip
+  # search round-trip (the surname/phone needles — the 3-letter first name
+  # is OCR-misread-prone)
   clear_search_box || true
   if search_type "0475" "mps-search"; then
     sleep 3
     ocr_capture || true
     snap "mps-search-result" || true
-    if ocr_grep "$MPS_FULL" || ocr_grep "Smoketest"; then
+    if ocr_grep "Smoketest" || ocr_grep "+1 555 0475"; then
       qa_cap PATIENTS_SMOKE_SEARCH "GREEN (the search finds the fixture patient by the phone token)"
     else
       bug P2 PATIENTS_SMOKE_SEARCH "the search did not surface the fixture patient (see mps-search-result)"
