@@ -17152,12 +17152,9 @@ micro_security_temp_files() { # directive §4: the PHI temp-file lifecycle (perm
   mts_dir="$(dsk_print_temp_dir)"
   local mts_printed="no"
   if micro_docs_ready "MICRO_TEMP_SEC" && open_patient_by_phone_token "$MICRO_PAT1_TOKEN" "$MICRO_PAT1_FULL" "mts-detail" "$MICRO_PAT1_PHONE"; then
-    v_scroll_find "$MICRO_PDF_TITLE" 16 no down 4 || true
-    if v_click "$MICRO_PDF_TITLE" "mts-doc-open" "" || v_click_try_hits "$MICRO_PDF_TITLE" "mts-doc-open" ""; then
-      sleep 3
-      wait_text_gone "Loading document" 45 "mts-loaded" || true
+    if micro_open_doc_in_viewer "$MICRO_PDF_TITLE" "mts"; then
       dsk_print_temp_mark
-      if dsk_click_viewer_icon print "$MICRO_PDF_TITLE" "mts-printicon"; then
+      if micro_click_viewer_print "$MICRO_PDF_TITLE" "mts"; then
         if dsk_print_temp_newest "mts" 40; then
           mts_printed="yes"
           mts_file="$DSK_PTMP_FILE"
@@ -17166,10 +17163,10 @@ micro_security_temp_files() { # directive §4: the PHI temp-file lifecycle (perm
           bug P2 TEMP_SEC_PRINT "the print flow did not materialize a temp file (the security battery needs one print artifact)"
         fi
       else
-        bug P2 TEMP_SEC_PRINT "the viewer Print icon could not be activated for the temp-security flow"
+        bug P2 TEMP_SEC_PRINT "the viewer Print icon could not be activated for the temp-security flow (see mts-cand-*)"
       fi
     else
-      bug P1 TEMP_SEC_PRINT "the PDF document row could not be opened"
+      bug P1 TEMP_SEC_PRINT "the PDF document card could not be opened into the viewer (see mts-*)"
     fi
   else
     probe "mts: the fixture documents are unavailable — the perms/names checks run against any PRE-EXISTING print temp entries (the honest degraded mode)"
