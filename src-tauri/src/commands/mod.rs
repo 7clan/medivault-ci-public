@@ -9,5 +9,6 @@ pub mod backup;
 pub mod device;
 pub mod documents;
 pub mod patients;
+pub mod print;
 pub mod settings;
 pub mod webview;

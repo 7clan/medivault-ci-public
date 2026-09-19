@@ -33,6 +33,8 @@ import {
 import { formatFileSize, formatAge } from '@/lib/utils-helpers'
 import { useI18n } from '@/i18n'
 import type { PatientInfo } from '@/store/app-store'
+import { nativeBridgeAvailable, openForPrint, savePdfFile, downloadBytesAsFile } from '@/lib/print-bridge'
+import { generatePatientReportPdf } from '@/lib/pdf/report-pdf'
 
 interface PatientSummaryReportProps {
   patient: PatientInfo
@@ -82,8 +84,10 @@ const cardVariants: Variants = {
 
 export function PatientSummaryReport({ patient, open, onOpenChange }: PatientSummaryReportProps) {
   const { toast } = useToast()
-  const { t, formatDate, formatDateTime } = useI18n()
+  const { t, locale, formatDate, formatDateTime } = useI18n()
   const [rawReport, setRawReport] = useState<ReportData | null>(null)
+  const [printBusy, setPrintBusy] = useState(false)
+  const [saveBusy, setSaveBusy] = useState(false)
   const loading = open && rawReport === null
   const report = open ? rawReport : null
 
@@ -121,12 +125,54 @@ export function PatientSummaryReport({ patient, open, onOpenChange }: PatientSum
     return () => { controller.abort() }
   }, [open, patient.id, toast, t])
 
-  const handlePrint = () => {
-    window.print()
+  const handlePrint = async () => {
+    if (!rawReport) return
+    // WEB fallback (plain browsers): the dialog's print stylesheet flow.
+    if (!nativeBridgeAvailable()) {
+      window.print()
+      return
+    }
+    if (printBusy) return
+    setPrintBusy(true)
+    try {
+      toast({ title: t('print.preparingTitle') })
+      // Reuse the report the dialog ALREADY fetched — no refetch.
+      const bytes = await generatePatientReportPdf(rawReport, locale)
+      await openForPrint(bytes)
+      toast({ title: t('print.openedTitle'), description: t('print.openedDesc') })
+    } catch {
+      toast({ title: t('print.openFailedTitle'), description: t('print.openFailedDesc'), variant: 'destructive' })
+    } finally {
+      setPrintBusy(false)
+    }
   }
 
-  const handleDownloadPdf = () => {
-    window.print()
+  const handleDownloadPdf = async () => {
+    if (!rawReport) return
+    if (saveBusy) return
+    setSaveBusy(true)
+    try {
+      const now = new Date()
+      const ymd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
+      const suggested = `MediVault-Report-${patient.firstName}-${patient.lastName}-${ymd}.pdf`
+      const bytes = await generatePatientReportPdf(rawReport, locale)
+      // WEB fallback (plain browsers): download the generated PDF directly.
+      if (!nativeBridgeAvailable()) {
+        downloadBytesAsFile(bytes, suggested)
+        toast({ title: t('viewer.downloadStartedTitle'), description: t('viewer.downloadStartedDesc', { name: suggested }) })
+        return
+      }
+      const outcome = await savePdfFile(bytes, suggested)
+      if (outcome.outcome === 'saved') {
+        toast({ title: t('print.savedTitle'), description: t('print.savedDesc', { path: outcome.path }) })
+      } else {
+        toast({ title: t('print.cancelledSave') })
+      }
+    } catch {
+      toast({ title: t('print.saveFailedTitle'), description: t('print.saveFailedDesc'), variant: 'destructive' })
+    } finally {
+      setSaveBusy(false)
+    }
   }
 
   if (!open) return null
@@ -149,11 +195,11 @@ export function PatientSummaryReport({ patient, open, onOpenChange }: PatientSum
         <div className="px-6 pb-6">
           {/* Action buttons */}
           <div className="flex gap-2 mb-6 no-print">
-            <Button onClick={handlePrint} variant="outline" className="border-emerald-200 text-emerald-700 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-400 dark:hover:bg-emerald-950/20">
+            <Button onClick={handlePrint} disabled={printBusy || loading} variant="outline" className="border-emerald-200 text-emerald-700 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-400 dark:hover:bg-emerald-950/20">
               <Printer className="h-4 w-4 me-2" />
               {t('report.print')}
             </Button>
-            <Button onClick={handleDownloadPdf} className="bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-white">
+            <Button data-qa="report-save-pdf" onClick={handleDownloadPdf} disabled={saveBusy || loading} className="bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-white">
               <Download className="h-4 w-4 me-2" />
               {t('report.downloadPdf')}
             </Button>
