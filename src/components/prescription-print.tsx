@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { motion } from 'framer-motion'
@@ -19,9 +19,13 @@ import {
   Clock,
   Infinity,
   ListChecks,
+  FileDown,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/i18n'
+import { useToast } from '@/hooks/use-toast'
+import { nativeBridgeAvailable, openForPrint, savePdfFile, downloadBytesAsFile } from '@/lib/print-bridge'
+import { generatePrescriptionPdf } from '@/lib/pdf/prescription-pdf'
 
 export interface PrescriptionPrintData {
   prescription: {
@@ -45,7 +49,10 @@ interface PrescriptionPrintProps {
 
 export function PrescriptionPrint({ data, open, onClose }: PrescriptionPrintProps) {
   const printRef = useRef<HTMLDivElement>(null)
+  const { toast } = useToast()
   const { t, locale, dir } = useI18n()
+  const [printBusy, setPrintBusy] = useState(false)
+  const [saveBusy, setSaveBusy] = useState(false)
   // Frequencies/durations are STORED DATA — display localizes via the
   // catalog, unknown custom values pass through verbatim.
   const tFreq = (value: string) => {
@@ -64,14 +71,17 @@ export function PrescriptionPrint({ data, open, onClose }: PrescriptionPrintProp
   const ongoingCount = medications.filter((m) => m.duration === 'Ongoing').length
   const shortTermCount = medications.length - ongoingCount
 
-  const handlePrint = () => {
-    const printContent = printRef.current
-    if (!printContent) return
+  const handlePrint = async () => {
+    // WEB fallback (plain browsers): keep the legacy document.write print
+    // flow — it only ever worked in a real browser context.
+    if (!nativeBridgeAvailable()) {
+      const printContent = printRef.current
+      if (!printContent) return
 
-    const printWindow = window.open('', '_blank')
-    if (!printWindow) return
+      const printWindow = window.open('', '_blank')
+      if (!printWindow) return
 
-    printWindow.document.write(`
+      printWindow.document.write(`
       <!DOCTYPE html>
       <html lang="${locale}" dir="${dir}">
       <head>
@@ -317,7 +327,52 @@ export function PrescriptionPrint({ data, open, onClose }: PrescriptionPrintProp
       </body>
       </html>
     `)
-    printWindow.document.close()
+      printWindow.document.close()
+      return
+    }
+
+    if (printBusy) return
+    setPrintBusy(true)
+    try {
+      toast({ title: t('print.preparingTitle') })
+      const bytes = await generatePrescriptionPdf(data, locale)
+      await openForPrint(bytes)
+      toast({ title: t('print.openedTitle'), description: t('print.openedDesc') })
+    } catch {
+      toast({ title: t('print.openFailedTitle'), description: t('print.openFailedDesc'), variant: 'destructive' })
+    } finally {
+      setPrintBusy(false)
+    }
+  }
+
+  const handleSavePdf = async () => {
+    if (saveBusy) return
+    setSaveBusy(true)
+    try {
+      const now = new Date()
+      const ymd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
+      const namePart = patient
+        ? `${patient.firstName}-${patient.lastName}`.replace(/\s+/g, '')
+        : prescription.id.slice(0, 8)
+      const suggested = `MediVault-Prescription-${namePart}-${ymd}.pdf`
+      const bytes = await generatePrescriptionPdf(data, locale)
+      // WEB fallback (plain browsers): download the generated PDF directly.
+      if (!nativeBridgeAvailable()) {
+        downloadBytesAsFile(bytes, suggested)
+        toast({ title: t('viewer.downloadStartedTitle'), description: t('viewer.downloadStartedDesc', { name: suggested }) })
+        return
+      }
+      const outcome = await savePdfFile(bytes, suggested)
+      if (outcome.outcome === 'saved') {
+        toast({ title: t('print.savedTitle'), description: t('print.savedDesc', { path: outcome.path }) })
+      } else {
+        toast({ title: t('print.cancelledSave') })
+      }
+    } catch {
+      toast({ title: t('print.saveFailedTitle'), description: t('print.saveFailedDesc'), variant: 'destructive' })
+    } finally {
+      setSaveBusy(false)
+    }
   }
 
   return (
@@ -527,10 +582,22 @@ export function PrescriptionPrint({ data, open, onClose }: PrescriptionPrintProp
           </Button>
           <Button
             onClick={handlePrint}
+            disabled={printBusy}
             className="bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-teal-600 text-white"
           >
             <Printer className="h-4 w-4 me-1.5" />
             {t('viewer.print')}
+          </Button>
+          <Button
+            data-qa="rx-save-pdf"
+            onClick={handleSavePdf}
+            disabled={saveBusy}
+            aria-label={t('print.saveAsPdf')}
+            variant="outline"
+            className="border-emerald-200 text-emerald-700 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-400 dark:hover:bg-emerald-950/20"
+          >
+            <FileDown className="h-4 w-4 me-1.5" />
+            {t('print.saveAsPdf')}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -1,0 +1,113 @@
+"$schema" = "schemas/schema.json"
+
+# MediVault app ACL permissions for the native print / PDF bridge (ff-2b).
+#
+# Defining ANY app permission here makes tauri-build register the app ACL
+# manifest, which turns ACL enforcement ON for application commands on ALL
+# origins (tauri 2.11.x `Webview::on_message`:
+# `plugin_command.is_some() || has_app_acl_manifest || !is_local`).
+# Two capabilities therefore reference these permissions:
+#
+#   * src-tauri/capabilities/loopback-print-bridge.json — REMOTE grant for
+#     the loopback API origin (the supervisor-served app UI). ONLY the two
+#     print-bridge commands — the minimum the API-served UI needs.
+#   * src-tauri/capabilities/local-main-app.json — LOCAL grant for the
+#     embedded tauri:// first-run surface listing EVERY application
+#     command, preserving the pre-bridge behavior exactly (app commands
+#     were previously allowed from the local origin whenever no app ACL
+#     manifest existed).
+
+[[permission]]
+identifier = "allow-open-for-print"
+description = """
+Allows invoking the `open_for_print` command: base64-decoded bytes are
+magic-validated (PDF / JPEG / PNG only, fail-closed), materialized as a
+0600 file with an unpredictable PHI-free name inside a 0700 temp
+directory, and opened with the OS default viewer via the fixed
+`/usr/bin/open` binary — no shell, no frontend-supplied paths.
+"""
+commands.allow = ["open_for_print"]
+
+[[permission]]
+identifier = "allow-save-pdf-file"
+description = """
+Allows invoking the `save_pdf_file` command: PDF-magic-validated bytes
+are written ONLY to the path the user picks in the NATIVE save panel
+(tauri-plugin-dialog); the frontend can merely suggest a sanitized
+file name.
+"""
+commands.allow = ["save_pdf_file"]
+
+[[permission]]
+identifier = "allow-local-app-commands"
+description = """
+Local-origin grant of every application IPC command for the `main`
+window — the embedded first-run surface (tauri://localhost). This
+preserves the pre-print-bridge behavior after the app ACL manifest was
+introduced: application commands used to be allowed from the local
+origin whenever the app defined no ACL manifest of its own. NOTE: this
+permission carries NO plugin permissions and NO remote URLs — it is
+local-only and grants nothing to the API-served loopback UI.
+"""
+commands.allow = [
+  "login",
+  "logout",
+  "refresh_session",
+  "change_password",
+  "get_force_password_change_status",
+  "search_patients",
+  "get_recent_patients",
+  "get_patient",
+  "get_patient_timeline",
+  "get_patient_visits",
+  "get_patient_notes",
+  "get_patient_prescriptions",
+  "get_patient_reports",
+  "upload_document",
+  "upload_multiple",
+  "upload_folder",
+  "download_document",
+  "download_range",
+  "view_document",
+  "move_document",
+  "restore_document",
+  "delete_document",
+  "get_document_info",
+  "get_backup_drive_status",
+  "select_backup_destination",
+  "start_manual_backup",
+  "get_backup_progress",
+  "verify_backup_checksums",
+  "get_restore_preview",
+  "execute_restore",
+  "get_backup_history",
+  "navigate_to_local_backend",
+  "get_settings",
+  "update_settings",
+  "test_server_connection",
+  "get_certificate_trust_status",
+  "get_service_status",
+  "get_database_status",
+  "get_device_status",
+  "get_log_contents",
+  "generate_device_keypair",
+  "enroll_device",
+  "get_device_registration_status",
+  "revoke_device",
+  "sign_challenge",
+  "list_devices",
+  "background_service_status",
+  "background_service_register",
+  "background_service_unregister",
+  "background_service_open_login_items_settings",
+  "list_scanners",
+  "scan_single_page",
+  "scan_multi_page",
+  "rotate_page",
+  "remove_page",
+  "reorder_page",
+  "create_pdf_from_pages",
+  "cleanup_temp_files",
+  "open_for_print",
+  "save_pdf_file",
+]

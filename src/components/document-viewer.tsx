@@ -10,6 +10,7 @@ import {
   ArrowLeft,
   Download,
   FileText,
+  FileDown,
   Printer,
   Maximize2,
   Minimize2,
@@ -28,6 +29,8 @@ import {
 import { useState, useEffect, useCallback } from 'react'
 import { DocumentAnnotations } from './document-annotations'
 import { useI18n } from '@/i18n'
+import { nativeBridgeAvailable, openForPrint, savePdfFile, downloadBytesAsFile } from '@/lib/print-bridge'
+import { wrapImageAsPdf } from '@/lib/pdf/image-pdf'
 
 interface DocumentViewerProps {
   document: DocumentInfo
@@ -42,6 +45,8 @@ export function DocumentViewer({ document: doc }: DocumentViewerProps) {
   const [zoom, setZoom] = useState(1)
   const [infoOpen, setInfoOpen] = useState(false)
   const [annotationsOpen, setAnnotationsOpen] = useState(false)
+  const [printBusy, setPrintBusy] = useState(false)
+  const [saveBusy, setSaveBusy] = useState(false)
 
   const viewUrl = `/api/documents/${doc.id}/view`
 
@@ -49,6 +54,72 @@ export function DocumentViewer({ document: doc }: DocumentViewerProps) {
     setLoading(true)
     setZoom(1)
   }, [doc.id])
+
+  /** Fetch the document bytes (the same endpoint handleDownload uses). */
+  const fetchDocumentBytes = async (): Promise<Uint8Array> => {
+    const res = await fetch(`/api/documents/${doc.id}`)
+    if (!res.ok) throw new Error('Download failed')
+    const blob = await res.blob()
+    return new Uint8Array(await blob.arrayBuffer())
+  }
+
+  const handlePrint = async () => {
+    if (printBusy) return
+    // WEB fallback (plain browsers): the legacy print flow still applies.
+    if (!nativeBridgeAvailable()) {
+      const printWindow = window.open(viewUrl, '_blank')
+      if (printWindow) { printWindow.onload = () => { printWindow.print() } }
+      return
+    }
+    setPrintBusy(true)
+    try {
+      toast({ title: t('print.preparingTitle') })
+      const bytes = await fetchDocumentBytes()
+      await openForPrint(bytes)
+      toast({ title: t('print.openedTitle'), description: t('print.openedDesc') })
+    } catch {
+      toast({ title: t('print.openFailedTitle'), description: t('print.openFailedDesc'), variant: 'destructive' })
+    } finally {
+      setPrintBusy(false)
+    }
+  }
+
+  const handleSavePdf = async () => {
+    if (saveBusy) return
+    setSaveBusy(true)
+    try {
+      const suggested = `${doc.fileName.replace(/\.[^.]+$/, '')}.pdf`
+      if (!nativeBridgeAvailable()) {
+        // WEB fallback: build the same PDF and download it directly.
+        const bytes = await fetchDocumentBytes()
+        const pdfBytes = doc.mimeType === 'image/png' || doc.mimeType === 'image/jpeg'
+          ? await wrapImageAsPdf(bytes, doc.mimeType)
+          : bytes
+        if (pdfBytes[0] !== 0x25 || pdfBytes[1] !== 0x50) {
+          throw new Error('Unsupported file type')
+        }
+        downloadBytesAsFile(pdfBytes, suggested)
+        toast({ title: t('viewer.downloadStartedTitle'), description: t('viewer.downloadStartedDesc', { name: suggested }) })
+        return
+      }
+      toast({ title: t('print.preparingTitle') })
+      const bytes = await fetchDocumentBytes()
+      // The native save command accepts PDF magic only — wrap images first.
+      const pdfBytes = doc.mimeType === 'image/png' || doc.mimeType === 'image/jpeg'
+        ? await wrapImageAsPdf(bytes, doc.mimeType)
+        : bytes
+      const outcome = await savePdfFile(pdfBytes, suggested)
+      if (outcome.outcome === 'saved') {
+        toast({ title: t('print.savedTitle'), description: t('print.savedDesc', { path: outcome.path }) })
+      } else {
+        toast({ title: t('print.cancelledSave') })
+      }
+    } catch {
+      toast({ title: t('print.saveFailedTitle'), description: t('print.saveFailedDesc'), variant: 'destructive' })
+    } finally {
+      setSaveBusy(false)
+    }
+  }
 
   const handleDownload = async () => {
     try {
@@ -67,11 +138,6 @@ export function DocumentViewer({ document: doc }: DocumentViewerProps) {
     } catch {
       toast({ title: t('documents.downloadFailedTitle'), variant: 'destructive' })
     }
-  }
-
-  const handlePrint = () => {
-    const printWindow = window.open(viewUrl, '_blank')
-    if (printWindow) { printWindow.onload = () => { printWindow.print() } }
   }
 
   const handleBackToPatient = () => {
@@ -120,7 +186,8 @@ export function DocumentViewer({ document: doc }: DocumentViewerProps) {
                 <Button variant="ghost" size="icon" onClick={zoomIn} className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20" disabled={zoom >= 3}><ZoomIn className="h-4 w-4" /></Button>
                 <div className="h-5 w-px bg-gray-200 dark:bg-gray-700" />
                 <Button variant="ghost" size="icon" onClick={handleDownload} className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20" title={t('documents.download')}><Download className="h-4 w-4" /></Button>
-                <Button variant="ghost" size="icon" onClick={handlePrint} className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20" title={t('viewer.print')}><Printer className="h-4 w-4" /></Button>
+                <Button variant="ghost" size="icon" onClick={handlePrint} disabled={printBusy} className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20" title={t('viewer.print')}><Printer className="h-4 w-4" /></Button>
+                <Button variant="ghost" size="icon" onClick={handleSavePdf} disabled={saveBusy} aria-label={t('print.saveAsPdf')} className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20" title={t('print.saveAsPdf')}><FileDown className="h-4 w-4" /></Button>
                 <Button variant="ghost" size="icon" onClick={() => setInfoOpen(!infoOpen)} className={`hover:bg-emerald-50 dark:hover:bg-emerald-950/20 ${infoOpen ? 'bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600' : ''}`} title={t('viewer.info')}><Info className="h-4 w-4" /></Button>
                 <div className="h-5 w-px bg-gray-200 dark:bg-gray-700" />
                 <Button variant="ghost" size="icon" onClick={() => setAnnotationsOpen(!annotationsOpen)} className={`hover:bg-emerald-50 dark:hover:bg-emerald-950/20 ${annotationsOpen ? 'bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600' : ''}`} title={t('viewer.annotations')}><MessageSquare className="h-4 w-4" /></Button>
@@ -203,7 +270,8 @@ export function DocumentViewer({ document: doc }: DocumentViewerProps) {
             <motion.div whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}><Button variant="ghost" size="icon" onClick={zoomOut} className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20" disabled={zoom <= 0.25}><ZoomOut className="h-4 w-4" /></Button></motion.div>
             <motion.div whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}><Button variant="ghost" size="icon" onClick={zoomIn} className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20" disabled={zoom >= 3}><ZoomIn className="h-4 w-4" /></Button></motion.div>
             <motion.div whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}><Button variant="ghost" size="icon" onClick={handleDownload} title={t('documents.download')} className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20 hover:text-emerald-600"><Download className="h-4 w-4" /></Button></motion.div>
-            <motion.div whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}><Button data-qa="viewer-print" variant="ghost" size="icon" onClick={handlePrint} title={t('viewer.print')} className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20 hover:text-emerald-600"><Printer className="h-4 w-4" /></Button></motion.div>
+            <motion.div whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}><Button data-qa="viewer-print" variant="ghost" size="icon" onClick={handlePrint} disabled={printBusy} title={t('viewer.print')} className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20 hover:text-emerald-600"><Printer className="h-4 w-4" /></Button></motion.div>
+            <motion.div whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}><Button data-qa="viewer-save-pdf" variant="ghost" size="icon" onClick={handleSavePdf} disabled={saveBusy} aria-label={t('print.saveAsPdf')} title={t('print.saveAsPdf')} className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20 hover:text-emerald-600"><FileDown className="h-4 w-4" /></Button></motion.div>
             <motion.div whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}><Button variant="ghost" size="icon" onClick={() => setFullscreen(true)} title={t('viewer.fullscreen')} className="hover:bg-emerald-50 dark:hover:bg-emerald-950/20 hover:text-emerald-600"><Maximize2 className="h-4 w-4" /></Button></motion.div>
           </div>
         </div>

@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "local-main-app",
+  "description": "Preserves local-origin IPC access to every application command for the embedded first-run surface (tauri://localhost, window main). Required because defining the print-bridge app permissions (src-tauri/permissions/print-bridge.toml) registers the app ACL manifest, which turns ACL enforcement on for application commands even from the local origin — before that, app commands were implicitly allowed locally when no app ACL manifest existed. This capability grants no plugin permissions and no remote URLs.",
+  "local": true,
+  "windows": ["main"],
+  "permissions": [
+    "allow-local-app-commands"
+  ]
+}
