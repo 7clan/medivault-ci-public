@@ -4308,24 +4308,21 @@ open_patient_by_phone_token() { # <token> <full-name> <stem> [row-phone] — sea
   # AUTO-HANDS-OFF back to the API app ("Opening MediVault…"): detect it,
   # wait for the hand-off, retry the search ONCE. Additive — only fires on
   # the detected surface.
-  if ocr_grep "first-run setup"; then
-    probe "open-by-token[$stem]: the first-run surface is up (the back-nav class) — waiting for the automatic hand-off"
-    wait_for_ocr "Add Patient" 60 "${stem}-handoff" || true
-  fi
+  if micro_recover_from_backnav "$stem-pre"; then :; fi
   clear_search_box || true
   v_scroll_top 10 || true
   if ! search_type "$token" "${stem}-search"; then
-    if ocr_grep "first-run setup"; then
-      probe "open-by-token[$stem]: the back-nav hit MID-SEARCH — waiting for the hand-off, then one retry"
-      wait_for_ocr "Add Patient" 60 "${stem}-handoff2" || true
-      clear_search_box || true
-      v_scroll_top 10 || true
-      if ! search_type "$token" "${stem}-search2"; then
-        probe "open-by-token[$stem]: could not type the token '$token' after the hand-off recovery"
-        return 1
-      fi
-    else
-      probe "open-by-token[$stem]: could not type the token '$token'"
+    probe "open-by-token[$stem]: could not type the token '$token'"
+    return 1
+  fi
+  # (run 35464211588): the back-nav can strike MID-SEARCH — the typing went
+  # into the frozen first-run page (search_type still 'succeeds' — it only
+  # types). Check the surface AGAIN after the typing; recover + retype once.
+  if micro_recover_from_backnav "$stem-post"; then
+    clear_search_box || true
+    v_scroll_top 10 || true
+    if ! search_type "$token" "${stem}-search2"; then
+      probe "open-by-token[$stem]: could not type the token '$token' after the back-nav recovery"
       return 1
     fi
   fi
@@ -17405,6 +17402,32 @@ micro_rx_preview_print() { # <stem> — click the rx preview dialog's PRINT BUTT
     ocr_capture || true
   done <<< "$hits"
   probe "dsk-rxprint[$stem]: no Print candidate fired the bridge (all hits recorded)"
+  return 1
+}
+
+
+micro_recover_from_backnav() { # <stem> — recover from the WKWebView back-nav to the (possibly BFCACHE-frozen) first-run surface: click the surface's own 'Open MediVault' control, fall back to a relaunch; then wait for the app
+  local stem="$1"
+  ocr_capture || return 1
+  if ! ocr_grep "first-run setup"; then
+    return 1
+  fi
+  probe "backnav-recovery[$stem]: the first-run surface is up — driving its own 'Open MediVault' control (a BFCACHE-frozen page never auto-hands-off)"
+  snap "${stem}-backnav" || true
+  if v_click "Open MediVault" "${stem}-backnav-open" ""; then
+    if wait_for_ocr "Add Patient" 30 "${stem}-backnav-app"; then
+      probe "backnav-recovery[$stem]: the app is back (the manual hand-off worked)"
+      return 0
+    fi
+  fi
+  probe "backnav-recovery[$stem]: the manual hand-off did not restore the app — the bounded relaunch"
+  if dsk_relaunch "${stem}-backnav-relaunch"; then
+    if wait_for_ocr "Add Patient" 30 "${stem}-backnav-app2"; then
+      probe "backnav-recovery[$stem]: the app is back (post-relaunch)"
+      return 0
+    fi
+  fi
+  probe "backnav-recovery[$stem]: FAILED to restore the app (the caller's checks will fail honestly)"
   return 1
 }
 
