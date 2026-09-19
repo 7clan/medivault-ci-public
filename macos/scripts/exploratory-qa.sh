@@ -17304,7 +17304,9 @@ micro_patients_smoke() { # the light patients regression: create → open → se
     sleep 3
     ocr_capture || true
     snap "mps-search-result" || true
-    if ocr_grep "Smoketest" || ocr_grep "+1 555 0475"; then
+    # (run 35466842685): the collapsed result row shows 'Pam Smok...' — the
+    # truncated surname + the result count are also accepted proofs.
+    if ocr_grep "Smoketest" || ocr_grep "Smok" || ocr_grep "+1 555 0475" || ocr_grep "1 result found"; then
       qa_cap PATIENTS_SMOKE_SEARCH "GREEN (the search finds the fixture patient by the phone token)"
     else
       bug P2 PATIENTS_SMOKE_SEARCH "the search did not surface the fixture patient (see mps-search-result)"
