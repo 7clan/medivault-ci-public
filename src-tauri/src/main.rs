@@ -106,6 +106,9 @@ fn main() {
             scanner::reorder_page,
             scanner::create_pdf_from_pages,
             scanner::cleanup_temp_files,
+            // Native print / PDF export bridge (ff-2b)
+            commands::print::open_for_print,
+            commands::print::save_pdf_file,
         ])
         // ── Lifecycle ─────────────────────────────────────────────────
         .setup(|app| {
@@ -120,6 +123,17 @@ fn main() {
             }
             if let Err(e) = scanner::cleanup_temp_files_at(&temp_dir) {
                 log::warn!("Failed to clean temp scan files on startup: {}", e);
+            }
+            // Print bridge: sweep stale print temp files (>24h) — the same
+            // startup lifecycle as the scanner precedent (ff-2b, directive §4).
+            match commands::print::cleanup_print_temp_at_start() {
+                Ok(removed) if removed > 0 => {
+                    info!("Cleaned up {} stale print temp files", removed);
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    log::warn!("Failed to clean stale print temp files on startup: {}", e);
+                }
             }
             info!("MediVault Desktop ready.");
             Ok(())

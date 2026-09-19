@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "loopback-print-bridge",
+  "description": "Grants the loopback API origin (the supervisor-served app UI at http://127.0.0.1:3001) access to the native print/PDF bridge IPC commands — nothing else. The remote-URL capability feature is the documented Tauri v2 mechanism for granting IPC to a remote origin (v2.tauri.app/security/capabilities).",
+  "remote": { "urls": ["http://127.0.0.1:3001", "http://localhost:3001"] },
+  "local": false,
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "allow-open-for-print",
+    "allow-save-pdf-file"
+  ]
+}
