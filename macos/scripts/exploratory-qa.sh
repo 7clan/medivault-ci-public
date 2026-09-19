@@ -2218,6 +2218,16 @@ submit_focused_return() { # Return in whatever field currently holds focus
   sleep 3
 }
 
+# BUG-PD34 corroboration: did the real setup POST reach the backend? A bounded
+# tail of the runtime API log (the same file every docb_/dio_ helper reads —
+# $HOME/Library/Logs/MediVault/api.log). Self-contained + defined BEFORE
+# GATEWAY 6 (the docb_ api-log helpers live far below in the file — bash 3.2
+# resolves function names at CALL time, so the gateway cannot use them).
+g6_api_saw_setup() {
+  tail -n 400 "$HOME/Library/Logs/MediVault/api.log" 2>/dev/null \
+    | grep -q '"method":"POST","url":"/api/auth/setup"'
+}
+
 # =============================================================================
 # FIRST-LOGIN TOUR OFFER GATEWAY (FEATURE C — the guided-tour integration).
 #
@@ -2635,42 +2645,68 @@ if [ "$SUBMITTED" = "0" ]; then
     osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 121' 10 >/dev/null 2>&1 || true
     sleep 1
   fi
-  if ! v_click "Create Account & Start" "10-account-submit" "Add Patient"; then
-    if ! v_click "Create Account" "10-account-submit" "Add Patient"; then
-      if ocr_grep "Add Patient"; then
-        # FEATURE C: the submit DID complete — the dashboard was hidden behind
-        # the tour offer during the first wait (the dismissal above cleared
-        # it); the click fallback is unnecessary. Fail-closed: the
-        # dashboard-after-setup wait below still must confirm it.
-        probe "the setup submit had already completed (the dashboard was behind the tour offer; no click fallback needed)"
-      elif sysdialog_dismiss "10-storm-refill" && ocr_grep "Full Name" && setup_fill_form "$DOC_NAME" "$DOC_EMAIL" "$DOC_PASS" "$DOC_PASS" "09-refill"; then
-        # (run 35386829330) the first-boot STORM (FaceTime dialog → the Notes
-        # welcome cascade) can interrupt the typing AND swallow the submit
-        # Return — the fields may be incomplete and the submit went to a
-        # system window. The storm is dismissed above; the re-fill is
-        # idempotent (clear=yes replaces any field content); the Confirm
-        # field holds focus after the fill → the Return submits.
+  # (runs 35400691873 + 35400694271 patients/bulk-delete/save-pdf first-reds,
+  # BUG-PD34, class D) the DETERMINISTIC submit ladder. The old chain died on
+  # the runner geometry + the storm sequencing: the real submit button
+  # ('Create Account & Start' — setup-form.tsx) sits BELOW the 768px fold, so
+  # the bare v_click fallbacks were always NOT FOUND; the only OCR-visible
+  # 'Create'-ish text ('+ Create Your Account') is the CARD TITLE, not a
+  # control ('Create Account' is not a substring of 'Create Your Account');
+  # and the storm-recovery refill was GATED on sysdialog_dismiss finding a
+  # NEW dialog — when the storm had already been dismissed at the earlier
+  # wait-dashboard-after-enter-submit stage, the form was left stranded with
+  # no recovery before the P1. The ladder: (1) the submit completed behind
+  # the tour offer; (2) scroll DOWN to the REAL button label and click it;
+  # (3) one UNGATED idempotent refill + Return, then the scrolled button
+  # once more; the API-log POST corroborates every green path.
+  if ocr_grep "Add Patient"; then
+    probe "the setup submit had already completed (the dashboard was behind the tour offer; no click fallback needed)"
+    SUBMITTED=1
+  fi
+  if [ "$SUBMITTED" = "0" ] && setup_form_alive; then
+    if v_scroll_find "Create Account & Start" 6 no down 4 || v_scroll_find "Back to Sign In" 6 no down 4; then
+      if v_click "Create Account & Start" "10-account-submit-scrolled" "Add Patient"; then
+        SUBMITTED=1
+        probe "the below-fold submit button was scrolled into view and clicked (the REAL control — BUG-PD34)"
+        snap "10-account-submit-scrolled" || true
+      fi
+    else
+      probe "g6: the submit button could not be scroll-located ('Create Account & Start' / 'Back to Sign In' never became visible — see the captures)"
+    fi
+  fi
+  if [ "$SUBMITTED" = "0" ] && setup_form_alive; then
+    # (2) the ungated deterministic refill (runs 35386829330/35392966093
+    # storm lessons: the Return may have gone to a system window and the
+    # masked-field typing may be incomplete — the refill is idempotent:
+    # clear=yes replaces any field content)
+    sysdialog_dismiss "10-storm-refill" >/dev/null 2>&1 || true
+    if ocr_grep "Full Name" || ocr_grep "Create Your Account"; then
+      probe "g6: the form is still alive — the UNGATED deterministic refill (no longer dependent on a fresh storm dialog)"
+      if setup_fill_form "$DOC_NAME" "$DOC_EMAIL" "$DOC_PASS" "$DOC_PASS" "09-refill"; then
         osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10 || true
         sleep 3
         tour_dismiss_if_present "g6-refill-submit"
         if wait_for_ocr "Add Patient" 60 "dashboard-after-refill"; then
           SUBMITTED=1
-          qa_cap SYSDIALOG_RECOVERY "GREEN (the first-boot storm interrupted the setup submit — the form was re-filled and submitted on the cleared screen; capture 10-refill-submitted)"
+          qa_cap SYSDIALOG_RECOVERY "GREEN (the deterministic refill recovered the setup submit — the recovery is no longer gated on a fresh system dialog)"
           snap "10-refill-submitted" || true
-        else
-          osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 121' 10 >/dev/null 2>&1 || true
-          sleep 1
-          if v_click "Create Account & Start" "10-refill-submit" "Add Patient" || v_click "Create Account" "10-refill-submit" "Add Patient"; then
+        elif setup_form_alive && v_scroll_find "Create Account & Start" 4 no down 4; then
+          if v_click "Create Account & Start" "10-refill-submit" "Add Patient"; then
             SUBMITTED=1
-            qa_cap SYSDIALOG_RECOVERY "GREEN (the first-boot storm interrupted the setup submit — the re-filled form was submitted via the button fallback)"
+            qa_cap SYSDIALOG_RECOVERY "GREEN (the deterministic refill + the scrolled button click recovered the setup submit)"
           fi
         fi
       fi
-      if [ "$SUBMITTED" = "0" ]; then
-        snap "10-account-submit-failed" || true
-        bug P1 ACCOUNT_CREATION "submitting the real setup form produced no visible change (no dashboard)"
-      fi
     fi
+  fi
+  if [ "$SUBMITTED" = "0" ]; then
+    snap "10-account-submit-failed" || true
+    if g6_api_saw_setup; then
+      probe "g6: NOTE — POST /api/auth/setup IS present in the API log, but no dashboard appeared (the shell-mount failure stands; see 10-account-submit-failed)"
+    else
+      probe "g6: POST /api/auth/setup NOT in the API log (the submit never reached the backend)"
+    fi
+    bug P1 ACCOUNT_CREATION "submitting the real setup form produced no visible change (no dashboard)"
   fi
 fi
 # FEATURE C: last-chance catch before the focus batteries start — if the
@@ -7028,17 +7064,28 @@ docb_firstrun_recover() { # <stem> — the first-run page's OWN 'Open MediVault'
   return 1
 }
 
-docb_scan_select_patient() { # <full-name> <stem> — the scan view's patient dropdown (no pre-target)
-  local full="$1" stem="$2"
+docb_scan_select_patient() { # <full-name> <stem> [robust-token] — the scan view's patient dropdown (no pre-target)
+  # BUG-PD36 (D, run 35400694271 micro:viewer-pdf first-red): Vision OCR read
+  # the option 'View Pdftest' as 'View Protest' — a name-only needle can NEVER
+  # be located when a single letter garbles. The optional 3rd arg is a
+  # DIGIT-anchored robust token (the phone-token idiom: digits OCR reliably)
+  # carried INSIDE the fixture's own name; the ladder: full name → token →
+  # either way the placeholder-gone check verifies the selection took.
+  local full="$1" stem="$2" token="${3:-}"
   if v_click "Choose a patient" "${stem}-open" "$full"; then
     sleep 1
     if v_click "$full" "${stem}-item" ""; then
-      sleep 1
-      ocr_capture || true
-      if ! ocr_grep "Choose a patient"; then
-        probe "scan-select[$stem]: the patient select now holds '$full' (the placeholder is gone)"
-        return 0
-      fi
+      :
+    elif [ -n "$token" ] && v_click "$token" "${stem}-item-token" "" first 0 label; then
+      probe "scan-select[$stem]: the option was clicked via the digit-token '$token' (the full-name OCR garbled — BUG-PD36)"
+    else
+      probe "scan-select[$stem]: neither the full name nor the token '$token' was OCR-locatable in the dropdown"
+    fi
+    sleep 1
+    ocr_capture || true
+    if ! ocr_grep "Choose a patient"; then
+      probe "scan-select[$stem]: the patient select now holds '$full' (the placeholder is gone)"
+      return 0
     fi
   fi
   probe "scan-select[$stem]: could not select '$full' in the scan view patient dropdown"
@@ -7106,12 +7153,12 @@ docb_enter_scan_view() { # <stem> — dashboard → the scan view (no pre-target
   return 1
 }
 
-docb_scan_upload_one() { # <abs-file> <stem> <timeout-s> <patient-full> [category] — one full chooser→upload trip
+docb_scan_upload_one() { # <abs-file> <stem> <timeout-s> <patient-full> [category] [patient-token] — one full chooser→upload trip
   # Sets DOCB_UP_RC (0 = uploaded & returned; 1 = harness failure; 2 = not
   # staged — client filter refusal; 3 = picker refusal; 4 = upload clicked,
   # ZERO POSTs, the view stayed = rejected; 5 = POSTs fired but the view
   # stayed = partial) and DOCB_UP_POSTS (POST count since the internal mark).
-  local file="$1" stem="$2" tmo="$3" patient="$4" category="${5:-}"
+  local file="$1" stem="$2" tmo="$3" patient="$4" category="${5:-}" ptoken="${6:-}"
   DOCB_UP_RC=1; DOCB_UP_POSTS=0
   docb_goto_dashboard "${stem}-pre" || return 1
   # (wave2 run 105001382113 first-red) the bare v_click shared the DB0
@@ -7135,7 +7182,7 @@ docb_scan_upload_one() { # <abs-file> <stem> <timeout-s> <patient-full> [categor
   fi
   # the patient select sits at the TOP of the scan view (above the fold after staging)
   v_scroll_find "Select Patient" 4 no up || v_scroll_find "Scan & Upload" 4 no up || true
-  if ! docb_scan_select_patient "$patient" "${stem}-sel"; then return 1; fi
+  if ! docb_scan_select_patient "$patient" "${stem}-sel" "$ptoken"; then return 1; fi
   local n
   n="$(docb_staged_count)"; [ -n "$n" ] || n=1
   docb_api_mark "${stem}-pre"
@@ -8134,13 +8181,18 @@ focus_documents() {
           ocr_capture || true
           snap "db7-info-panel" || true
           record_inventory "the fullscreen Info panel"
-          if ocr_grep "Name" && ocr_grep "Category" && ocr_grep "Size" && ocr_grep "Scanned"; then
+          # BUG-PD35 (D, run 35400694271 micro:viewer-image first-red): the
+          # FEATURE-D i18n build renders the Info-panel label as 'DOCUMENT
+          # CATEGORIES' (documents.categories — uppercase via CSS tracking) —
+          # the needle 'Category' is NOT a substring of 'CATEGORIES' (y→IES),
+          # so the old conjunction could never pass on this build.
+          if ocr_grep "Name" && ocr_grep "CATEGORIES" && ocr_grep "Size" && ocr_grep "Scanned"; then
             if ocr_grep "Patient"; then
               probe "db7: the Info panel shows the Patient row (this document carries the patient relation)"
             else
               bug EXPECTED DOC_VIEWER_INFO_PATIENT "the Info panel's Patient row is absent for detail-opened documents (doc.patient undefined — the same source fact as the viewer chip; document-viewer.tsx:162-167)"
             fi
-            qa_cap DOC_VIEWER_FULLSCREEN_INFO "GREEN (fullscreen entered via the real Maximize icon — the app nav is covered; the Info panel shows Name/Category/Size/Scanned (+Patient when the relation exists))"
+            qa_cap DOC_VIEWER_FULLSCREEN_INFO "GREEN (fullscreen entered via the real Maximize icon — the app nav is covered; the Info panel shows NAME/DOCUMENT CATEGORIES/SIZE/SCANNED (+Patient when the relation exists))"
             surface_row "Viewer fullscreen + Info panel" "the viewer header Maximize icon → the Info icon" "the glass toolbar; the Info sidebar (Name/Category/Size/Scanned/Patient)" "the fullscreen overlay + the document metadata" "entered; nav covered; the Info panel verified; exited" "GREEN (the Patient row is source-documented as relation-dependent)" "db7-fullscreen;db7-info-panel" "OK"
           else
             bug P1 DOC_VIEWER_INFO "the fullscreen Info panel does not show the Name/Category/Size/Scanned rows"
@@ -12733,7 +12785,11 @@ pc = m.get("patientsCount"); dc = m.get("documentsCount")
 em = (m.get("user") or {}).get("email")
 names = " ".join(((p.get("firstName") or "") + " " + (p.get("lastName") or "")) for p in (m.get("patients") or []))
 docs = " ".join((d.get("fileName") or "") for p in (m.get("patients") or []) for d in (p.get("documents") or []))
-print("PC=%s DC=%s EMAIL=%s" % (pc, dc, em))
+# BUG-PD33 (same D-class idiom as micro:backup): one field per line — the
+# combined print made ^DC= / ^EMAIL= sed extraction structurally impossible.
+print("PC=%s" % pc)
+print("DC=%s" % dc)
+print("EMAIL=%s" % em)
 print("NAMES=%s" % names[:400])
 print("DOCS=%s" % docs[:200])
 PY
@@ -15724,7 +15780,14 @@ pc = m.get("patientsCount"); dc = m.get("documentsCount")
 em = (m.get("user") or {}).get("email")
 names = " ".join(((p.get("firstName") or "") + " " + (p.get("lastName") or "")) for p in (m.get("patients") or []))
 docs = " ".join((d.get("fileName") or "") for p in (m.get("patients") or []) for d in (p.get("documents") or []))
-print("PC=%s DC=%s EMAIL=%s" % (pc, dc, em))
+# BUG-PD33 (D, run 35400694271 micro:backup first-red): each field on its OWN
+# line — the old single "PC=%s DC=%s EMAIL=%s" line could only ever yield PC
+# (the line-start sed 's/^PC=//p' matched the first token; ^DC= / ^EMAIL=
+# never matched), so documentsCount/email were structurally unreadable while
+# the manifest itself was complete and correct.
+print("PC=%s" % pc)
+print("DC=%s" % dc)
+print("EMAIL=%s" % em)
 print("NAMES=%s" % names[:400])
 print("DOCS=%s" % docs[:200])
 PY
@@ -15750,6 +15813,14 @@ PY
         if [ -d "$MICRO_DIR/backup-extract" ]; then
           dio_secret_scan "$MICRO_DIR/backup-extract" "BACKUP"
         fi
+        # BUG-PD33 forensics: preserve the actual downloaded backup ZIP + the
+        # extracted manifest into the evidence dir — a future manifest red must
+        # be adjudicable from the artifact alone (this run's red could not be:
+        # the ZIP lived only in $MICRO_DIR on the runner).
+        cp -f "$mbk_zip" "$EVID_DIR/mbk-backup-download.zip" 2>/dev/null || true
+        cp -f "$MICRO_DIR/backup-extract/manifest.json" "$EVID_DIR/mbk-backup-manifest.json" 2>/dev/null || true
+        (cd "$MICRO_DIR/backup-extract" 2>/dev/null && find . -type f | sort) > "$EVID_DIR/mbk-backup-contents.txt" 2>/dev/null || true
+        probe "mbk: the backup ZIP + manifest.json + the file listing preserved into the evidence dir (BUG-PD33 forensics)"
       else
         bug P1 MICRO_BACKUP_ZIP "the downloaded backup is not a ZIP (magic='$mbk_magic' size=${mbk_size}B)"
       fi
@@ -16340,7 +16411,13 @@ micro_camera() {
   micro_fx_patient "$MC_FIRST" "$MC_LAST" "$MC_PHONE" "$MC_EMAIL" "$MC_NOTE" "mc-fx" \
     || bug P1 MICRO_CAMERA_FIXTURE "the fixture patient $MC_FULL could not be created"
 
-  if open_patient_by_phone_token "0463" "$MC_FULL" "mc-detail" "$MC_PHONE"; then
+  # BUG-PD37 (D, run 35400694271 micro:camera first-red): the raw
+  # open_patient_by_phone_token leaves the detail at the IDENTITY/Visit
+  # sections — 'Scan with Camera' sits in the Documents area BELOW the fold,
+  # so the bare v_click was always NOT FOUND. The DB14-proven idiom:
+  # docb_open_patient_docs (the SAME open + the scroll to the Documents
+  # section) before the click.
+  if docb_open_patient_docs "0463" "$MC_FULL" "$MC_PHONE" "mc-detail"; then
     if v_click "Scan with Camera" "mc-open" "Scan & Upload"; then
       sleep 2
       ocr_capture || true
@@ -16396,9 +16473,16 @@ micro_camera() {
 
 micro_viewer_pdf() {
   note "=== micro:viewer-pdf — the PDF document viewer (open + header + content + back) ==="
-  local MVP_FIRST="View"; local MVP_LAST="Pdftest"
+  # BUG-PD36 (D, run 35400694271 micro:viewer-pdf first-red): the fixture
+  # 'View Pdftest' OCR'd as 'View Protest' in the patient dropdown — the
+  # full-name needle became unlocatable. The fixture name now carries its
+  # own DIGIT token ('View Pdf 0464' — digits OCR reliably; the same
+  # phone-token idiom the patients battery uses) and the dropdown selection
+  # gets the token fallback (docb_scan_select_patient's 3rd arg).
+  local MVP_FIRST="View"; local MVP_LAST="Pdf 0464"
   local MVP_PHONE="+1 555 0464"; local MVP_EMAIL="view.pdftest@example.invalid"
-  local MVP_NOTE="ONLY-VIEW-PDF"; local MVP_FULL="View Pdftest"
+  local MVP_NOTE="ONLY-VIEW-PDF"; local MVP_FULL="View Pdf 0464"
+  local MVP_TOKEN="0464"
   local MVP_TITLE="micro-view-doc"
   surface_section "Micro-shard: PDF document viewer"
   micro_fixtures_init
@@ -16406,7 +16490,7 @@ micro_viewer_pdf() {
     || bug P1 MICRO_VIEWER_PDF_FIXTURE "the PDF fixture could not be generated"
   micro_fx_patient "$MVP_FIRST" "$MVP_LAST" "$MVP_PHONE" "$MVP_EMAIL" "$MVP_NOTE" "mvp-fx" \
     || bug P1 MICRO_VIEWER_PDF_FIXTURE "the fixture patient $MVP_FULL could not be created"
-  docb_scan_upload_one "$MICRO_DIR/$MVP_TITLE.pdf" "mvp-up" 90 "$MVP_FULL" "Lab Results"
+  docb_scan_upload_one "$MICRO_DIR/$MVP_TITLE.pdf" "mvp-up" 90 "$MVP_FULL" "Lab Results" "$MVP_TOKEN"
   if [ "${DOCB_UP_RC:-1}" = "0" ]; then
     qa_cap MICRO_VIEWER_PDF_FX "GREEN (the $MVP_TITLE.pdf document uploaded through the real scan-view chooser path)"
   else
@@ -16512,11 +16596,29 @@ micro_viewer_image() {
             ocr_capture || true
             snap "mvi-info-panel" || true
             record_inventory "the fullscreen Info panel (micro:viewer-image)"
-            if ocr_grep "Name" && ocr_grep "Category" && ocr_grep "Size" && ocr_grep "Scanned"; then
-              qa_cap MICRO_VIEWER_IMAGE_FULLSCREEN_INFO "GREEN (fullscreen entered via the real Maximize icon — the app nav is covered; the Info panel shows Name/Category/Size/Scanned)"
-              surface_row "Viewer fullscreen + Info panel" "the viewer header Maximize icon → the Info icon" "the glass toolbar; the Info sidebar (Name/Category/Size/Scanned/Patient)" "the fullscreen overlay + the document metadata" "entered; nav covered; the Info panel verified; exited" "GREEN" "mvi-fullscreen;mvi-info-panel" "OK"
+            # BUG-PD35 (D, run 35400694271 micro:viewer-image first-red): the
+            # run's own OCR read the FULL panel ('B NAME / micro-view-image /
+            # • DOCUMENT CATEGORIES / Lab Results / • SIZE / 221 B / SCANNED /
+            # Sep 18, 2026…') yet the harness red'd — the needle 'Category' is
+            # NOT a substring of the FEATURE-D i18n label 'DOCUMENT CATEGORIES'
+            # (y→IES plural). The needles now use the source-side stable
+            # labels (viewer.name/documents.categories/viewer.size/
+            # viewer.scanned) AND the VALUE rows corroborate (the fixture
+            # title as the Name value + 'Lab Results' as the category value)
+            # — never one fragile OCR concatenation.
+            local mvi_info_labels=0
+            ocr_grep "Name" && mvi_info_labels=$((mvi_info_labels+1))
+            ocr_grep "CATEGORIES" && mvi_info_labels=$((mvi_info_labels+1))
+            ocr_grep "Size" && mvi_info_labels=$((mvi_info_labels+1))
+            ocr_grep "Scanned" && mvi_info_labels=$((mvi_info_labels+1))
+            local mvi_info_values=0
+            ocr_grep "$MVI_TITLE" && mvi_info_values=$((mvi_info_values+1))
+            ocr_grep "Lab Results" && mvi_info_values=$((mvi_info_values+1))
+            if [ "$mvi_info_labels" -eq 4 ] && [ "$mvi_info_values" -ge 1 ]; then
+              qa_cap MICRO_VIEWER_IMAGE_FULLSCREEN_INFO "GREEN (fullscreen entered via the real Maximize icon — the app nav is covered; the Info panel shows NAME/DOCUMENT CATEGORIES/SIZE/SCANNED and the fixture's own values: ${mvi_info_values}/2 value rows OCR-read)"
+              surface_row "Viewer fullscreen + Info panel" "the viewer header Maximize icon → the Info icon" "the glass toolbar; the Info sidebar (Name/Document Categories/Size/Scanned/Patient)" "the fullscreen overlay + the document metadata" "entered; nav covered; the Info panel verified (labels + values); exited" "GREEN" "mvi-fullscreen;mvi-info-panel" "OK"
             else
-              bug P1 MICRO_VIEWER_IMAGE_INFO "the fullscreen Info panel does not show the Name/Category/Size/Scanned rows"
+              bug P1 MICRO_VIEWER_IMAGE_INFO "the fullscreen Info panel does not show the NAME/DOCUMENT CATEGORIES/SIZE/SCANNED rows (labels ${mvi_info_labels}/4, values ${mvi_info_values}/2 — the capture is the proof)"
             fi
           else
             bug D MICRO_VIEWER_IMAGE_INFO "the Info icon could not be activated by the anchored band clicks (harness limit)"
@@ -17277,12 +17379,36 @@ micro_tour_ar() {
   fi
   snap "mta0-offer-en" || true
   probe "mta0: the first-login offer rendered in the DEFAULT locale (English) — recorded; the Arabic tour is verified via the Help & Guide replay below (the one-shot offer cannot re-fire in Arabic on the same install)"
+  # BUG-PD38 (D, run 35400694271 micro:tour-ar first-red): the skip was
+  # Escape-ONLY — and the System-Events Escape is NOT delivered to the
+  # WKWebView page's window keydown in this build (the SAME evidence class as
+  # the backup shard's TOUR_OFFER record: 'Escape did not clear it; the
+  # card's Skip button did'). The ladder now uses the product's OWN visible
+  # affordances in order — Escape, then the card's Skip button
+  # (data-qa="tour-skip") — exactly like the proven gateway dismissal
+  # (tour_dismiss_if_present); a P1 only if NEITHER clears a visible offer.
+  # (P3 product note recorded once: the card's 'Press Esc to leave' hint is
+  # inoperative under the WKWebView build — keyboard delivery, not the
+  # component's keydown logic, which the guided-tour unit tests prove.)
+  local mta0_cleared="no"
   press_escape
   sleep 2
-  if wait_text_gone "Welcome to MediVault" 15 "mta0-skipped"; then
+  if wait_text_gone "Welcome to MediVault" 10 "mta0-skipped-esc"; then
+    mta0_cleared="yes"
     probe "mta0: the English offer was skipped via the product's Escape affordance (markTourDismissed persists)"
   else
-    bug P1 TOUR_AR_OFFER "the English first-login offer could not be skipped via Escape (see mta0-*)"
+    if v_click "Skip" "mta0-skip-btn" "Add Patient"; then
+      sleep 2
+      if wait_text_gone "Welcome to MediVault" 10 "mta0-skipped-btn"; then
+        mta0_cleared="yes"
+        probe "mta0: the Escape did not clear the offer (the WKWebView key-delivery record) — the card's OWN Skip button did (the proven affordance; BUG-PD38)"
+      fi
+    fi
+  fi
+  if [ "$mta0_cleared" = "yes" ]; then
+    probe "mta0: the offer is gone — the battery proceeds to the Arabic switch"
+  else
+    bug P1 TOUR_AR_OFFER "the English first-login offer could not be skipped by Escape NOR the card's Skip button (see mta0-* — a stuck offer would block the whole shard)"
   fi
 
   # ---- MTA1: switch to العربية + the RTL render proofs ----

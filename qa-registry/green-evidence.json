@@ -331,8 +331,18 @@
       "p3_records": "DATAIO_IMPORT_NO_DEDUPE + DATAIO_IMPORT_BAD_DOB re-recorded (product P3 backlog, non-stoppers)"
     },
     {
-      "capability": "CHECKPOINT WAVE (in flight at 87f2fe3f): P shard run 35385368383 (patients regression) + micro first flight run 35385371196 (backup, csv-import-cancel, csv-export, camera, viewer-pdf, viewer-image, security, print, save-pdf, bulk-delete, tour-en, tour-ar, rtl) — all PROVISIONAL until the P shard GREENs at this hash",
+      "capability": "CHECKPOINT WAVE (87f2fe3f) — wave-7 dispositions (runs 35400691873 patients + 35400694271 micro): ALL 8 reds are D-CLASS HARNESS (BUG-PD33..PD38, fixed) — ZERO real product bugs, NO product change, NO rebuild needed. Frozen GREEN from the same wave/DMG: micro:print, micro:csv-import-cancel, micro:security, micro:rtl, micro:csv-export (+ micro:tour-en from the first flight). PENDING RE-RUN against the SAME frozen DMG after the harness fixes land: patients (the P shard acceptance gate) + micro:backup, viewer-pdf, camera, bulk-delete, tour-ar, save-pdf, viewer-image",
+      "bug_pd34": "ACCOUNT_CREATION (patients/bulk-delete/save-pdf): the submit button 'Create Account & Start' sits BELOW the 768px fold; the visible '+ Create Your Account' is the CARD TITLE ('Create Account' is not a substring of 'Create Your Account'); and the storm-recovery refill was gated on a FRESH sysdialog — the already-dismissed storm left the form stranded. Deterministic ladder fixed.",
+      "bug_pd33": "MICRO_BACKUP_MANIFEST: the one-line PC/DC/EMAIL print vs line-start sed extraction — documentsCount/email were structurally unreadable while the product manifest was complete (patientsCount=1 + names + doc filenames all proved present; no product diff DMG-ref→HEAD).",
+      "bug_pd35": "MICRO_VIEWER_IMAGE_INFO: the needle 'Category' is not a substring of the FEATURE-D i18n label 'DOCUMENT CATEGORIES' — the run's own OCR showed the full panel.",
+      "bug_pd36": "MICRO_VIEWER_PDF_FX: the dropdown option 'View Pdftest' OCR'd as 'View Protest' — the fixture now carries a digit token + the dropdown select has a token fallback.",
+      "bug_pd37": "MICRO_CAMERA_ENTRY: no scroll-to-documents before the 'Scan with Camera' click — now the DB14-proven docb_open_patient_docs idiom.",
+      "bug_pd38": "TOUR_AR_OFFER: Escape-only skip — the WKWebView build does not deliver the System-Events Escape (the backup shard's Skip-button dismissal is the proven affordance); P3 note recorded for the card's 'Press Esc to leave' hint.",
       "bug_pd31": "The first patients attempt (35381647047) P1'd at the setup form: a fresh-runner FaceTime activation dialog covered the app mid-typing (ENV trigger; nothing in MediVault opens FaceTime). Harness fixed: sysdialog_dismiss + single retry in v_click/v_type_into/wait_for_ocr. The DMG is unaffected (product code unchanged by the harness fix)."
+    },
+    {
+      "capability": "P3 product backlog (wave-7 additions): TOUR_ESC_HINT_INOPERATIVE — the welcome card's 'Press Esc to leave' hint does not work in the WKWebView/Tauri build (keyboard delivery; the component's keydown logic passes its unit tests) — verify on the clinic machine, then remove the hint or wire the native key event",
+      "class": "P3"
     }
   ],
   "rules": {

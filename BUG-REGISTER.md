@@ -972,3 +972,48 @@ open product finding. PATIENTS = FROZEN GREEN.
 - **Root cause**: the check grepped `firstName` (the import template's concatenated schema) while the export route's header is `First Name,Last Name,DOB,...` (spaced/capitalized). The latent needle never ran against a real file before — the previous waves red'd at the PD26 navigation defect earlier in the same step, so the file never landed until the blob-download fix
 - **The PD26 fix itself is PROVEN by this run**: the click kept the app intact (the dashboard stayed; no webview navigation), and the file LANDED in ~/Downloads (the schema check found it)
 - **Fix**: the needle now greps 'First Name,Last Name' (the real export header)
+
+### BUG-PD33 [D HARNESS, FIXED] MICRO_BACKUP_MANIFEST — the one-line PC/DC/EMAIL print made the line-start sed extraction structurally impossible
+- **Class**: D — the product backup contract was FULLY honored; the harness could never read two of its five fields
+- **Where**: `macos/scripts/exploratory-qa.sh` → micro_backup's manifest parse (+ the SAME idiom latent in the dataio DD6 probe — both fixed)
+- **First red**: run 35400694271 (micro:backup, 22:29Z) — `[bug-P2] MICRO_BACKUP_MANIFEST "the backup manifest is incomplete (patientsCount='1' documentsCount='' email='' names='Backup Fixture' docs='micro-backup-doc.png')"`
+- **Root cause**: the python printed `PC=%s DC=%s EMAIL=%s` on ONE line, but the bash extraction greps line STARTS (`sed -n 's/^DC=//p'`, `s/^EMAIL=//p`) — only `PC` (the line's first token) could ever extract. The product's GET /api/backup (mini-services/api-service/src/routes/misc/index.ts:516-531) writes user.email + patientsCount + documentsCount + patients[].firstName/lastName + documents[].fileName — the run's own parse proves the patients array + names + doc filenames were all present. Verified: no product diff between the DMG build ref (7f106d8e) and HEAD — the manifest schema is identical
+- **Fix**: one field per line (PC/DC/EMAIL each on their own line; NAMES/DOCS unchanged); unit-tested against the product's exact schema — all five fields now extract. Also preserved into the evidence dir: the downloaded backup ZIP, the extracted manifest.json, and the file listing (a future manifest red is adjudicable from the artifact alone)
+- **Also hardened**: the dataio DD6 probe's identical one-line print (the same latent D-class — it would have false-red'd DD6 the same way)
+
+### BUG-PD34 [D HARNESS, FIXED] ACCOUNT_CREATION — the submit fallbacks could never click the below-fold button, and the storm-recovery refill was gated on a FRESH dialog
+- **Class**: D (ENV-triggered: the first-boot storm, BUG-PD31) — the product setup form is fine; 6 of the 12 shards in the SAME wave created accounts GREEN on the SAME DMG
+- **Where**: `macos/scripts/exploratory-qa.sh` → GATEWAY 6's submit chain
+- **First reds**: runs 35400691873 (patients) + 35400694271 (bulk-delete, save-pdf) — all three with the IDENTICAL signature: the storm (Notes) dismissed at the wait stage → `v_click 'Create Account & Start' NOT FOUND` → `v_click 'Create Account' NOT FOUND` → P1, form still visibly filled
+- **Root cause (three defects)**: (1) the real submit button (`Create Account & Start`, setup-form.tsx) sits BELOW the 768px fold — the bare v_clicks were always NOT FOUND; (2) the only OCR-visible 'Create'-ish text (`+ Create Your Account`) is the CARD TITLE, not a control, and 'Create Account' is not a substring of 'Create Your Account'; (3) the storm-recovery refill was gated on `sysdialog_dismiss` finding a NEW dialog — when the storm had already been dismissed at the earlier wait-dashboard-after-enter-submit stage, the form was left stranded with no recovery before the P1
+- **Fix (the deterministic submit ladder)**: (1) 'Add Patient' visible → already submitted; (2) `v_scroll_find 'Create Account & Start'`/'Back to Sign In' (down) → click the REAL button; (3) one UNGATED idempotent refill (clear=yes) + focused-Return, then the scrolled button once more; the new `g6_api_saw_setup` (a bounded tail of $HOME/Library/Logs/MediVault/api.log for `"method":"POST","url":"/api/auth/setup"`) corroborates the green paths and enriches the honest P1 record. All anchors source-verified: auth.setup.create='Create Account & Start', auth.setup.back='Back to Sign In'
+- **Coverage**: patients + bulk-delete + save-pdf in one fix (the directive's common-gateway mandate)
+
+### BUG-PD35 [D HARNESS, FIXED] MICRO_VIEWER_IMAGE_INFO — the needle 'Category' is not a substring of the FEATURE-D i18n label 'DOCUMENT CATEGORIES'
+- **Class**: D — the run's own OCR read the FULL panel yet the harness red'd
+- **Where**: `macos/scripts/exploratory-qa.sh` → micro:viewer-image's Info-panel conjunction (+ the coarse DB7 site with the same latent needle — both fixed)
+- **First red**: run 35400694271 (micro:viewer-image, 22:41Z) — the BUG-1 OCR context itself shows `B NAME / micro-view-image / • DOCUMENT CATEGORIES / Lab Results / • SIZE / 221 B / SCANNED / Sep 18, 2026 at 10:38 PM`
+- **Root cause**: `ocr_grep "Category"` can never match 'DOCUMENT CATEGORIES' (y→IES plural). The labels are i18n-driven (viewer.name=Name, documents.categories=Document Categories, viewer.size=Size, viewer.scanned=Scanned; rendered uppercase via CSS tracking) — the old DB7 needle passed only on the PRE-i18n DMG (b2fd83bf) where the label read 'Category'
+- **Fix**: the needles now use the source-side stable labels (NAME/CATEGORIES/SIZE/SCANNED) AND the VALUE rows corroborate (the fixture title + 'Lab Results'; 4 labels + ≥1 value = GREEN) — never one fragile OCR concatenation. Unit-validated against the run's exact OCR lines: old needle NO-MATCH, all six new needles MATCH
+
+### BUG-PD36 [D HARNESS, FIXED] MICRO_VIEWER_PDF_FX — the dropdown option 'View Pdftest' OCR'd as 'View Protest'
+- **Class**: D — a single-letter OCR garble made the name-only needle unlocatable; the dropdown option WAS on screen
+- **Where**: `macos/scripts/exploratory-qa.sh` → docb_scan_select_patient (+ the fixture name in micro:viewer-pdf)
+- **First red**: run 35400694271 (micro:viewer-pdf, 22:29Z) — the probes show the dropdown OPEN with `[Choose a patient...] [View Protest]` on screen, then `target 'View Pdftest' NOT FOUND — no click attempted`
+- **Root cause**: Vision OCR read 'Pdftest' as 'Protest' (df→r region). The full-name-only needle can never survive a garble; the scan-view dropdown renders only `{firstName} {lastName}` (scan-capture.tsx:248) — no phone, no digits
+- **Fix**: the fixture now carries its own DIGIT token ('View Pdf 0464' — digits OCR reliably; the phone-token idiom the patients battery already uses) and `docb_scan_select_patient` gained the optional robust-token fallback (full name → token, label-mode; the placeholder-gone check verifies either way). `docb_scan_upload_one` passes the token through (default empty = byte-identical behavior for every other caller)
+
+### BUG-PD37 [D HARNESS, FIXED] MICRO_CAMERA_ENTRY — no scroll-to-documents before the 'Scan with Camera' click
+- **Class**: D — the button sat below the fold on the mid-page detail landing
+- **Where**: `macos/scripts/exploratory-qa.sh` → micro:camera's entry
+- **First red**: run 35400694271 (micro:camera, 22:26Z) — the detail opened at the identity/visit sections ('Visit History 0' + 'Schedule Visit' in the OCR) and `v_click 'Scan with Camera' NOT FOUND` — no click attempted
+- **Root cause**: the shard used the raw `open_patient_by_phone_token` while the PROVEN DB14 path goes through `docb_open_patient_docs` (the same open + the scroll to the Documents section where the button lives)
+- **Fix**: `docb_open_patient_docs "0463" ...` — the DB14 idiom verbatim
+
+### BUG-PD38 [D HARNESS, FIXED] TOUR_AR_OFFER — the MTA0 skip was Escape-ONLY, and the WKWebView build does not deliver the System-Events Escape to the page
+- **Class**: D (with a P3 product note) — the card's OWN Skip button is the proven affordance
+- **Where**: `macos/scripts/exploratory-qa.sh` → micro:tour-ar's MTA0
+- **First red**: run 35400694271 (micro:tour-ar, 22:46Z) — `wait_gone[mta0-skipped]: 'Welcome to MediVault' STILL visible after 15s` after one press_escape; the card showed 'Step 1 of 20' (active)
+- **Root cause**: the same build's backup-shard TOUR_OFFER record already proved the mechanism ('Escape did not clear it; the card's Skip button did'), and the proven-GREEN tour-en body NEVER uses Escape (buttons only). The System-Events key code 53 is not delivered to the WKWebView page's window keydown in this build; the language prompt does NOT intercept it (no keydown handler — checked source-side)
+- **Fix**: the MTA0 ladder — Escape → the card's Skip button (data-qa='tour-skip') → only then the honest P1; exactly the gateway's own dismissal order
+- **P3 product note (recorded, non-blocking)**: the welcome card's hint text 'Press Esc to leave the tour at any time' is inoperative in the WKWebView/Tauri build (keyboard delivery, not the component's keydown logic — the jsdom unit tests pass). Verify on the clinic machine (physical keyboard focus may behave differently); if confirmed there too, remove the hint or wire the native key event through the Tauri shell
