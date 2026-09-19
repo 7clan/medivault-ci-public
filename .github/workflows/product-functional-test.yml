@@ -496,6 +496,28 @@ jobs:
           echo "LAUNCH-SMOKE-GREEN (binary starts, stays alive, terminates)"
           pkill -f 'MediVault.app/Contents/MacOS/MediVault' 2>/dev/null || true
 
+      - name: BUILT-APP Info.plist proof — NSCameraUsageDescription (final-fix §11)
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /tmp/pft-app-root.env
+          PLIST="$APP_ROOT/Contents/Info.plist"
+          EXPECTED="MediVault uses the camera to scan patient documents."
+          echo "=== BUILT-APP PlistBuddy proof (the staged MediVault.app that ships in the DMG) ==="
+          ls -la "$PLIST"
+          plutil -lint "$PLIST"
+          GOT="$(/usr/libexec/PlistBuddy -c 'Print :NSCameraUsageDescription' "$PLIST" 2>&1)"
+          echo "NSCameraUsageDescription = $GOT"
+          [ "$GOT" = "$EXPECTED" ] || { echo "::error::BUILT APP plist: NSCameraUsageDescription mismatch (got '$GOT' — expected '$EXPECTED')"; exit 1; }
+          echo "BUILT-INFOPLIST-CAMERA-GREEN (the staged bundle carries the exact camera purpose string)"
+          # the minimal-permission audit — no other usage-description keys
+          OTHERS="$(/usr/libexec/PlistBuddy -c 'Print' "$PLIST" | grep -oE 'NS[A-Za-z]+UsageDescription' | grep -v '^NSCameraUsageDescription$' || true)"
+          if [ -n "$OTHERS" ]; then
+            echo "::warning::unexpected extra usage-description keys in the built bundle: $OTHERS"
+          else
+            echo "BUILT-INFOPLIST-MINIMAL-GREEN (the camera key ONLY — no unnecessary permissions)"
+          fi
+
       - name: Build the test DMG (drag layout + shipped disclosure)
         shell: bash
         run: |

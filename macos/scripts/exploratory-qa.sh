@@ -61,6 +61,7 @@ case "$QA_FOCUS" in
     MICRO_NAME="${QA_FOCUS#micro:}"
     case "$MICRO_NAME" in
       camera|viewer-pdf|viewer-image|print|save-pdf|backup|csv-export|csv-import|csv-import-valid|csv-import-edge|csv-import-cancel|security|persistence|settings|dashboard|core-startup|auth|visits|clinical-notes|prescriptions|reports|upload|scan|download|annotations|patient-isolation|document-isolation|bulk-delete|tour-en|tour-ar|rtl) : ;;
+      camera-software|camera-permission-contract|print-document|print-report|print-prescription|save-pdf-document|save-pdf-report|save-pdf-prescription|toast-feedback|tour-escape|csv-import-dob|csv-import-duplicate|security-temp-files|patients-smoke) : ;;
       *) echo "::error::QA_FOCUS micro:<name>: unknown micro shard '$MICRO_NAME' (the catalog + statuses live in MICRO-SHARDS.md at the repo root)"; exit 1 ;;
     esac
     # FEATURE C opt-out: the tour shards' OWN test subject is the first-login
@@ -69,7 +70,7 @@ case "$QA_FOCUS" in
     # at the first mount the offer is English, so the gateway dismissal
     # needle works and the battery runs on the plain RTL UI.)
     case "$MICRO_NAME" in
-      tour-en|tour-ar) TOUR_GATEWAY="skip" ;;
+      tour-en|tour-ar|tour-escape) TOUR_GATEWAY="skip" ;;
     esac
     ;;
   *) echo "::error::QA_FOCUS must be surface|account|patients|search|settings|persistence|documents|clinical|dataio|desktop|micro:<name> (got '$QA_FOCUS')"; exit 1 ;;
@@ -14034,6 +14035,122 @@ dsk_save_as_pdf() { # <stem> — from an OPEN print sheet: PDF ▾ → Save as P
   return 0
 }
 
+# ----------------- dsk: the ff-2b NATIVE print/PDF bridge helpers ----------------
+# The final-fix build replaces the inoperative WKWebView print family with a
+# Rust bridge: open_for_print materializes a 0600 unpredictable-name file in a
+# 0700 $TMPDIR/medivault-print/ dir and hands it to /usr/bin/open (Preview);
+# save_pdf_file presents the NATIVE save panel and writes the user-picked
+# path. These helpers observe BOTH contracts from outside the app.
+
+dsk_print_temp_dir() { # → echoes the MediVault print temp dir (app runs with the same per-user TMPDIR as this shell)
+  local d="${TMPDIR:-$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)}"
+  [ -n "$d" ] || d="/tmp"
+  printf '%s/medivault-print' "$d"
+}
+
+dsk_print_temp_mark() { # snapshot the current temp-print entries (the "newer than" authority for the next action)
+  DSK_PTMP_DIR="$(dsk_print_temp_dir)"
+  DSK_PTMP_MARK_LIST="$(ls -1 "$DSK_PTMP_DIR" 2>/dev/null | sort || true)"
+  DSK_PTMP_MARK_N="$(printf '%s\n' "$DSK_PTMP_MARK_LIST" | grep -c . || true)"
+  probe "dsk-ptmp-mark: snapshot of $DSK_PTMP_DIR: $DSK_PTMP_MARK_N entries"
+}
+
+dsk_print_temp_newest() { # <stem> [timeout-s] — bounded wait for a NEW entry since the mark; sets the DSK_PTMP_* verdicts
+  local stem="$1" tmo="${2:-30}"
+  local i f dir
+  dir="$(dsk_print_temp_dir)"
+  DSK_PTMP_FILE=""; DSK_PTMP_EXISTS="no"; DSK_PTMP_MAGIC="no"; DSK_PTMP_SIZE="0"
+  DSK_PTMP_PERMS=""; DSK_PTMP_NAME_OK="no"; DSK_PTMP_DIR_PERMS=""
+  i=0
+  while [ "$i" -lt "$tmo" ]; do
+    f="$(ls -t "$dir" 2>/dev/null | head -1 || true)"
+    if [ -n "$f" ] && ! printf '%s\n' "$DSK_PTMP_MARK_LIST" | grep -qxF -- "$f"; then
+      DSK_PTMP_FILE="$dir/$f"
+      break
+    fi
+    sleep 2; i=$(( i + 1 ))
+  done
+  if [ -z "$DSK_PTMP_FILE" ]; then
+    probe "dsk-ptmp[$stem]: NO new medivault-print temp file within ${tmo}s (pre-existing entries: ${DSK_PTMP_MARK_N})"
+    return 1
+  fi
+  DSK_PTMP_EXISTS="yes"
+  DSK_PTMP_SIZE="$(stat -f%z "$DSK_PTMP_FILE" 2>/dev/null || echo 0)"
+  DSK_PTMP_PERMS="$(stat -f'%Lp' "$DSK_PTMP_FILE" 2>/dev/null || echo '?')"
+  DSK_PTMP_DIR_PERMS="$(stat -f'%Lp' "$dir" 2>/dev/null || echo '?')"
+  case "$(head -c 4 "$DSK_PTMP_FILE" 2>/dev/null)" in
+    %PDF) DSK_PTMP_MAGIC="pdf" ;;
+    "$(printf '\377\330\377')"*) DSK_PTMP_MAGIC="jpeg" ;;
+    "$(printf '\211PNG')"*) DSK_PTMP_MAGIC="png" ;;
+    *) DSK_PTMP_MAGIC="no" ;;
+  esac
+  # the name contract: medivault-<uuid>.<ext> — unpredictable, PHI-free
+  case "$(basename "$DSK_PTMP_FILE")" in
+    medivault-????????-????-????-????-????????????.pdf|medivault-????????-????-????-????-????????????.jpg|medivault-????????-????-????-????-????????????.png)
+      DSK_PTMP_NAME_OK="yes" ;;
+  esac
+  probe "dsk-ptmp[$stem]: NEW temp file $DSK_PTMP_FILE (size=${DSK_PTMP_SIZE}B magic=$DSK_PTMP_MAGIC perms=$DSK_PTMP_PERMS dir=$DSK_PTMP_DIR_PERMS name-contract=$DSK_PTMP_NAME_OK)"
+  snap "$stem-ptmp" || true
+  return 0
+}
+
+dsk_preview_running() { # → 0 when a Preview process exists (the open_for_print target)
+  pgrep -x Preview >/dev/null 2>&1 || pgrep -f "/Applications/Preview.app" >/dev/null 2>&1
+}
+
+dsk_native_save_panel_accept() { # <stem> — the ff-2b NATIVE save panel: bounded wait → Return → bounded wait for the file
+  # sets DSK_SPAP_OK / DSK_SPAP_PDF / DSK_SPAP_WHY (same contract as dsk_save_as_pdf,
+  # but WITHOUT the print-sheet PDF-popup navigation — save_pdf_file presents
+  # the NSSavePanel directly).
+  local stem="$1" i
+  DSK_SPAP_OK="no"; DSK_SPAP_PDF=""; DSK_SPAP_WHY=""
+  dsk_dl_mark
+  local panel="no"
+  i=0
+  while [ "$i" -lt 15 ]; do
+    ocr_capture || true
+    if ocr_grep "New Folder" || ocr_grep "Where" || ocr_grep "Tags"; then panel="yes"; break; fi
+    sleep 2
+    i=$(( i + 1 ))
+  done
+  if [ "$panel" = "no" ]; then
+    DSK_SPAP_WHY="the NATIVE save panel never became OCR-visible (no Where/New Folder/Tags needles within 30s)"
+    press_escape
+    snap "$stem-savepanel-notfound" || true
+    return 1
+  fi
+  snap "$stem-save-panel" || true
+  record_inventory "the native macOS save panel (save_pdf_file)"
+  if ! osa 'tell application "System Events" to tell (first process whose name contains "edivault") to key code 36' 10; then
+    DSK_SPAP_WHY="the Return keypress into the native save panel failed ($OSA_ERR)"
+    press_escape
+    return 1
+  fi
+  local dirs="$DSK_DL_DIR $HOME/Documents $HOME/Desktop $HOME"
+  local d f
+  f=""
+  i=0
+  while [ "$i" -lt 15 ] && [ -z "$f" ]; do
+    for d in $dirs; do
+      f="$(find "$d" -maxdepth 1 -name '*.pdf' -newer "$DSK_DL_MARK" 2>/dev/null | head -1)"
+      [ -n "$f" ] && break
+    done
+    [ -n "$f" ] || { sleep 2; i=$(( i + 1 )); }
+  done
+  if [ -z "$f" ]; then
+    DSK_SPAP_WHY="no new .pdf in ~/Downloads, ~/Documents, ~/Desktop or ~ within 30s of accepting the native save panel"
+    snap "$stem-save-nofile" || true
+    press_escape
+    return 1
+  fi
+  DSK_SPAP_PDF="$f"
+  DSK_SPAP_OK="yes"
+  snap "$stem-saved" || true
+  probe "dsk-nsave[$stem]: saved via the NATIVE panel: $f"
+  wait_text_gone "New Folder" 10 "save-panel-closes-$stem" || true
+  return 0
+}
+
 dsk_click_viewer_icon() { # <mode print|download> <doc-title> <stem>
   # The document viewer's toolbar controls are ICON-ONLY (title="Print" /
   # title="Download" are tooltips — no OCR-able text), on a WHITE header
@@ -16097,93 +16214,273 @@ micro_csv_export() {
   note "micro:csv-export complete"
 }
 
-micro_print() {
-  note "=== micro:print — the native print pipeline (viewer Print icon / Print Report / rx Print) ==="
-  local PDF_TITLE="$MICRO_PDF_TITLE"
-  micro_dsk_fixture_set "MICRO_PRINT"
-  surface_section "Micro-shard: print (the native print pipeline)"
+micro_print() { # the LEGACY name — the ff-2b build replaced the WKWebView print family; delegated to the split shards
+  # Directive §12 (final-fix round): the old body (viewer print sheet /
+  # window.print OCR probes) is superseded by the native print bridge.
+  # micro:print now runs the three split shards; the pre-ff history lives in
+  # git (the frozen DMG 87f2fe3f evidence used the old flow honestly).
+  micro_print_document
+  micro_print_report
+  micro_print_prescription
+}
 
-  # MP1 — the document viewer's Print icon (the DE1 core)
-  note "--- micro MP1: the viewer Print icon (document) ---"
-  dsk_dl_manifest "MP1-before"
-  if ! micro_docs_ready "MICRO_PRINT"; then
-    qa_cap MICRO_PRINT_VIEWER "NOT-EXERCISED-ENV (the fixture documents are unavailable — see the FX record)"
-  elif open_patient_by_phone_token "$MICRO_PAT1_TOKEN" "$MICRO_PAT1_FULL" "mp1-detail" "$MICRO_PAT1_PHONE"; then
-    v_scroll_find "$PDF_TITLE" 16 no down 4 || true
-    if v_click "$PDF_TITLE" "mp1-doc-open" "" || v_click_try_hits "$PDF_TITLE" "mp1-doc-open" ""; then
-      sleep 3
-      if wait_for_ocr "Loading document" 10 "mp1-loading"; then
-        wait_text_gone "Loading document" 45 "mp1-loaded" || true
-      fi
+micro_save_pdf() { # the LEGACY name — the ff-2b build replaced the print-sheet Save-as-PDF; delegated to the split shards
+  # Directive §12 (final-fix round): Save-as-PDF is now the NATIVE save panel
+  # (tauri-plugin-dialog) per source-path, never the WKWebView print sheet.
+  # micro:save-pdf now runs the three split shards; the pre-ff history lives
+  # in git.
+  micro_save_pdf_document
+  micro_save_pdf_report
+  micro_save_pdf_prescription
+}
+
+# =============================================================================
+# micro: the ff-round final-fix shards (directive §12 — the 14 targeted reruns)
+# =============================================================================
+# The final-fix build changes these contracts: (1) the bundle carries
+# NSCameraUsageDescription; (2) the print family is a NATIVE bridge (pdf-lib
+# generation → temp file → /usr/bin/open → Preview) instead of window.print();
+# (3) Save-as-PDF presents the NATIVE save panel (tauri-plugin-dialog); (4)
+# the shadcn toast renderer is mounted (use-toast feedback is VISIBLE); (5)
+# the tour's Esc hint is REMOVED (Escape proven unreachable in WKWebView);
+# (6) CSV import validates DOB + dedupes exact identity rows.
+
+dsk_activate_medivault() { # bring the MediVault process frontmost (after Preview steals focus)
+  osa 'tell application "System Events" to tell (first process whose name contains "edivault") to set frontmost to true' 10 || true
+  sleep 1
+}
+
+dsk_quit_preview() { # bounded Preview quit (the open_for_print target — cleanup between flows)
+  osa 'tell application "Preview" to quit' 10 || true
+  local i=0
+  while [ "$i" -lt 10 ] && pgrep -x Preview >/dev/null 2>&1; do sleep 1; i=$(( i + 1 )); done
+  probe "dsk-preview-quit: Preview processes after quit: $(pgrep -x Preview | wc -l | tr -d ' ')"
+}
+
+dsk_click_viewer_save_pdf() { # <doc-title> <stem> — the ff-2b viewer "Save as PDF" icon (right of Print; verified by the NATIVE save panel)
+  local title="$1" stem="$2"
+  ocr_capture || return 1
+  if ! ocr_lookup "$title" "first" "any"; then
+    probe "dsk-viewersave[$stem]: anchor title '$title' not on screen — no click"
+    return 1
+  fi
+  local ty="$OCR_HIT_Y" cand
+  # the fitted 1024x700 window: zoomOut|zoomIn|Download|Print|SavePdf|… — the
+  # save glyph sits RIGHT of the old print band; every candidate is verified
+  # by the NATIVE save panel (Where/New Folder/Tags needles) and escaped on miss.
+  for cand in 950 925 975 900 980; do
+    probe "dsk-viewersave[$stem]: anchored candidate ($cand,$ty) — verified click"
+    "$MV_MOUSE" "$cand" "$ty" 2>>"$LOG" || true
+    sleep 3
+    ocr_capture || true
+    snap "$stem-cand-$cand" || true
+    if ocr_grep "New Folder" || ocr_grep "Where" || ocr_grep "Tags"; then
+      probe "dsk-viewersave[$stem]: candidate $cand presented the NATIVE save panel"
+      return 0
+    fi
+    press_escape
+    sleep 1
+  done
+  probe "dsk-viewersave[$stem]: no candidate presented the save panel (all attempts recorded)"
+  return 1
+}
+
+micro_camera_software() { # the camera SOFTWARE contract at the ff build: the classified, VISIBLE error UX (with the plist, a no-hardware runner shows the no-camera state — not a silent failure)
+  note "=== micro:camera-software — the camera failure UX (classified, visible, no silent failure) ==="
+  local MCS_FIRST="Cams"; local MCS_LAST="Softtest"
+  local MCS_PHONE="+1 555 0473"; local MCS_FULL="Cams Softtest"
+  surface_section "Micro-shard: camera software contract (Open Camera → the classified error UX)"
+  micro_fixtures_init
+  micro_fx_patient "$MCS_FIRST" "$MCS_LAST" "$MCS_PHONE" "cams.softtest@example.invalid" "ONLY-CAMS-SOFT" "mcs-fx" \
+    || bug P1 MICRO_CAMERA_SW_FIXTURE "the fixture patient $MCS_FULL could not be created"
+  if docb_open_patient_docs "0473" "$MCS_FULL" "$MCS_PHONE" "mcs-detail"; then
+    v_scroll_find "Scan with Camera" 8 no up 4 \
+      || v_scroll_find "Scan with Camera" 10 no down 4 || true
+    if v_click "Scan with Camera" "mcs-open" "Scan & Upload"; then
+      sleep 2
       ocr_capture || true
-      snap "mp1-viewer" || true
-      record_inventory "document viewer (PDF document — micro:print)"
-      if ocr_grep "$PDF_TITLE"; then
-        probe "mp1: the PDF document is open in the viewer (title OCR-visible)"
-        local mp1_wc_before
-        mp1_wc_before="$(ui_window_count "mediavault")"
-        if dsk_click_viewer_icon print "$PDF_TITLE" "mp1-printicon"; then
+      snap "mcs-scan-view" || true
+      if v_click "Open Camera" "mcs-camera-open" ""; then
+        local i=0 mcs_state=""
+        while [ "$i" -lt 15 ]; do
           sleep 2
           ocr_capture || true
-          snap "mp1-after-print-click" || true
-          record_inventory "screen after the viewer Print icon (whatever actually appeared)"
-          if dsk_print_sheet_visible; then
-            qa_cap MICRO_PRINT_VIEWER "GREEN (the native print sheet appeared after the viewer Print icon)"
-            surface_row "Document viewer Print" "viewer toolbar Print icon" "icon-only (title tooltip); the native print sheet" "the print sheet opens and cancels; the app stays responsive" "anchored verified click; the sheet OCR-verified" "GREEN" "mp1-*" "OK"
-            if dsk_print_cancel "mp1"; then
-              qa_cap MICRO_PRINT_CANCEL "GREEN (Cancel closed the native print sheet)"
+          if ocr_grep "Capture Document"; then mcs_state="viewfinder"; break; fi
+          if ocr_grep "No camera found" || ocr_grep "Camera Access Denied" \
+            || ocr_grep "Camera is in use" || ocr_grep "Camera unavailable" \
+            || ocr_grep "Camera error"; then mcs_state="visible-error"; break; fi
+          i=$(( i + 1 ))
+        done
+        snap "mcs-camera-attempt" || true
+        case "$mcs_state" in
+          viewfinder)
+            qa_cap MICRO_CAMERA_SW "GREEN (getUserMedia activated — a camera is present on this machine: the viewfinder rendered; capture/close exercised by the physical checklist)"
+            surface_row "Camera software (hardware present)" "Open Camera" "the viewfinder + Capture Document" "the camera opens with the ff build" "viewfinder OCR-verified" "GREEN" "mcs-camera-attempt" "OK"
+            ;;
+          visible-error)
+            local mcs_err="unknown"
+            ocr_grep "No camera found" && mcs_err="no-camera"
+            ocr_grep "Camera Access Denied" && mcs_err="permission-denied"
+            ocr_grep "Camera is in use" && mcs_err="busy"
+            ocr_grep "Camera unavailable" && mcs_err="not-supported"
+            qa_cap MICRO_CAMERA_SW "GREEN (no camera hardware on this runner — and the ff build shows the CLASSIFIED, VISIBLE error UX: '$mcs_err'; the failure is not silent)"
+            surface_row "Camera software (no hardware)" "Open Camera" "a classified visible error + destructive toast" "no camera ≠ a silent dead end" "visible error OCR-verified ($mcs_err); app stayed responsive" "GREEN (software contract)" "mcs-camera-attempt" "OK"
+            # the app must remain fully usable after the camera failure
+            if docb_click_back_arrow "Scan & Upload" "mcs-back" "Add Patient"; then
+              qa_cap MICRO_CAMERA_SW_RECOVERY "GREEN (the app remained usable after the camera failure — the back navigation worked)"
             else
-              bug P2 MICRO_PRINT_CANCEL "the native print sheet could not be canceled by OCR-clicked Cancel, Escape ×4 or Cmd+. (see mp1-cancel-still-open)"
+              bug P1 MICRO_CAMERA_SW_RECOVERY "the app was NOT usable after the camera failure (the back navigation did not work)"
             fi
-          else
-            bug ENV MICRO_PRINT_VIEWER "no native print sheet became OCR-visible after the viewer Print icon (window count $mp1_wc_before → $(ui_window_count "mediavault"); attempts + captures: mp1-printicon-cand-*, mp1-after-print-click). The WKWebView window.open+print path may be inert in this Tauri build — the documented next-round print-family gap; recorded honestly."
-            qa_cap MICRO_PRINT_VIEWER "ENV (no OCR-visible print sheet after the real Print icon click — see mp1-after-print-click)"
-          fi
-        else
-          bug ENV MICRO_PRINT_VIEWER "the viewer's icon-only Print control could not be activated by any verified anchored candidate (white header — the glyph scanner does not apply; all attempts recorded in mp1-printicon-cand-*)"
-        fi
+            ;;
+          *)
+            bug P1 MICRO_CAMERA_SW_SILENT "the camera failure was SILENT: neither a viewfinder nor ANY of the classified error messages rendered within 30s of Open Camera (regression of the ff-2a camera UX contract)"
+            ;;
+        esac
       else
-        bug P1 MICRO_PRINT_VIEWER "the document viewer did not open with the PDF title visible"
+        bug D MICRO_CAMERA_SW_OPEN "the 'Open Camera' control could not be clicked"
       fi
     else
-      bug P1 MICRO_PRINT_VIEWER "the PDF document row could not be opened into the viewer (MP1)"
+      bug P1 MICRO_CAMERA_SW_ENTRY "the 'Scan with Camera' button did not open the scan view"
     fi
   else
-    bug P1 MICRO_PRINT_VIEWER "could not open $MICRO_PAT1_FULL's detail for the print check (MP1)"
+    bug P1 MICRO_CAMERA_SW_ENTRY "could not open $MCS_FULL's detail for the camera-software battery"
   fi
-  app_running && probe "mp1: the app process is alive after the print attempt" || bug P1 MICRO_PRINT_VIEWER "the app process died during the print attempt"
-  v_click "Dashboard" "mp1-back" "Add Patient" || true
-  dsk_dl_manifest "MP1-after"
+  note "micro:camera-software complete"
+}
 
-  # MP2 — the patient summary report's Print Report (window.print)
-  note "--- micro MP2: the Print Report (window.print) path ---"
-  dsk_dl_manifest "MP2-before"
-  if open_patient_by_phone_token "$MICRO_PAT1_TOKEN" "$MICRO_PAT1_FULL" "mp2-detail" "$MICRO_PAT1_PHONE"; then
-    detail_scroll_top "mp2-top" || true
-    if dsk_click_banner_report "$MICRO_PAT1_FULL" "mp2-report-open" "$MICRO_PAT1_PHONE"; then
-      wait_for_ocr "Patient Summary Report" 20 "mp2-report-dialog" || true
-      ocr_capture || true
-      snap "mp2-report-dialog" || true
-      record_inventory "Patient Summary Report dialog (micro:print)"
-      if ocr_grep "$MICRO_PAT1_FULL" || ocr_grep "Patient Information"; then
-        probe "mp2: the report dialog renders the patient context (OCR)"
-      else
-        probe "mp2: the report dialog context not OCR-confirmed (recorded honestly — capture mp2-report-dialog)"
-      fi
-      if v_click "Print Report" "mp2-print-report" ""; then
-        sleep 3
-        ocr_capture || true
-        snap "mp2-after-print-report" || true
-        if dsk_print_sheet_visible; then
-          qa_cap MICRO_PRINT_REPORT "GREEN ('Print Report' opened the native print sheet (window.print on the main window))"
-          surface_row "Patient summary report print" "patient detail → Generate Report → 'Print Report'" "'Print Report' + 'Download as PDF' (the window.print alias)" "the report reaches the native print pipeline" "clicked; the native sheet OCR-verified; canceled" "GREEN" "mp2-*" "OK"
-          dsk_print_cancel "mp2" || true
+micro_camera_permission_contract() { # the BUILT bundle's Info.plist usage-description contract (PlistBuddy proof from the INSTALLED app)
+  note "=== micro:camera-permission-contract — the built Info.plist NSCameraUsageDescription (PlistBuddy proof) ==="
+  surface_section "Micro-shard: camera permission contract (the installed bundle's Info.plist)"
+  local cpc_expected="MediVault uses the camera to scan patient documents."
+  local cpc_got
+  cpc_got="$(/usr/libexec/PlistBuddy -c 'Print :NSCameraUsageDescription' "$APP_PATH/Contents/Info.plist" 2>&1 || true)"
+  probe "cpc: PlistBuddy NSCameraUsageDescription of the INSTALLED $APP_PATH → '$cpc_got'"
+  snap "cpc-plistbuddy" || true
+  if [ "$cpc_got" = "$cpc_expected" ]; then
+    qa_cap CAMERA_PLIST "GREEN (the INSTALLED app's Info.plist carries NSCameraUsageDescription = the exact expected string — PlistBuddy-proven, not a source grep)"
+    surface_row "NSCameraUsageDescription" "the installed bundle ($APP_PATH)" "the exact purpose string" "a physical Mac can present the TCC camera prompt" "PlistBuddy Print = the expected string" "GREEN" "cpc-plistbuddy" "OK"
+  else
+    bug P1 CAMERA_PLIST "the INSTALLED app's Info.plist NSCameraUsageDescription is wrong or absent (got: '$cpc_got'; expected: '$cpc_expected') — the macOS camera permission prompt CANNOT appear on a real Mac"
+  fi
+  # the minimal-permission audit: NO other usage-description key may have been added
+  local cpc_all
+  cpc_all="$(/usr/libexec/PlistBuddy -c 'Print' "$APP_PATH/Contents/Info.plist" 2>/dev/null | grep -oE 'NS[A-Za-z]+UsageDescription' | sort -u || true)"
+  probe "cpc: every usage-description key in the built plist: [$(printf '%s' "$cpc_all" | tr '\n' ' ')]"
+  if [ "$(printf '%s' "$cpc_all" | grep -c .)" = "1" ] && printf '%s' "$cpc_all" | grep -q "NSCameraUsageDescription"; then
+    qa_cap CAMERA_PLIST_MINIMAL "GREEN (the ONLY usage-description key in the bundle is NSCameraUsageDescription — no unnecessary permissions were added)"
+  else
+    bug P3 CAMERA_PLIST_EXTRA "the bundle carries usage-description keys beyond NSCameraUsageDescription: [$(printf '%s' "$cpc_all" | tr '\n' ' ')] — the ff-2a audit required the camera key ONLY"
+  fi
+  # plist structural sanity
+  if plutil -lint "$APP_PATH/Contents/Info.plist" >/dev/null 2>&1; then
+    qa_cap CAMERA_PLIST_LINT "GREEN (plutil -lint on the installed Info.plist)"
+  else
+    bug P1 CAMERA_PLIST_LINT "plutil -lint failed on the installed Info.plist"
+  fi
+  note "micro:camera-permission-contract complete"
+}
+
+micro_print_document() { # ff-2b: the viewer Print → the native bridge (temp PDF + Preview)
+  note "=== micro:print-document — the viewer Print via the native bridge ==="
+  surface_section "Micro-shard: print document (the native print bridge)"
+  micro_dsk_fixture_set "MICRO_PRINT_DOC"
+  if ! micro_docs_ready "MICRO_PRINT_DOC"; then
+    qa_cap MICRO_PRINT_DOCUMENT "NOT-EXERCISED-ENV (the fixture documents are unavailable — see the FX record)"
+  elif open_patient_by_phone_token "$MICRO_PAT1_TOKEN" "$MICRO_PAT1_FULL" "mpd1-detail" "$MICRO_PAT1_PHONE"; then
+    v_scroll_find "$MICRO_PDF_TITLE" 16 no down 4 || true
+    if v_click "$MICRO_PDF_TITLE" "mpd1-doc-open" "" || v_click_try_hits "$MICRO_PDF_TITLE" "mpd1-doc-open" ""; then
+      sleep 3
+      wait_text_gone "Loading document" 45 "mpd1-loaded" || true
+      dsk_print_temp_mark
+      if dsk_click_viewer_icon print "$MICRO_PDF_TITLE" "mpd1-printicon"; then
+        if dsk_print_temp_newest "mpd1" 40; then
+          dsk_pdf_verify "$DSK_PTMP_FILE" "$MICRO_DOC_SENTINEL" "$MICRO_PAT2_NOTE" "mpd1"
+          local mpd1_ok="yes"
+          [ "$DSK_PTMP_MAGIC" = "pdf" ] || mpd1_ok="no"
+          [ "$DSK_PTMP_SIZE" -gt 100 ] || mpd1_ok="no"
+          [ "$DSK_PTMP_PERMS" = "600" ] || mpd1_ok="no"
+          [ "$DSK_PTMP_NAME_OK" = "yes" ] || mpd1_ok="no"
+          if [ "$mpd1_ok" = "yes" ]; then
+            qa_cap MICRO_PRINT_DOCUMENT "GREEN (the native bridge materialized a REAL PDF temp file — magic verified, ${DSK_PTMP_SIZE}B, 0600 perms, unpredictable PHI-free name; opened for printing)"
+            surface_row "Print document (native)" "viewer Print icon" "the temp PDF + Preview" "a deterministic native print flow (no WKWebView print)" "temp PDF verified (magic/size/perms/name)" "GREEN" "mpd1-*" "OK"
+          else
+            bug P2 MICRO_PRINT_DOCUMENT "the print bridge temp file failed its contract (magic=$DSK_PTMP_MAGIC size=$DSK_PTMP_SIZE perms=$DSK_PTMP_PERMS name-contract=$DSK_PTMP_NAME_OK file=$DSK_PTMP_FILE)"
+          fi
+          if [ "$DSK_PDF_TEXT_OK" = "yes" ]; then
+            if [ "$DSK_PDF_FOREIGN" = "PRESENT" ]; then
+              bug P0 PRINT_WRONG_PATIENT_CONTENT "the FOREIGN patient sentinel '$MICRO_PAT2_NOTE' is present in the print temp PDF of $MICRO_PAT1_FULL's document (WRONG-PATIENT CONTENT — file: $DSK_PTMP_FILE)"
+            else
+              qa_cap MICRO_PRINT_DOC_ISOLATION "GREEN (the foreign sentinel is ABSENT from the print temp PDF)"
+            fi
+          fi
+          # Preview must own the opened file; then the app's success toast
+          sleep 3
+          if dsk_preview_running; then
+            qa_cap MICRO_PRINT_PREVIEW "GREEN (Preview is running — /usr/bin/open handed the PDF to the native viewer)"
+          else
+            probe "mpd1: Preview not observed as a running process (open may have used another default handler — the temp-file contract above stands)"
+          fi
+          dsk_activate_medivault
+          if wait_for_ocr "Opened for printing" 10 "mpd1-toast" || ocr_grep "Opened for printing"; then
+            qa_cap MICRO_PRINT_TOAST "GREEN (the visible success toast: 'Opened for printing')"
+          else
+            probe "mpd1: the 'Opened for printing' toast was not OCR-caught (Preview focus timing — the file+Preview evidence above stands)"
+          fi
+          dsk_quit_preview
         else
-          bug ENV MICRO_PRINT_REPORT "'Print Report' (window.print) produced no OCR-visible native sheet this run (captures: mp2-after-print-report — the MP1 ENV family; the print-family product gap is documented in BUG-REGISTER)"
-          qa_cap MICRO_PRINT_REPORT "ENV (no OCR-visible native sheet this run)"
+          bug P2 MICRO_PRINT_DOCUMENT "the viewer Print did NOT materialize a temp print file within 40s (the native bridge contract failed — see mpd1-printicon-cand-*)"
         fi
       else
-        bug P1 MICRO_PRINT_REPORT "the 'Print Report' button produced no visible change"
+        bug P2 MICRO_PRINT_DOCUMENT "the viewer Print icon could not be activated (see mpd1-printicon-cand-*)"
+      fi
+    else
+      bug P1 MICRO_PRINT_DOCUMENT "the PDF document row could not be opened into the viewer"
+    fi
+  else
+    bug P1 MICRO_PRINT_DOCUMENT "could not open $MICRO_PAT1_FULL's detail"
+  fi
+  v_click "Dashboard" "mpd1-back" "Add Patient" || true
+  note "micro:print-document complete"
+}
+
+micro_print_report() { # ff-2b: the report Print → generatePatientReportPdf → the native bridge
+  note "=== micro:print-report — the Patient Summary Report via the native bridge ==="
+  surface_section "Micro-shard: print report (pdf-lib generation → the native print bridge)"
+  micro_dsk_fixture_set "MICRO_PRINT_REPORT"
+  if open_patient_by_phone_token "$MICRO_PAT1_TOKEN" "$MICRO_PAT1_FULL" "mpr-detail" "$MICRO_PAT1_PHONE"; then
+    detail_scroll_top "mpr-top" || true
+    if dsk_click_banner_report "$MICRO_PAT1_FULL" "mpr-report-open" "$MICRO_PAT1_PHONE"; then
+      wait_for_ocr "Patient Summary Report" 20 "mpr-dialog" || true
+      dsk_print_temp_mark
+      if v_click "Print Report" "mpr-print" ""; then
+        if dsk_print_temp_newest "mpr" 40; then
+          dsk_pdf_verify "$DSK_PTMP_FILE" "$MICRO_PAT1_LAST" "$MICRO_PAT2_NOTE" "mpr"
+          if [ "$DSK_PTMP_MAGIC" = "pdf" ] && [ "$DSK_PTMP_SIZE" -gt 1000 ]; then
+            qa_cap MICRO_PRINT_REPORT "GREEN (the report PDF was generated client-side (pdf-lib) and materialized for native printing — ${DSK_PTMP_SIZE}B, pages=$DSK_PDF_PAGES)"
+            surface_row "Print report (native)" "report dialog → Print Report" "the generated PDF + Preview" "a REAL PDF report, deterministic layout" "temp PDF verified (magic/size)" "GREEN" "mpr-*" "OK"
+          else
+            bug P2 MICRO_PRINT_REPORT "the report print temp file is not a valid non-empty PDF (magic=$DSK_PTMP_MAGIC size=$DSK_PTMP_SIZE)"
+          fi
+          if [ "$DSK_PDF_TEXT_OK" = "yes" ]; then
+            if [ "$DSK_PDF_OWN" = "present" ]; then
+              qa_cap MICRO_PRINT_REPORT_CONTENT "GREEN (the patient's name is present in the generated report PDF's extractable text)"
+            else
+              bug P2 MICRO_PRINT_REPORT_CONTENT "the patient name was NOT found in the generated report PDF text (extraction succeeded — generation defect?)"
+            fi
+            if [ "$DSK_PDF_FOREIGN" = "PRESENT" ]; then
+              bug P0 PRINT_WRONG_PATIENT_CONTENT "the FOREIGN patient sentinel is present in $MICRO_PAT1_FULL's generated report PDF (WRONG-PATIENT CONTENT — file: $DSK_PTMP_FILE)"
+            else
+              qa_cap MICRO_PRINT_REPORT_ISOLATION "GREEN (the foreign sentinel is ABSENT from the report PDF)"
+            fi
+          fi
+          sleep 3
+          dsk_preview_running && qa_cap MICRO_PRINT_REPORT_PREVIEW "GREEN (Preview is running for the report)"
+          dsk_quit_preview
+        else
+          bug P2 MICRO_PRINT_REPORT "the report Print did NOT materialize a temp print file within 40s"
+        fi
+      else
+        bug P1 MICRO_PRINT_REPORT "the 'Print Report' button could not be clicked"
       fi
       press_escape
       sleep 1
@@ -16191,56 +16488,51 @@ micro_print() {
       bug P1 MICRO_PRINT_REPORT "the Generate Report (banner) control could not be activated"
     fi
   else
-    bug P1 MICRO_PRINT_REPORT "could not open $MICRO_PAT1_FULL's detail (MP2)"
+    bug P1 MICRO_PRINT_REPORT "could not open $MICRO_PAT1_FULL's detail"
   fi
-  v_click "Dashboard" "mp2-back" "Add Patient" || true
-  dsk_dl_manifest "MP2-after"
+  v_click "Dashboard" "mpr-back" "Add Patient" || true
+  note "micro:print-report complete"
+}
 
-  # MP3 — the prescription print (preview content contract + Print)
-  note "--- micro MP3: the prescription print ---"
+micro_print_prescription() { # ff-2b: the rx Print → generatePrescriptionPdf → the native bridge
+  note "=== micro:print-prescription — the prescription via the native bridge ==="
+  surface_section "Micro-shard: print prescription (pdf-lib generation → the native print bridge)"
+  micro_dsk_fixture_set "MICRO_PRINT_RX"
   if [ "${MICRO_RX_MADE:-no}" != "yes" ]; then
     qa_cap MICRO_PRINT_RX "NOT-EXERCISED (the fixture prescription was not created this run — see the FX record)"
-  elif open_patient_by_phone_token "$MICRO_PAT1_TOKEN" "$MICRO_PAT1_FULL" "mp3-detail" "$MICRO_PAT1_PHONE"; then
+  elif open_patient_by_phone_token "$MICRO_PAT1_TOKEN" "$MICRO_PAT1_FULL" "mpx-detail" "$MICRO_PAT1_PHONE"; then
     if v_scroll_find "medication" 16 no down 4; then
-      if dsk_click_rx_print_icon "mp3-rxicon"; then
-        wait_for_ocr "Print Prescription" 20 "mp3-preview" || true
+      if dsk_click_rx_print_icon "mpx-rxicon"; then
+        wait_for_ocr "Print Prescription" 20 "mpx-preview" || true
         ocr_capture || true
-        snap "mp3-preview-dialog" || true
-        record_inventory "prescription print preview dialog (micro:print)"
-        # the CONTENT CONTRACT — OCR'd BEFORE any printing
-        local mp3_c_patient=0 mp3_c_med=0 mp3_c_dose=0 mp3_c_doc=0 mp3_c_instr=0
-        ocr_grep "$MICRO_PAT1_FULL" && mp3_c_patient=1
-        ocr_grep "$MICRO_RX_MED" && mp3_c_med=1
-        ocr_grep "500mg" && mp3_c_dose=1
-        ocr_grep "Test Doctor" && mp3_c_doc=1
-        [ "$mp3_c_doc" = "0" ] && ocr_grep "MediVault Test" && mp3_c_doc=1
-        ocr_grep "PRESCRIPTION" && mp3_c_instr=1
-        if ! ocr_grep "Complete the full course"; then
-          scroll_burst down 500 400 4 || true
-          sleep 1
-          ocr_capture || true
-        fi
-        ocr_grep "Complete the full course" && mp3_c_instr=1
-        snap "mp3-preview-content" || true
-        if [ "$mp3_c_patient" = "1" ] && [ "$mp3_c_med" = "1" ] && [ "$mp3_c_dose" = "1" ]; then
-          qa_cap MICRO_PRINT_RX_PREVIEW "GREEN (the print preview shows the patient ($mp3_c_patient), the medication ($mp3_c_med), the dosage ($mp3_c_dose), the doctor ($mp3_c_doc), the heading/instructions ($mp3_c_instr) — proven BEFORE printing)"
-          surface_row "Prescription print preview" "rx card Print icon" "'Print Prescription' dialog: doctor/patient/meds table + Print/Close" "the preview content matches the prescription record" "OCR of the preview dialog content" "GREEN" "mp3-preview-*" "OK"
-        else
-          bug P1 MICRO_PRINT_RX_PREVIEW "the print preview content contract is incomplete (patient=$mp3_c_patient med=$mp3_c_med dosage=$mp3_c_dose doctor=$mp3_c_doc instructions=$mp3_c_instr — capture mp3-preview-content)"
-        fi
-        local mp3_wc_before
-        mp3_wc_before="$(ui_window_count "mediavault")"
-        if v_click_try_hits "Print" "mp3-rx-print" ""; then
-          sleep 3
-          ocr_capture || true
-          snap "mp3-after-print" || true
-          record_inventory "screen after the prescription Print button (whatever actually appeared)"
-          if dsk_print_sheet_visible; then
-            qa_cap MICRO_PRINT_RX "GREEN (the prescription Print opened the native print sheet)"
-            surface_row "Prescription print" "rx preview → 'Print'" "'Print' (window.open + document.write + onload print)" "the prescription reaches the native print pipeline" "clicked; the native sheet OCR-verified; canceled" "GREEN" "mp3-*" "OK"
-            dsk_print_cancel "mp3" || true
+        snap "mpx-preview-dialog" || true
+        dsk_print_temp_mark
+        if v_click_try_hits "Print" "mpx-rx-print" ""; then
+          if dsk_print_temp_newest "mpx" 40; then
+            dsk_pdf_verify "$DSK_PTMP_FILE" "$MICRO_RX_MED" "$MICRO_PAT2_NOTE" "mpx"
+            if [ "$DSK_PTMP_MAGIC" = "pdf" ] && [ "$DSK_PTMP_SIZE" -gt 1000 ]; then
+              qa_cap MICRO_PRINT_RX "GREEN (the prescription PDF was generated (pdf-lib) and materialized for native printing — ${DSK_PTMP_SIZE}B)"
+              surface_row "Print prescription (native)" "rx preview → Print" "the generated PDF + Preview" "a REAL PDF prescription" "temp PDF verified (magic/size)" "GREEN" "mpx-*" "OK"
+            else
+              bug P2 MICRO_PRINT_RX "the prescription print temp file is not a valid non-empty PDF (magic=$DSK_PTMP_MAGIC size=$DSK_PTMP_SIZE)"
+            fi
+            if [ "$DSK_PDF_TEXT_OK" = "yes" ]; then
+              if [ "$DSK_PDF_OWN" = "present" ]; then
+                qa_cap MICRO_PRINT_RX_CONTENT "GREEN (the medication sentinel '$MICRO_RX_MED' is present in the generated rx PDF)"
+              else
+                bug P2 MICRO_PRINT_RX_CONTENT "the medication sentinel was NOT found in the generated rx PDF text (extraction succeeded — generation defect?)"
+              fi
+              if [ "$DSK_PDF_FOREIGN" = "PRESENT" ]; then
+                bug P0 PRINT_WRONG_PATIENT_CONTENT "the FOREIGN patient sentinel is present in $MICRO_PAT1_FULL's generated rx PDF (WRONG-PATIENT CONTENT — file: $DSK_PTMP_FILE)"
+              else
+                qa_cap MICRO_PRINT_RX_ISOLATION "GREEN (the foreign sentinel is ABSENT from the rx PDF)"
+              fi
+            fi
+            sleep 3
+            dsk_preview_running && qa_cap MICRO_PRINT_RX_PREVIEW "GREEN (Preview is running for the prescription)"
+            dsk_quit_preview
           else
-            bug ENV MICRO_PRINT_RX "the prescription Print (window.open + document.write + onload print) produced no OCR-visible native sheet and no new app window (count $mp3_wc_before → $(ui_window_count "mediavault"); captures mp3-after-print). The PREVIEW content contract above still stands as the drivable proof — the print-family product gap is documented in BUG-REGISTER."
+            bug P2 MICRO_PRINT_RX "the rx Print did NOT materialize a temp print file within 40s"
           fi
         else
           bug P1 MICRO_PRINT_RX "the preview dialog's Print button produced no visible change"
@@ -16248,126 +16540,101 @@ micro_print() {
         press_escape
         sleep 1
         if ocr_grep "Print Prescription"; then
-          v_click "Close" "mp3-preview-close" "" || press_escape
+          v_click "Close" "mpx-preview-close" "" || press_escape
         fi
       else
-        bug ENV MICRO_PRINT_RX_ICON "the rx card's icon-only Print control could not be activated by any verified candidate (all attempts recorded in mp3-rxicon-cand-*)"
+        bug P2 MICRO_PRINT_RX_ICON "the rx card's icon-only Print control could not be activated (see mpx-rxicon-cand-*)"
       fi
     else
       bug P1 MICRO_PRINT_RX "the prescription card was not visible on the detail"
     fi
   else
-    bug P1 MICRO_PRINT_RX "could not open $MICRO_PAT1_FULL's detail (MP3)"
+    bug P1 MICRO_PRINT_RX "could not open $MICRO_PAT1_FULL's detail"
   fi
-  v_click "Dashboard" "mp3-back" "Add Patient" || true
-  dsk_dl_manifest "MP3-after"
-  note "micro:print complete"
+  v_click "Dashboard" "mpx-back" "Add Patient" || true
+  note "micro:print-prescription complete"
 }
 
-micro_save_pdf() {
-  note "=== micro:save-pdf — the Save-as-PDF outcomes (document / report / prescription) ==="
-  local PDF_TITLE="$MICRO_PDF_TITLE"
-  micro_dsk_fixture_set "MICRO_SAVE_PDF"
-  surface_section "Micro-shard: save-as-PDF (the DE2-DE4 outcomes)"
-
-  # MS1 — the document Save-as-PDF (DE2)
-  note "--- micro MS1: save-as-PDF (document) ---"
-  dsk_dl_manifest "MS1-before"
-  if ! micro_docs_ready "MICRO_SAVE_PDF"; then
+micro_save_pdf_document() { # ff-2b: the viewer Save-as-PDF → the NATIVE save panel
+  note "=== micro:save-pdf-document — the viewer Save as PDF via the native panel ==="
+  surface_section "Micro-shard: save-as-PDF document (the native save panel)"
+  micro_dsk_fixture_set "MICRO_SAVE_DOC"
+  if ! micro_docs_ready "MICRO_SAVE_DOC"; then
     qa_cap MICRO_SAVE_PDF_DOCUMENT "NOT-EXERCISED-ENV (the fixture documents are unavailable — see the FX record)"
-  elif open_patient_by_phone_token "$MICRO_PAT1_TOKEN" "$MICRO_PAT1_FULL" "ms1-detail" "$MICRO_PAT1_PHONE"; then
-    v_scroll_find "$PDF_TITLE" 16 no down 4 || true
-    if v_click "$PDF_TITLE" "ms1-doc-open" "" || v_click_try_hits "$PDF_TITLE" "ms1-doc-open" ""; then
+  elif open_patient_by_phone_token "$MICRO_PAT1_TOKEN" "$MICRO_PAT1_FULL" "msd1-detail" "$MICRO_PAT1_PHONE"; then
+    v_scroll_find "$MICRO_PDF_TITLE" 16 no down 4 || true
+    if v_click "$MICRO_PDF_TITLE" "msd1-doc-open" "" || v_click_try_hits "$MICRO_PDF_TITLE" "msd1-doc-open" ""; then
       sleep 3
-      wait_text_gone "Loading document" 45 "ms1-loaded" || true
-      if dsk_click_viewer_icon print "$PDF_TITLE" "ms1-printicon"; then
-        sleep 2
-        ocr_capture || true
-        if dsk_print_sheet_visible; then
-          dsk_save_as_pdf "ms1"
-          if [ "$DSK_SPAP_OK" = "yes" ]; then
-            dsk_pdf_verify "$DSK_SPAP_PDF" "$MICRO_DOC_SENTINEL" "$MICRO_PAT2_NOTE" "ms1"
-            if [ "$DSK_PDF_MAGIC" = "yes" ] && [ "$DSK_PDF_SIZE" -gt 0 ]; then
-              qa_cap MICRO_SAVE_PDF_DOCUMENT "GREEN (file: $DSK_SPAP_PDF; size=${DSK_PDF_SIZE}B; pages=$DSK_PDF_PAGES; text_extract=$DSK_PDF_TEXT_OK)"
-              surface_row "Save-as-PDF (document)" "viewer Print icon → PDF ▾ → Save as PDF" "the native print sheet + the save panel" "a valid non-empty PDF of the document lands in ~/Downloads" "saved; magic+size verified$( [ "$DSK_PDF_TEXT_OK" = "yes" ] && printf '; the sentinel %s in the text' "$MICRO_DOC_SENTINEL" )" "GREEN" "ms1-*" "OK"
-            else
-              bug P2 MICRO_SAVE_PDF_DOCUMENT "the saved artifact is not a valid non-empty PDF: $DSK_SPAP_PDF (magic=$DSK_PDF_MAGIC size=$DSK_PDF_SIZE)"
-            fi
-            if [ "$DSK_PDF_TEXT_OK" = "yes" ]; then
-              if [ "$DSK_PDF_OWN" = "present" ]; then
-                qa_cap MICRO_SAVE_PDF_CONTENT "GREEN (the document sentinel '$MICRO_DOC_SENTINEL' is present in the saved PDF's extractable text)"
-              else
-                bug P3 MICRO_SAVE_PDF_CONTENT "the document sentinel was not found in the extracted text (the print pipeline may re-encode the text layer — extraction itself succeeded; recorded honestly)"
-              fi
-              if [ "$DSK_PDF_FOREIGN" = "PRESENT" ]; then
-                bug P0 PRINT_WRONG_PATIENT_CONTENT "the FOREIGN patient sentinel '$MICRO_PAT2_NOTE' is present in a PDF saved from $MICRO_PAT1_FULL's document (WRONG-PATIENT CONTENT IN A PRINTED/SAVED ARTIFACT — file: $DSK_SPAP_PDF)"
-              else
-                qa_cap MICRO_SAVE_PDF_ISOLATION "GREEN (the foreign sentinel '$MICRO_PAT2_NOTE' is ABSENT from the saved document PDF)"
-              fi
-            else
-              qa_cap MICRO_SAVE_PDF_CONTENT "NOT-VERIFIABLE-ENV (the saved PDF's text layer is not stdlib-extractable — file+mimetype+size are the observable postconditions; the extraction limit is recorded)"
-            fi
+      wait_text_gone "Loading document" 45 "msd1-loaded" || true
+      if dsk_click_viewer_save_pdf "$MICRO_PDF_TITLE" "msd1-saveicon"; then
+        dsk_native_save_panel_accept "msd1"
+        if [ "$DSK_SPAP_OK" = "yes" ]; then
+          dsk_pdf_verify "$DSK_SPAP_PDF" "$MICRO_DOC_SENTINEL" "$MICRO_PAT2_NOTE" "msd1"
+          if [ "$DSK_PDF_MAGIC" = "yes" ] && [ "$DSK_PDF_SIZE" -gt 0 ]; then
+            qa_cap MICRO_SAVE_PDF_DOCUMENT "GREEN (file: $DSK_SPAP_PDF; size=${DSK_PDF_SIZE}B; pages=$DSK_PDF_PAGES — saved through the NATIVE save panel, no WKWebView print)"
+            surface_row "Save-as-PDF (document, native)" "viewer Save-as-PDF icon → the native save panel" "the NSSavePanel + a real PDF in the chosen location" "a deterministic file" "saved; magic+size verified" "GREEN" "msd1-*" "OK"
           else
-            bug ENV MICRO_SAVE_PDF_DOCUMENT "the Save-as-PDF path could not be driven: $DSK_SPAP_WHY (attempt evidence: ms1-pdf-*, ms1-save-*)"
+            bug P2 MICRO_SAVE_PDF_DOCUMENT "the saved artifact is not a valid non-empty PDF: $DSK_SPAP_PDF (magic=$DSK_PDF_MAGIC size=$DSK_PDF_SIZE)"
+          fi
+          if [ "$DSK_PDF_TEXT_OK" = "yes" ]; then
+            if [ "$DSK_PDF_FOREIGN" = "PRESENT" ]; then
+              bug P0 PRINT_WRONG_PATIENT_CONTENT "the FOREIGN patient sentinel is present in a PDF saved from $MICRO_PAT1_FULL's document (WRONG-PATIENT CONTENT — file: $DSK_SPAP_PDF)"
+            else
+              qa_cap MICRO_SAVE_PDF_DOC_ISOLATION "GREEN (the foreign sentinel is ABSENT from the saved document PDF)"
+            fi
           fi
         else
-          bug ENV MICRO_SAVE_PDF_SHEET "the print sheet did not appear for the document Save-as-PDF (the print-family ENV record — see ms1-printicon-cand-*)"
+          bug P2 MICRO_SAVE_PDF_DOCUMENT "the native save could not be driven: $DSK_SPAP_WHY (attempt evidence: msd1-saveicon-cand-*, msd1-savepanel-*)"
         fi
       else
-        bug ENV MICRO_SAVE_PDF_ICON "the viewer Print icon could not be activated for the Save-as-PDF (see ms1-printicon-cand-*)"
+        bug P2 MICRO_SAVE_PDF_DOCUMENT "the viewer Save-as-PDF icon could not be activated (see msd1-saveicon-cand-*)"
       fi
     else
-      bug P1 MICRO_SAVE_PDF_DOCUMENT "the PDF document row could not be opened into the viewer (MS1)"
+      bug P1 MICRO_SAVE_PDF_DOCUMENT "the PDF document row could not be opened into the viewer"
     fi
   else
-    bug P1 MICRO_SAVE_PDF_DOCUMENT "could not open $MICRO_PAT1_FULL's detail (MS1)"
+    bug P1 MICRO_SAVE_PDF_DOCUMENT "could not open $MICRO_PAT1_FULL's detail"
   fi
-  v_click "Dashboard" "ms1-back" "Add Patient" || true
-  dsk_dl_manifest "MS1-after"
+  v_click "Dashboard" "msd1-back" "Add Patient" || true
+  note "micro:save-pdf-document complete"
+}
 
-  # MS2 — the report Save-as-PDF (DE3)
-  note "--- micro MS2: save-as-PDF (patient summary report) ---"
-  dsk_dl_manifest "MS2-before"
-  if open_patient_by_phone_token "$MICRO_PAT1_TOKEN" "$MICRO_PAT1_FULL" "ms2-detail" "$MICRO_PAT1_PHONE"; then
-    detail_scroll_top "ms2-top" || true
-    if dsk_click_banner_report "$MICRO_PAT1_FULL" "ms2-report-open" "$MICRO_PAT1_PHONE"; then
-      wait_for_ocr "Patient Summary Report" 20 "ms2-report-dialog" || true
-      if v_click "Print Report" "ms2-print-report" ""; then
-        sleep 3
-        ocr_capture || true
-        snap "ms2-after-print-report" || true
-        if dsk_print_sheet_visible; then
-          dsk_save_as_pdf "ms2"
-          if [ "$DSK_SPAP_OK" = "yes" ]; then
-            dsk_pdf_verify "$DSK_SPAP_PDF" "$MICRO_PAT1_LAST" "$MICRO_PAT2_NOTE" "ms2"
-            if [ "$DSK_PDF_MAGIC" = "yes" ] && [ "$DSK_PDF_SIZE" -gt 0 ]; then
-              qa_cap MICRO_SAVE_PDF_REPORT "GREEN (file: $DSK_SPAP_PDF; size=${DSK_PDF_SIZE}B; pages=$DSK_PDF_PAGES)"
-              surface_row "Save-as-PDF (report)" "report dialog → 'Print Report' → PDF ▾ → Save as PDF" "the native print sheet + the save panel" "a valid PDF of the report lands in ~/Downloads" "saved; magic+size verified" "GREEN" "ms2-*" "OK"
-            else
-              bug P2 MICRO_SAVE_PDF_REPORT "the report artifact is not a valid non-empty PDF ($DSK_SPAP_PDF)"
-            fi
-            if [ "$DSK_PDF_TEXT_OK" = "yes" ]; then
-              if [ "$DSK_PDF_OWN" = "present" ]; then
-                qa_cap MICRO_SAVE_PDF_REPORT_CONTENT "GREEN (the patient's name is present in the saved report PDF's text)"
-              else
-                bug P3 MICRO_SAVE_PDF_REPORT_CONTENT "the patient name was not found in the extracted report text (re-encoded text layer? — extraction succeeded; recorded honestly)"
-              fi
-              if [ "$DSK_PDF_FOREIGN" = "PRESENT" ]; then
-                bug P0 PRINT_WRONG_PATIENT_CONTENT "the FOREIGN patient sentinel '$MICRO_PAT2_NOTE' is present in $MICRO_PAT1_FULL's saved report PDF (WRONG-PATIENT CONTENT IN A PRINTED/SAVED ARTIFACT — file: $DSK_SPAP_PDF)"
-              else
-                qa_cap MICRO_SAVE_PDF_REPORT_ISOLATION "GREEN (the foreign sentinel is ABSENT from the report PDF)"
-              fi
-            else
-              qa_cap MICRO_SAVE_PDF_REPORT_CONTENT "NOT-VERIFIABLE-ENV (report PDF text not stdlib-extractable — file+mimetype+size recorded; the HTML-print text may be re-encoded)"
-            fi
+micro_save_pdf_report() { # ff-2b: the report Save-as-PDF → the NATIVE save panel
+  note "=== micro:save-pdf-report — the report via the native save panel ==="
+  surface_section "Micro-shard: save-as-PDF report (the native save panel)"
+  micro_dsk_fixture_set "MICRO_SAVE_REPORT"
+  if open_patient_by_phone_token "$MICRO_PAT1_TOKEN" "$MICRO_PAT1_FULL" "msd2-detail" "$MICRO_PAT1_PHONE"; then
+    detail_scroll_top "msd2-top" || true
+    if dsk_click_banner_report "$MICRO_PAT1_FULL" "msd2-report-open" "$MICRO_PAT1_PHONE"; then
+      wait_for_ocr "Patient Summary Report" 20 "msd2-dialog" || true
+      dsk_dl_mark
+      if v_click "Download as PDF" "msd2-download" ""; then
+        dsk_native_save_panel_accept "msd2"
+        if [ "$DSK_SPAP_OK" = "yes" ]; then
+          dsk_pdf_verify "$DSK_SPAP_PDF" "$MICRO_PAT1_LAST" "$MICRO_PAT2_NOTE" "msd2"
+          if [ "$DSK_PDF_MAGIC" = "yes" ] && [ "$DSK_PDF_SIZE" -gt 1000 ]; then
+            qa_cap MICRO_SAVE_PDF_REPORT "GREEN (file: $DSK_SPAP_PDF; size=${DSK_PDF_SIZE}B; pages=$DSK_PDF_PAGES — the report saved through the NATIVE panel)"
+            surface_row "Save-as-PDF (report, native)" "report dialog → Download as PDF → the native panel" "the NSSavePanel + a real PDF report" "a deterministic file" "saved; magic+size verified" "GREEN" "msd2-*" "OK"
           else
-            bug ENV MICRO_SAVE_PDF_REPORT "the report Save-as-PDF could not be driven: $DSK_SPAP_WHY"
+            bug P2 MICRO_SAVE_PDF_REPORT "the report artifact is not a valid non-empty PDF ($DSK_SPAP_PDF)"
+          fi
+          if [ "$DSK_PDF_TEXT_OK" = "yes" ]; then
+            if [ "$DSK_PDF_OWN" = "present" ]; then
+              qa_cap MICRO_SAVE_PDF_REPORT_CONTENT "GREEN (the patient's name is present in the saved report PDF's text)"
+            else
+              bug P2 MICRO_SAVE_PDF_REPORT_CONTENT "the patient name was NOT found in the saved report text (extraction succeeded — generation defect?)"
+            fi
+            if [ "$DSK_PDF_FOREIGN" = "PRESENT" ]; then
+              bug P0 PRINT_WRONG_PATIENT_CONTENT "the FOREIGN patient sentinel is present in $MICRO_PAT1_FULL's saved report PDF (WRONG-PATIENT CONTENT — file: $DSK_SPAP_PDF)"
+            else
+              qa_cap MICRO_SAVE_PDF_REPORT_ISOLATION "GREEN (the foreign sentinel is ABSENT from the report PDF)"
+            fi
           fi
         else
-          bug ENV MICRO_SAVE_PDF_REPORT "'Print Report' (window.print) produced no OCR-visible native sheet this run (captures: ms2-after-print-report — the print-family ENV record)"
+          bug P2 MICRO_SAVE_PDF_REPORT "the native save could not be driven: $DSK_SPAP_WHY"
         fi
       else
-        bug P1 MICRO_SAVE_PDF_REPORT "the 'Print Report' button produced no visible change"
+        bug P1 MICRO_SAVE_PDF_REPORT "the 'Download as PDF' button could not be clicked"
       fi
       press_escape
       sleep 1
@@ -16375,76 +16642,477 @@ micro_save_pdf() {
       bug P1 MICRO_SAVE_PDF_REPORT "the Generate Report (banner) control could not be activated"
     fi
   else
-    bug P1 MICRO_SAVE_PDF_REPORT "could not open $MICRO_PAT1_FULL's detail (MS2)"
+    bug P1 MICRO_SAVE_PDF_REPORT "could not open $MICRO_PAT1_FULL's detail"
   fi
-  v_click "Dashboard" "ms2-back" "Add Patient" || true
-  dsk_dl_manifest "MS2-after"
+  v_click "Dashboard" "msd2-back" "Add Patient" || true
+  note "micro:save-pdf-report complete"
+}
 
-  # MS3 — the prescription Save-as-PDF (DE4)
-  note "--- micro MS3: save-as-PDF (prescription) ---"
+micro_save_pdf_prescription() { # ff-2b: the rx Save-as-PDF → the NATIVE save panel
+  note "=== micro:save-pdf-prescription — the rx via the native save panel ==="
+  surface_section "Micro-shard: save-as-PDF prescription (the native save panel)"
+  micro_dsk_fixture_set "MICRO_SAVE_RX"
   if [ "${MICRO_RX_MADE:-no}" != "yes" ]; then
     qa_cap MICRO_SAVE_PDF_RX "NOT-EXERCISED (the fixture prescription was not created this run — see the FX record)"
-  elif open_patient_by_phone_token "$MICRO_PAT1_TOKEN" "$MICRO_PAT1_FULL" "ms3-detail" "$MICRO_PAT1_PHONE"; then
+  elif open_patient_by_phone_token "$MICRO_PAT1_TOKEN" "$MICRO_PAT1_FULL" "msd3-detail" "$MICRO_PAT1_PHONE"; then
     if v_scroll_find "medication" 16 no down 4; then
-      if dsk_click_rx_print_icon "ms3-rxicon"; then
-        wait_for_ocr "Print Prescription" 20 "ms3-preview" || true
-        ocr_capture || true
-        snap "ms3-preview-dialog" || true
+      if dsk_click_rx_print_icon "msd3-rxicon"; then
+        wait_for_ocr "Print Prescription" 20 "msd3-preview" || true
         dsk_dl_mark
-        if v_click_try_hits "Print" "ms3-rx-print" ""; then
-          sleep 3
-          ocr_capture || true
-          snap "ms3-after-print" || true
-          if dsk_print_sheet_visible; then
-            dsk_save_as_pdf "ms3"
-            if [ "$DSK_SPAP_OK" = "yes" ]; then
-              dsk_pdf_verify "$DSK_SPAP_PDF" "$MICRO_RX_MED" "$MICRO_PAT2_NOTE" "ms3"
-              if [ "$DSK_PDF_MAGIC" = "yes" ] && [ "$DSK_PDF_SIZE" -gt 0 ]; then
-                qa_cap MICRO_SAVE_PDF_RX "GREEN (file: $DSK_SPAP_PDF; size=${DSK_PDF_SIZE}B; pages=$DSK_PDF_PAGES)"
-                surface_row "Save-as-PDF (prescription)" "rx preview → 'Print' → PDF ▾ → Save as PDF" "the native print sheet + the save panel" "a valid PDF of the prescription lands in ~/Downloads" "saved; magic+size verified" "GREEN" "ms3-*" "OK"
-              else
-                bug P2 MICRO_SAVE_PDF_RX "the prescription artifact is not a valid non-empty PDF ($DSK_SPAP_PDF)"
-              fi
-              if [ "$DSK_PDF_TEXT_OK" = "yes" ]; then
-                if [ "$DSK_PDF_OWN" = "present" ]; then
-                  qa_cap MICRO_SAVE_PDF_RX_CONTENT "GREEN (the medication sentinel '$MICRO_RX_MED' is present in the saved prescription PDF)"
-                else
-                  bug P3 MICRO_SAVE_PDF_RX_CONTENT "the medication sentinel was not found in the extracted rx PDF text (extraction succeeded; re-encoding suspected — recorded honestly)"
-                fi
-                if [ "$DSK_PDF_FOREIGN" = "PRESENT" ]; then
-                  bug P0 PRINT_WRONG_PATIENT_CONTENT "the FOREIGN patient sentinel '$MICRO_PAT2_NOTE' is present in $MICRO_PAT1_FULL's saved prescription PDF (WRONG-PATIENT CONTENT IN A PRINTED/SAVED ARTIFACT — file: $DSK_SPAP_PDF)"
-                else
-                  qa_cap MICRO_SAVE_PDF_RX_ISOLATION "GREEN (the foreign sentinel is ABSENT from the prescription PDF)"
-                fi
-              else
-                qa_cap MICRO_SAVE_PDF_RX_CONTENT "NOT-VERIFIABLE-ENV (rx PDF text not stdlib-extractable — file+mimetype+size recorded)"
-              fi
+        if v_click "Save as PDF" "msd3-savepdf" ""; then
+          dsk_native_save_panel_accept "msd3"
+          if [ "$DSK_SPAP_OK" = "yes" ]; then
+            dsk_pdf_verify "$DSK_SPAP_PDF" "$MICRO_RX_MED" "$MICRO_PAT2_NOTE" "msd3"
+            if [ "$DSK_PDF_MAGIC" = "yes" ] && [ "$DSK_PDF_SIZE" -gt 1000 ]; then
+              qa_cap MICRO_SAVE_PDF_RX "GREEN (file: $DSK_SPAP_PDF; size=${DSK_PDF_SIZE}B; pages=$DSK_PDF_PAGES — the rx saved through the NATIVE panel)"
+              surface_row "Save-as-PDF (rx, native)" "rx preview → Save as PDF → the native panel" "the NSSavePanel + a real PDF rx" "a deterministic file" "saved; magic+size verified" "GREEN" "msd3-*" "OK"
             else
-              bug ENV MICRO_SAVE_PDF_RX "the rx Save-as-PDF could not be driven: $DSK_SPAP_WHY"
+              bug P2 MICRO_SAVE_PDF_RX "the rx artifact is not a valid non-empty PDF ($DSK_SPAP_PDF)"
+            fi
+            if [ "$DSK_PDF_TEXT_OK" = "yes" ]; then
+              if [ "$DSK_PDF_OWN" = "present" ]; then
+                qa_cap MICRO_SAVE_PDF_RX_CONTENT "GREEN (the medication sentinel is present in the saved rx PDF)"
+              else
+                bug P2 MICRO_SAVE_PDF_RX_CONTENT "the medication sentinel was NOT found in the saved rx text (extraction succeeded — generation defect?)"
+              fi
+              if [ "$DSK_PDF_FOREIGN" = "PRESENT" ]; then
+                bug P0 PRINT_WRONG_PATIENT_CONTENT "the FOREIGN patient sentinel is present in $MICRO_PAT1_FULL's saved rx PDF (WRONG-PATIENT CONTENT — file: $DSK_SPAP_PDF)"
+              else
+                qa_cap MICRO_SAVE_PDF_RX_ISOLATION "GREEN (the foreign sentinel is ABSENT from the rx PDF)"
+              fi
             fi
           else
-            bug ENV MICRO_SAVE_PDF_RX "the prescription Print (window.open + document.write + onload print) produced no OCR-visible native sheet (captures: ms3-after-print — the print-family ENV record)"
+            bug P2 MICRO_SAVE_PDF_RX "the native save could not be driven: $DSK_SPAP_WHY"
           fi
         else
-          bug P1 MICRO_SAVE_PDF_RX "the preview dialog's Print button produced no visible change"
+          bug P1 MICRO_SAVE_PDF_RX "the 'Save as PDF' button could not be clicked in the rx preview"
         fi
         press_escape
         sleep 1
         if ocr_grep "Print Prescription"; then
-          v_click "Close" "ms3-preview-close" "" || press_escape
+          v_click "Close" "msd3-preview-close" "" || press_escape
         fi
       else
-        bug ENV MICRO_SAVE_PDF_RX_ICON "the rx card's icon-only Print control could not be activated by any verified candidate (all attempts recorded in ms3-rxicon-cand-*)"
+        bug P2 MICRO_SAVE_PDF_RX_ICON "the rx card's icon-only Print control could not be activated (see msd3-rxicon-cand-*)"
       fi
     else
       bug P1 MICRO_SAVE_PDF_RX "the prescription card was not visible on the detail"
     fi
   else
-    bug P1 MICRO_SAVE_PDF_RX "could not open $MICRO_PAT1_FULL's detail (MS3)"
+    bug P1 MICRO_SAVE_PDF_RX "could not open $MICRO_PAT1_FULL's detail"
   fi
-  v_click "Dashboard" "ms3-back" "Add Patient" || true
-  dsk_dl_manifest "MS3-after"
-  note "micro:save-pdf complete"
+  v_click "Dashboard" "msd3-back" "Add Patient" || true
+  note "micro:save-pdf-prescription complete"
+}
+
+micro_toast_feedback() { # ff-2c: the mounted shadcn renderer — use-toast feedback is VISIBLE on screen
+  note "=== micro:toast-feedback — the toast architecture (the renderer is mounted; feedback is visible) ==="
+  surface_section "Micro-shard: toast feedback (the mounted use-toast renderer)"
+  # TTF1 — a patient mutation success toast (the add-patient flow)
+  local TTF_FIRST="Toast"; local TTF_LAST="Feedtest"
+  local TTF_PHONE="+1 555 0474"; local TTF_FULL="Toast Feedtest"
+  local ttf_ok=0
+  if v_click "Dashboard" "ttf1-home" "Add Patient" || v_click "Patients" "ttf1-patients" "Add Patient" || true; then
+    if create_patient "$TTF_FIRST" "$TTF_LAST" "ONLY-TOAST-FEED" "ttf1"; then
+      ocr_capture || true
+      snap "ttf1-after-create" || true
+      if wait_for_ocr "Patient Added" 8 "ttf1-toast" || ocr_grep "Patient Added"; then
+        qa_cap MICRO_TOAST_PATIENT "GREEN (the patient-mutation success toast is VISIBLE on screen: 'Patient Added')"
+        surface_row "Toast: patient mutation" "Add Patient → Save" "the rendered toast" "use-toast feedback reaches the screen" "OCR-verified" "GREEN" "ttf1-toast" "OK"
+        ttf_ok=$(( ttf_ok + 1 ))
+      else
+        bug P2 MICRO_TOAST_PATIENT "the 'Patient Added' toast did NOT render after the patient creation (the ff-2c renderer mount regression)"
+      fi
+    else
+      bug D MICRO_TOAST_PATIENT "the fixture patient could not be created through the GUI (see ttf1-*)"
+    fi
+  else
+    bug D MICRO_TOAST_PATIENT "could not reach the dashboard/patients surface"
+  fi
+  # TTF2 — the CSV export async toast
+  if dio_toolbar_click "Export CSV" "ttf2-export" "Export Started" || v_click "Export CSV" "ttf2-export" ""; then
+    ocr_capture || true
+    snap "ttf2-after-export" || true
+    if wait_for_ocr "Export Started" 10 "ttf2-toast" || ocr_grep "Export Started"; then
+      qa_cap MICRO_TOAST_EXPORT "GREEN (the CSV-export success toast is VISIBLE: 'Export Started')"
+      surface_row "Toast: CSV export" "Export CSV" "the rendered toast" "async export feedback reaches the screen" "OCR-verified" "GREEN" "ttf2-toast" "OK"
+      ttf_ok=$(( ttf_ok + 1 ))
+    else
+      bug P2 MICRO_TOAST_EXPORT "the 'Export Started' toast did NOT render after the CSV export (the ff-2c renderer mount regression)"
+    fi
+  else
+    bug D MICRO_TOAST_EXPORT "the Export CSV button could not be clicked"
+  fi
+  # TTF3 — the destructive camera-error toast (no hardware needed)
+  if open_patient_by_phone_token "0474" "$TTF_FULL" "ttf3-detail" "$TTF_PHONE"; then
+    v_scroll_find "Scan with Camera" 8 no up 4 || v_scroll_find "Scan with Camera" 10 no down 4 || true
+    if v_click "Scan with Camera" "ttf3-open" "Scan & Upload" && v_click "Open Camera" "ttf3-camera" ""; then
+      local i=0 ttf3_hit=""
+      while [ "$i" -lt 15 ]; do
+        sleep 2
+        ocr_capture || true
+        if ocr_grep "No camera found" || ocr_grep "Camera Access Denied" || ocr_grep "Camera is in use" || ocr_grep "Camera unavailable" || ocr_grep "Camera error"; then
+          ttf3_hit="yes"; break
+        fi
+        if ocr_grep "Capture Document"; then ttf3_hit="hardware"; break; fi
+        i=$(( i + 1 ))
+      done
+      if [ "$ttf3_hit" = "yes" ]; then
+        qa_cap MICRO_TOAST_CAMERA "GREEN (the destructive camera-error toast is VISIBLE on screen — the ff-2a classified UX + the ff-2c renderer)"
+        surface_row "Toast: camera failure" "Open Camera (no hardware)" "the rendered destructive toast" "failure feedback reaches the screen" "OCR-verified" "GREEN" "ttf3-*" "OK"
+        ttf_ok=$(( ttf_ok + 1 ))
+      elif [ "$ttf3_hit" = "hardware" ]; then
+        qa_cap MICRO_TOAST_CAMERA "GREEN (a camera is present on this machine — the viewfinder rendered; the destructive-toast class is exercised by the physical checklist)"
+        ttf_ok=$(( ttf_ok + 1 ))
+      else
+        bug P2 MICRO_TOAST_CAMERA "neither a viewfinder nor ANY classified camera-error toast rendered within 30s"
+      fi
+      docb_click_back_arrow "Scan & Upload" "ttf3-back" "Add Patient" || true
+    else
+      bug D MICRO_TOAST_CAMERA "the scan view / Open Camera could not be reached"
+    fi
+  else
+    bug D MICRO_TOAST_CAMERA "could not open $TTF_FULL's detail"
+  fi
+  if [ "$ttf_ok" -ge 2 ]; then
+    qa_cap MICRO_TOASTS "GREEN ($ttf_ok/3 toast flows rendered visibly on screen — the shadcn renderer is mounted and the store is connected)"
+  fi
+  note "micro:toast-feedback complete"
+}
+
+micro_tour_escape() { # ff-2d: the Esc hint is REMOVED; the visible controls are the supported exit
+  note "=== micro:tour-escape — the removed Esc hint + the visible-control exit contract ==="
+  surface_section "Micro-shard: tour Escape contract (hint removed; Skip is the exit)"
+  # the offer survives (TOUR_GATEWAY=skip was set for this shard in the dispatch)
+  local mte2_card=0
+  ocr_capture || true
+  snap "mte2-offer" || true
+  ocr_grep "practice guide" && mte2_card=$((mte2_card+1))
+  ocr_grep "Step 1 of 20" && mte2_card=$((mte2_card+1))
+  ocr_grep "Welcome & Dashboard" && mte2_card=$((mte2_card+1))
+  if ocr_grep "Next" && ocr_grep "Skip"; then mte2_card=$((mte2_card+1)); fi
+  if [ "$mte2_card" -lt 2 ]; then
+    bug P1 TOUR_ESC_OFFER "the first-login tour offer did not render (only $mte2_card/4 needles — see mte2-offer)"
+  else
+    qa_cap TOUR_ESC_OFFER "GREEN (the first-login offer rendered: $mte2_card/4 needles OCR-verified)"
+  fi
+  # the ff-2d contract: the false Escape instruction is GONE
+  if ocr_grep "Press Esc" || ocr_grep "press Esc"; then
+    bug P1 TOUR_ESC_HINT_STILL_PRESENT "the tour card still shows a 'Press Esc' instruction — the ff-2d removal did not ship in this build"
+  else
+    qa_cap TOUR_ESC_HINT_REMOVED "GREEN (no 'Press Esc' instruction anywhere on the tour card — the false promise is gone)"
+    surface_row "Esc hint removal" "the tour card" "no Esc instruction" "no false instruction (Escape is unreachable in WKWebView)" "OCR-verified absent" "GREEN" "mte2-offer" "OK"
+  fi
+  # the REAL physical Escape behavior, recorded honestly: nothing must happen
+  press_escape
+  sleep 2
+  ocr_capture || true
+  snap "mte2-after-escape" || true
+  if ocr_grep "Step 1 of 20" || ocr_grep "Welcome & Dashboard"; then
+    qa_cap TOUR_ESC_KEY_INERT "RECORDED (physical Escape left the tour card standing — the documented WKWebView keyboard reality; the card is intact)"
+  else
+    probe "mte2: the card was not OCR-visible after Escape (verify mte2-after-escape — if the card vanished, Escape worked)"
+  fi
+  # the visible controls remain the supported exit
+  if v_click "Skip" "mte2-skip" ""; then
+    local mte2_gone=0
+    wait_text_gone "Step 1 of 20" 15 "mte2-card-gone" && mte2_gone=$((mte2_gone+1))
+    wait_text_gone "practice guide" 10 "mte2-title-gone" && mte2_gone=$((mte2_gone+1))
+    wait_text_gone "Welcome & Dashboard" 10 "mte2-section-gone" && mte2_gone=$((mte2_gone+1))
+    if [ "$mte2_gone" -ge 2 ]; then
+      qa_cap TOUR_ESC_VISIBLE_CONTROLS "GREEN (the visible Skip control unmounted the tour — the supported exit works)"
+      surface_row "Visible controls" "the tour card's Skip" "the card gone; the plain UI usable" "the visible controls are the exit path" "Skip clicked; card gone ($mte2_gone/3 gone-needles)" "GREEN" "mte2-*" "OK"
+    else
+      bug P1 TOUR_ESC_VISIBLE_CONTROLS "Skip did not unmount the tour card (only $mte2_gone/3 gone-needles — see mte2-after-skip)"
+    fi
+  else
+    bug P1 TOUR_ESC_VISIBLE_CONTROLS "the Skip control could not be clicked"
+  fi
+  note "micro:tour-escape complete"
+}
+
+micro_csv_import_dob() { # ff-2e: invalid/impossible DOBs are REJECTED (reported per row, never silently accepted)
+  note "=== micro:csv-import-dob — the DOB validation contract ==="
+  surface_section "Micro-shard: CSV import DOB validation (invalid dates rejected, historical dates preserved)"
+  micro_fixtures_init
+  cat > "$MICRO_DIR/dob-probe.csv" <<CSV
+firstName,lastName,dateOfBirth,phone,email,address,notes
+Dob,Validhist,1920-02-29,+1 555 4810,,,ONLY-DOB-VALIDHIST
+Dob,Badcentury,1900-02-29,+1 555 4811,,,ONLY-DOB-BADCENTURY
+Dob,Impossible,2023-02-30,+1 555 4812,,,ONLY-DOB-IMPOSSIBLE
+Dob,Badmonth,1990-13-45,+1 555 4813,,,ONLY-DOB-BADMONTH
+Dob,Future,2099-01-01,+1 555 4814,,,ONLY-DOB-FUTURE
+Dob,Loosefmt,1990-1-5,+1 555 4815,,,ONLY-DOB-LOOSEFMT
+CSV
+  if dio_toolbar_click "Import CSV" "mdob-open" "Import Patients"; then
+    if dio_import_select "$MICRO_DIR/dob-probe.csv" "mdob-select"; then
+      if dio_import_run "mdob-run"; then
+        snap "mdob-result" || true
+        local mdob_reject_ok="no" mdob_valid_ok="no"
+        ocr_grep "Invalid date of birth" && mdob_reject_ok="yes"
+        if [ "$DIO_IMP_IMPORTED" = "1" ]; then mdob_valid_ok="yes"; fi
+        probe "mdob: panel imported='${DIO_IMP_IMPORTED:-unreadable}' skipped='${DIO_IMP_SKIPPED:-unreadable}' errors='${DIO_IMP_ERRORS_TXT:-none}'"
+        if [ "$mdob_reject_ok" = "yes" ] && [ "$mdob_valid_ok" = "yes" ]; then
+          qa_cap IMPORT_INVALID_DOB "GREEN (1 valid row imported (the historical 1920-02-29 LEAP DATE preserved); 5 invalid rows rejected with a visible per-row 'Invalid date of birth' error)"
+          surface_row "DOB validation" "import dob-probe.csv (6 rows: 1 valid + 5 invalid)" "per-row errors + skipped counts" "impossible dates never become patients" "imported=1; 5 rejected visibly" "GREEN" "mdob-result" "OK"
+        else
+          bug P2 IMPORT_INVALID_DOB "the DOB contract failed (reject-error-visible=$mdob_reject_ok imported-count-1=$mdob_valid_ok — the panel must show per-row 'Invalid date of birth' errors and import exactly the 1 valid row)"
+        fi
+        # the durable truth: only the VALID row exists as a patient
+        if open_patient_by_phone_token "4810" "Dob Validhist" "mdob-valid-detail" "+1 555 4810"; then
+          qa_cap IMPORT_DOB_HISTORICAL "GREEN (the legitimate historical DOB 1920-02-29 round-tripped as a patient record)"
+          v_click "Dashboard" "mdob-valid-back" "Add Patient" || true
+        else
+          bug P2 IMPORT_DOB_HISTORICAL "the valid historical row (1920-02-29) did NOT become a patient — legitimate DOBs must still import"
+        fi
+        # one representative invalid row must NOT exist (search by its unique phone token)
+        clear_search_box || true
+        if search_type "4812" "mdob-search-bad"; then
+          sleep 3
+          ocr_capture || true
+          snap "mdob-search-bad" || true
+          if ocr_grep "Dob Impossible" || ocr_grep "+1 555 4812"; then
+            bug P2 IMPORT_DOB_SILENT_ACCEPT "the INVALID DOB row (2023-02-30) became a patient record (found by search) — impossible dates must be rejected"
+          else
+            qa_cap IMPORT_DOB_NO_SILENT_ACCEPT "GREEN (the impossible-DOB row (2023-02-30) is NOT a patient — the search for its unique phone token yields no patient row; the rejection was real, not just a panel message)"
+          fi
+          clear_search_box || true
+        else
+          probe "mdob: the search could not be driven (the negative-existence check skipped — the panel counts stand)"
+        fi
+      else
+        bug D IMPORT_INVALID_DOB "the import run could not be driven (see mdob-run)"
+      fi
+    else
+      bug D IMPORT_INVALID_DOB "the dob-probe.csv could not be selected (see mdob-select)"
+    fi
+    dio_import_close "mdob"
+  else
+    bug P1 IMPORT_INVALID_DOB "the Import CSV dialog did not open"
+  fi
+  dio_back_to_dashboard
+  note "micro:csv-import-dob complete"
+}
+
+micro_csv_import_duplicate() { # ff-2f: the conservative duplicate contract (within-file + existing, always reported)
+  note "=== micro:csv-import-duplicate — the dedupe contract ==="
+  surface_section "Micro-shard: CSV import duplicate contract (exact-identity dedupe, reported)"
+  micro_fixtures_init
+  cat > "$MICRO_DIR/dup-probe.csv" <<CSV
+firstName,lastName,dateOfBirth,phone,email,address,notes
+Dup,Infile,1985-05-05,+1 555 4820,,,ONLY-DUP-INFILE
+Dup,Infile,1985-05-05,+1 555 4820,,,ONLY-DUP-INFILE
+Dup,Distinct,1986-06-06,+1 555 4821,,,ONLY-DUP-DISTINCT
+Dup,Samename,1990-01-01,+1 555 4822,,,ONLY-DUP-SAME-A
+Dup,Samename,1991-02-02,+1 555 4823,,,ONLY-DUP-SAME-B
+CSV
+  if dio_toolbar_click "Import CSV" "mdup-open" "Import Patients"; then
+    if dio_import_select "$MICRO_DIR/dup-probe.csv" "mdup-select"; then
+      if dio_import_run "mdup-run"; then
+        snap "mdup-result" || true
+        local mdup_report_ok="no" mdup_count_ok="no"
+        ocr_grep "duplicate row" && mdup_report_ok="yes"
+        [ "$DIO_IMP_IMPORTED" = "4" ] && mdup_count_ok="yes"
+        probe "mdup(pass 1): imported='${DIO_IMP_IMPORTED:-unreadable}' skipped='${DIO_IMP_SKIPPED:-unreadable}' errors='${DIO_IMP_ERRORS_TXT:-none}'"
+        if [ "$mdup_report_ok" = "yes" ] && [ "$mdup_count_ok" = "yes" ]; then
+          qa_cap IMPORT_DUPLICATES_INFILE "GREEN (5 rows → 4 imported: the exact-duplicate row was skipped and REPORTED ('duplicate row...' visible); the same-name/different-DOB rows both imported — the conservative contract)"
+          surface_row "Duplicates (within file)" "import dup-probe.csv (one exact duplicate)" "the duplicate-count row + per-row error" "no silent double-creates" "imported=4; duplicate reported" "GREEN" "mdup-result" "OK"
+        else
+          bug P2 IMPORT_DUPLICATES_INFILE "the within-file dedupe contract failed (duplicate-row-report=$mdup_report_ok imported='${DIO_IMP_IMPORTED:-?}' expected=4 of 5)"
+        fi
+        dio_import_close "mdup"
+        dio_back_to_dashboard
+        # the second import of the SAME file must create nothing (existing-patient dedupe)
+        sleep 2
+        if dio_toolbar_click "Import CSV" "mdup2-open" "Import Patients"; then
+          if dio_import_select "$MICRO_DIR/dup-probe.csv" "mdup2-select"; then
+            if dio_import_run "mdup2-run"; then
+              snap "mdup2-result" || true
+              local mdup_match_ok="no" mdup_zero_ok="no"
+              ocr_grep "matched existing patients" && mdup_match_ok="yes"
+              [ "$DIO_IMP_IMPORTED" = "0" ] && mdup_zero_ok="yes"
+              probe "mdup(pass 2): imported='${DIO_IMP_IMPORTED:-unreadable}' skipped='${DIO_IMP_SKIPPED:-unreadable}' errors='${DIO_IMP_ERRORS_TXT:-none}'"
+              if [ "$mdup_match_ok" = "yes" ] && [ "$mdup_zero_ok" = "yes" ]; then
+                qa_cap IMPORT_DUPLICATES_EXISTING "GREEN (re-importing the same file created ZERO patients; every row matched the existing records and was reported ('matched existing patients'))"
+                surface_row "Duplicates (existing patients)" "re-import dup-probe.csv" "the matched-existing count row" "idempotent imports; no double records" "imported=0; matches reported" "GREEN" "mdup2-result" "OK"
+              else
+                bug P2 IMPORT_DUPLICATES_EXISTING "the existing-patient dedupe contract failed (match-report=$mdup_match_ok imported='${DIO_IMP_IMPORTED:-?}' expected=0)"
+              fi
+              dio_import_close "mdup2"
+            else
+              bug D IMPORT_DUPLICATES_EXISTING "the second import run could not be driven (see mdup2-run)"
+            fi
+          else
+            bug D IMPORT_DUPLICATES_EXISTING "the re-import selection failed (see mdup2-select)"
+          fi
+        else
+          bug P1 IMPORT_DUPLICATES_EXISTING "the Import CSV dialog did not open for the re-import"
+        fi
+      else
+        bug D IMPORT_DUPLICATES_INFILE "the import run could not be driven (see mdup-run)"
+      fi
+    else
+      bug D IMPORT_DUPLICATES_INFILE "the dup-probe.csv could not be selected (see mdup-select)"
+    fi
+  else
+    bug P1 IMPORT_DUPLICATES_INFILE "the Import CSV dialog did not open"
+  fi
+  dio_back_to_dashboard
+  note "micro:csv-import-duplicate complete"
+}
+
+micro_security_temp_files() { # directive §4: the PHI temp-file lifecycle (perms, names, stale sweep, no content logs)
+  note "=== micro:security-temp-files — the print/PDF temp lifecycle ==="
+  surface_section "Micro-shard: temp PHI security (perms + names + stale sweep + no content logging)"
+  micro_dsk_fixture_set "MICRO_TEMP_SEC"
+  local mts_dir mts_file=""
+  mts_dir="$(dsk_print_temp_dir)"
+  local mts_printed="no"
+  if micro_docs_ready "MICRO_TEMP_SEC" && open_patient_by_phone_token "$MICRO_PAT1_TOKEN" "$MICRO_PAT1_FULL" "mts-detail" "$MICRO_PAT1_PHONE"; then
+    v_scroll_find "$MICRO_PDF_TITLE" 16 no down 4 || true
+    if v_click "$MICRO_PDF_TITLE" "mts-doc-open" "" || v_click_try_hits "$MICRO_PDF_TITLE" "mts-doc-open" ""; then
+      sleep 3
+      wait_text_gone "Loading document" 45 "mts-loaded" || true
+      dsk_print_temp_mark
+      if dsk_click_viewer_icon print "$MICRO_PDF_TITLE" "mts-printicon"; then
+        if dsk_print_temp_newest "mts" 40; then
+          mts_printed="yes"
+          mts_file="$DSK_PTMP_FILE"
+          dsk_quit_preview
+        else
+          bug P2 TEMP_SEC_PRINT "the print flow did not materialize a temp file (the security battery needs one print artifact)"
+        fi
+      else
+        bug P2 TEMP_SEC_PRINT "the viewer Print icon could not be activated for the temp-security flow"
+      fi
+    else
+      bug P1 TEMP_SEC_PRINT "the PDF document row could not be opened"
+    fi
+  else
+    probe "mts: the fixture documents are unavailable — the perms/names checks run against any PRE-EXISTING print temp entries (the honest degraded mode)"
+  fi
+  if [ -n "$mts_file" ] || ls "$mts_dir" >/dev/null 2>&1; then
+    local mts_list mts_bad_name=""
+    mts_list="$(ls -1 "$mts_dir" 2>/dev/null || true)"
+    probe "mts: the print temp dir $mts_dir entries: [$(printf '%s' "$mts_list" | tr '\n' ' ')]"
+    # (a) file permissions 600
+    if [ -n "$mts_file" ]; then
+      if [ "$(stat -f'%Lp' "$mts_file" 2>/dev/null || echo '?')" = "600" ]; then
+        qa_cap TEMP_FILE_PERMS "GREEN (the print temp file is 0600 — owner-only)"
+      else
+        bug P2 TEMP_FILE_PERMS "the print temp file is NOT 0600 (got $(stat -f'%Lp' "$mts_file" 2>/dev/null))"
+      fi
+    fi
+    # (b) directory permissions 700
+    if [ "$(stat -f'%Lp' "$mts_dir" 2>/dev/null || echo '?')" = "700" ]; then
+      qa_cap TEMP_DIR_PERMS "GREEN (the print temp DIRECTORY is 0700 — owner-only)"
+    else
+      bug P2 TEMP_DIR_PERMS "the print temp directory is NOT 0700 (got $(stat -f'%Lp' "$mts_dir" 2>/dev/null))"
+    fi
+    # (c) PHI-free unpredictable filenames
+    if printf '%s' "$mts_list" | grep -qiE "$MICRO_PAT1_FULL|$MICRO_PAT2_FULL|ONLY-MICRO"; then
+      mts_bad_name="patient identifiers found in temp filenames"
+    fi
+    if [ -n "$mts_file" ] && [ "$DSK_PTMP_NAME_OK" = "yes" ]; then
+      if [ -z "$mts_bad_name" ]; then
+        qa_cap TEMP_FILE_NAMES "GREEN (every temp filename is opaque medivault-<uuid>.<ext> — no patient names, no identifiers, no tokens)"
+      else
+        bug P2 TEMP_FILE_NAMES "temp filenames carry PHI ($mts_bad_name)"
+      fi
+    else
+      probe "mts: the name-pattern check degraded (no fresh print artifact this run; the PHI-grep above still ran: $mts_bad_name)"
+    fi
+    # (d) no document CONTENT in the app's own logs (the Rust layer logs paths, never bytes)
+    local mts_log_hits=0 mts_log
+    for mts_log in /tmp/mv-direct-launch.log; do
+      [ -f "$mts_log" ] || continue
+      if grep -Fq "$MICRO_DOC_SENTINEL" "$mts_log" 2>/dev/null; then
+        mts_log_hits=$(( mts_log_hits + 1 ))
+      fi
+    done
+    if [ "$mts_log_hits" = "0" ]; then
+      qa_cap TEMP_NO_CONTENT_LOGS "GREEN (the document sentinel never appears in the app's captured logs — paths only, never content)"
+    else
+      bug P2 TEMP_NO_CONTENT_LOGS "document CONTENT appears in the app's logs ($mts_log_hits hits for the sentinel)"
+    fi
+    # (e) the stale sweep: a >24h-old entry is removed at the next app start; fresh entries survive
+    local mts_stale="$mts_dir/medivault-00000000-0000-4000-8000-000000000000.pdf"
+    printf '%%PDF-1.4 stale-probe\n' > "$mts_stale"
+    touch -t 202001010000 "$mts_stale"
+    local mts_keep=""
+    [ -n "$mts_file" ] && mts_keep="$(basename "$mts_file")"
+    if dsk_relaunch "mts-sweep"; then
+      if [ ! -e "$mts_stale" ]; then
+        if [ -z "$mts_keep" ] || [ -e "$mts_dir/$mts_keep" ]; then
+          qa_cap TEMP_STALE_SWEEP "GREEN (the >24h stale print temp file was swept at app start; the fresh print artifact survived — the documented lifecycle)"
+          surface_row "Temp lifecycle" "stale (2020-mtime) vs fresh entries" "startup sweep" "stale PHI temps never accumulate" "stale swept; fresh kept" "GREEN" "mts-sweep-*" "OK"
+        else
+          bug P2 TEMP_STALE_SWEEP "the stale sweep removed the STALE file but ALSO the fresh print artifact (over-aggressive cleanup — Preview may still need it)"
+        fi
+      else
+        bug P2 TEMP_STALE_SWEEP "the >24h stale print temp file SURVIVED the app restart (the startup sweep did not run)"
+      fi
+    else
+      bug D TEMP_STALE_SWEEP "the relaunch for the sweep probe failed (see mts-sweep-*)"
+    fi
+  else
+    qa_cap TEMP_SEC "NOT-EXERCISED-ENV (no print temp dir exists and no print artifact could be produced this run — see the FX/PRINT records)"
+  fi
+  v_click "Dashboard" "mts-back" "Add Patient" || true
+  note "micro:security-temp-files complete"
+}
+
+micro_patients_smoke() { # the light patients regression: create → open → search → isolation echo
+  note "=== micro:patients-smoke — the light patient-surface regression ==="
+  surface_section "Micro-shard: patients smoke (create → open → search → isolation)"
+  local MPS_FIRST="Psm"; local MPS_LAST="Smoketest"
+  local MPS_PHONE="+1 555 0475"; local MPS_FULL="Psm Smoketest"
+  micro_fixtures_init
+  micro_fx_patient "$MPS_FIRST" "$MPS_LAST" "$MPS_PHONE" "psm.smoketest@example.invalid" "ONLY-PSM-SMOKE" "mps-fx" \
+    || bug P1 PATIENTS_SMOKE_FIXTURE "the fixture patient $MPS_FULL could not be created"
+  # create one MORE patient through the real GUI (the doctor's flow)
+  if create_patient "Psm" "Guismoke" "ONLY-PSM-GUI" "mps-gui"; then
+    sleep 2
+    ocr_capture || true
+    if ocr_grep "Psm" || ocr_grep "Patient Added"; then
+      qa_cap PATIENTS_SMOKE_CREATE "GREEN (a patient was created through the real Add Patient form)"
+    else
+      bug P2 PATIENTS_SMOKE_CREATE "the GUI-created patient is not visibly confirmed"
+    fi
+  else
+    bug P2 PATIENTS_SMOKE_CREATE "the Add Patient GUI flow failed (see mps-gui-*)"
+  fi
+  # open the fixture patient's detail
+  if open_patient_by_phone_token "0475" "$MPS_FULL" "mps-detail" "$MPS_PHONE"; then
+    ocr_grep "$MPS_FULL" && qa_cap PATIENTS_SMOKE_OPEN "GREEN (the patient detail opened and shows the patient's name)" \
+      || bug P2 PATIENTS_SMOKE_OPEN "the opened detail does not show the patient's name"
+    # the isolation echo: the FOREIGN fixture patient must not appear on this detail
+    ocr_capture || true
+    if ocr_grep "Foreign Micro"; then
+      bug P0 PATIENTS_SMOKE_ISOLATION "the FOREIGN patient appears on $MPS_FULL's detail (WRONG-PATIENT DATA)"
+    else
+      qa_cap PATIENTS_SMOKE_ISOLATION "GREEN (the foreign patient is absent from this patient's detail)"
+    fi
+    v_click "Dashboard" "mps-back" "Add Patient" || true
+  else
+    bug P2 PATIENTS_SMOKE_OPEN "could not open $MPS_FULL's detail"
+  fi
+  # search round-trip
+  clear_search_box || true
+  if search_type "0475" "mps-search"; then
+    sleep 3
+    ocr_capture || true
+    snap "mps-search-result" || true
+    if ocr_grep "$MPS_FULL" || ocr_grep "Smoketest"; then
+      qa_cap PATIENTS_SMOKE_SEARCH "GREEN (the search finds the fixture patient by the phone token)"
+    else
+      bug P2 PATIENTS_SMOKE_SEARCH "the search did not surface the fixture patient (see mps-search-result)"
+    fi
+    clear_search_box || true
+  else
+    bug D PATIENTS_SMOKE_SEARCH "the search could not be driven"
+  fi
+  note "micro:patients-smoke complete"
 }
 
 micro_camera() {
@@ -16510,7 +17178,7 @@ micro_camera() {
             qa_cap MICRO_CAMERA_SWITCH "RECORDED (the Switch Camera control was clicked while the camera was live — see the mc-switch evidence)"
           fi
         else
-          bug ENV MICRO_CAMERA_HARDWARE "CAMERA HARDWARE: the hosted runner has no camera — the genuine getUserMedia attempt failed (no viewfinder rendered; the 'Camera Access Denied' toast never renders because the Toaster is not mounted). The camera capture path is NOT EXERCISED beyond the attempt; no crash occurred (the app stayed responsive — see mc-camera-attempt.png). No fake camera is used by this harness."
+          bug ENV MICRO_CAMERA_HARDWARE "CAMERA HARDWARE: the hosted runner has no camera — the genuine getUserMedia attempt failed (no viewfinder rendered; with the ff build the CLASSIFIED 'No camera found' error is expected on screen — see the micro:camera-software shard for that contract). The camera capture path is NOT EXERCISED beyond the attempt; no crash occurred (the app stayed responsive — see mc-camera-attempt.png). No fake camera is used by this harness."
           qa_cap MICRO_CAMERA_HARDWARE "ENV (no camera on the runner — the genuine getUserMedia attempt failed; no crash; the view stayed on 'Open Camera')"
           surface_row "Camera capture (no hardware)" "'Open Camera' on a hosted runner" "Open Camera" "the camera path degrades without hardware" "clicked; no viewfinder; no crash; recorded ENV" "ENV (no camera)" "mc-camera-attempt" "ENV"
         fi
@@ -17269,14 +17937,13 @@ micro_tour_en() {
   ocr_grep "practice guide" && mte_card=$((mte_card+1))
   ocr_grep "Step 1 of 20" && mte_card=$((mte_card+1))
   ocr_grep "Welcome & Dashboard" && mte_card=$((mte_card+1))
-  ocr_grep "Press Esc to leave" && mte_card=$((mte_card+1))
   if ocr_grep "Next" && ocr_grep "Skip"; then mte_card=$((mte_card+1)); fi
-  probe "mte0: the welcome card's needles: $mte_card/5 (the mascot + the title 'Welcome to MediVault' are the anchors; the dim hides nothing — the card renders above the overlay)"
+  probe "mte0: the welcome card's needles: $mte_card/4 (the mascot + the title 'Welcome to MediVault' are the anchors; the dim hides nothing — the card renders above the overlay; ff-2d: the Esc-hint needle was REMOVED with the product change — the hint is gone by design)"
   if [ "$mte_card" -lt 2 ]; then
-    bug P1 TOUR_EN_OFFER "the tour card rendered but its controls are not OCR-visible (only $mte_card/5 needles — see mte0-offer; the walk below depends on them)"
+    bug P1 TOUR_EN_OFFER "the tour card rendered but its controls are not OCR-visible (only $mte_card/4 needles — see mte0-offer; the walk below depends on them)"
   fi
-  qa_cap TOUR_EN_OFFER "GREEN (the first-login offer auto-started at the first shell mount: 'Welcome to MediVault' + the Medi mascot card with Next/Skip/Back + 'Step 1 of 20' + the 'Press Esc to leave the tour at any time' hint)"
-  surface_row "First-login tour offer" "the first authenticated-shell mount (auto-start, once per install)" "the spotlight overlay + the mascot card: Back/Next/Skip + 'Step X of N' + the Esc hint" "the tour offers itself exactly once" "the offer survived the gateway (TOUR_GATEWAY=skip); the card + controls OCR-verified" "GREEN" "mte0-offer" "OK"
+  qa_cap TOUR_EN_OFFER "GREEN (the first-login offer auto-started at the first shell mount: 'Welcome to MediVault' + the Medi mascot card with Next/Skip/Back + 'Step 1 of 20')"
+  surface_row "First-login tour offer" "the first authenticated-shell mount (auto-start, once per install)" "the spotlight overlay + the mascot card: Back/Next/Skip + 'Step X of N'" "the tour offers itself exactly once" "the offer survived the gateway (TOUR_GATEWAY=skip); the card + controls OCR-verified" "GREEN" "mte0-offer" "OK"
 
   # ---- MTE1: Next through the first steps (each step: the spotlight + the title + the progress) ----
   if ! v_click "Next" "mte1-next1" ""; then
@@ -17332,8 +17999,8 @@ micro_tour_en() {
   fi
   local mte_gone=0
   wait_text_gone "Step 3 of 20" 15 "mte3-card-gone" && mte_gone=$((mte_gone+1))
-  wait_text_gone "Press Esc to leave" 10 "mte3-hint-gone" && mte_gone=$((mte_gone+1))
-  wait_text_gone "Welcome to MediVault" 10 "mte3-title-gone" && mte_gone=$((mte_gone+1))
+  wait_text_gone "practice guide" 10 "mte3-title-gone" && mte_gone=$((mte_gone+1))
+  wait_text_gone "Welcome to MediVault" 10 "mte3-title2-gone" && mte_gone=$((mte_gone+1))
   ocr_capture || true
   snap "mte3-after-skip" || true
   if [ "$mte_gone" -ge 2 ]; then
@@ -17491,9 +18158,10 @@ micro_tour_ar() {
   # affordances in order — Escape, then the card's Skip button
   # (data-qa="tour-skip") — exactly like the proven gateway dismissal
   # (tour_dismiss_if_present); a P1 only if NEITHER clears a visible offer.
-  # (P3 product note recorded once: the card's 'Press Esc to leave' hint is
-  # inoperative under the WKWebView build — keyboard delivery, not the
-  # component's keydown logic, which the guided-tour unit tests prove.)
+  # (ff-2d: the card's 'Press Esc to leave' instruction was REMOVED from the
+  # product — the hint was a false promise; the visible controls are the
+  # documented exit. The ladder's Escape press is retained as the harmless
+  # first rung.)
   local mta0_cleared="no"
   press_escape
   sleep 2
@@ -17763,6 +18431,21 @@ focus_micro_dispatch() { # <name> — the micro-shard entry point (QA_FOCUS=micr
     tour-en)            micro_tour_en ;;
     tour-ar)            micro_tour_ar ;;
     rtl)                micro_rtl ;;
+    # ---- the ff-round final-fix shards (directive §12 — the 14 targeted reruns) ----
+    camera-software)             micro_camera_software ;;
+    camera-permission-contract)  micro_camera_permission_contract ;;
+    print-document)              micro_print_document ;;
+    print-report)                micro_print_report ;;
+    print-prescription)          micro_print_prescription ;;
+    save-pdf-document)          micro_save_pdf_document ;;
+    save-pdf-report)            micro_save_pdf_report ;;
+    save-pdf-prescription)      micro_save_pdf_prescription ;;
+    toast-feedback)             micro_toast_feedback ;;
+    tour-escape)                micro_tour_escape ;;
+    csv-import-dob)             micro_csv_import_dob ;;
+    csv-import-duplicate)       micro_csv_import_duplicate ;;
+    security-temp-files)        micro_security_temp_files ;;
+    patients-smoke)             micro_patients_smoke ;;
     # the granularity fits exactly: the parent battery IS this shard
     persistence)        focus_persistence ;;
     # ---- accepted-but-mapped-to-parent (the PROVEN coarse battery does the walking) ----
