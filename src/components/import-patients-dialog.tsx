@@ -32,6 +32,8 @@ import { useI18n } from '@/i18n'
 interface ImportResult {
   imported: number
   skipped: number
+  duplicatesInFile?: number
+  duplicatesExisting?: number
   errors: string[]
   totalErrors: number
 }
@@ -256,6 +258,8 @@ export function ImportPatientsDialog({
       setResult({
         imported: data.imported || 0,
         skipped: data.skipped || 0,
+        duplicatesInFile: data.duplicatesInFile || 0,
+        duplicatesExisting: data.duplicatesExisting || 0,
         errors: data.errors || [],
         totalErrors: data.totalErrors || 0,
       })
@@ -589,6 +593,22 @@ export function ImportPatientsDialog({
                         </motion.span>
                       </div>
                     </div>
+
+                    {/* DATAIO_IMPORT_NO_DEDUPE: duplicate skips are always reported, with their own counts */}
+                    {result.duplicatesInFile ? (
+                      <p className="text-xs text-amber-600 dark:text-amber-400 mt-2">
+                        {result.duplicatesInFile === 1
+                          ? t('importExport.duplicatesInFileOne')
+                          : t('importExport.duplicatesInFileOther', { count: result.duplicatesInFile })}
+                      </p>
+                    ) : null}
+                    {result.duplicatesExisting ? (
+                      <p className="text-xs text-amber-600 dark:text-amber-400">
+                        {result.duplicatesExisting === 1
+                          ? t('importExport.duplicatesExistingOne')
+                          : t('importExport.duplicatesExistingOther', { count: result.duplicatesExisting })}
+                      </p>
+                    ) : null}
                   </motion.div>
 
                   {/* Errors section */}

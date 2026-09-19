@@ -10,6 +10,7 @@ import type { FastifyInstance } from 'fastify'
 import { requireAuth, requirePermission } from '../../plugins/auth.js'
 import { validateCsrf } from '../../plugins/csrf.js'
 import { db } from '../../lib/db.js'
+import { buildIdentityTuple, identityKey, ExistingPatientMatcher } from '../../lib/import-dedupe.js'
 import { getStorageService, isValidSha256 } from '../../lib/crypto-helpers.js'
 import { FORMAT_VERSION } from '@medivault/crypto'
 export async function registerPatientRoutes(server: FastifyInstance): Promise<void> {
@@ -509,13 +510,64 @@ export async function registerPatientRoutes(server: FastifyInstance): Promise<vo
 
       let imported = 0
       let skipped = 0
+      let duplicatesInFile = 0
+      let duplicatesExisting = 0
       const errors: string[] = []
+
+      // DATAIO_IMPORT_NO_DEDUPE — conservative duplicate contract: exact
+      // identity only (case-insensitive names, every other field exact);
+      // never fuzzy, never a merge, and every skip is reported. The doctor's
+      // patients are loaded ONCE per import and matched in memory (SQLite
+      // Prisma has no insensitive query mode — names are case-folded in JS).
+      const existingPatients = await db.patient.findMany({
+        where: { doctorId: session.user.id },
+        select: { firstName: true, lastName: true, dateOfBirth: true, phone: true, email: true, address: true, notes: true },
+      })
+      const existingMatcher = new ExistingPatientMatcher(existingPatients)
+      const seenInFile = new Map<string, number>()
 
       for (let i = 1; i < Math.min(lines.length, 1001); i++) {
         const cols = parseCSVLine(lines[i])
         const firstName = cols[firstNameIdx]?.trim()
         const lastName = cols[lastNameIdx]?.trim()
         if (!firstName || !lastName) { skipped++; errors.push(`Row ${i + 1}: Missing firstName or lastName`); continue }
+
+        // DATAIO_IMPORT_NO_DEDUPE (within-file): a row whose entire identity
+        // tuple matches an earlier row of THIS file exactly is skipped and
+        // reported. The tuple is recorded even when the earlier occurrence
+        // was itself skipped (e.g. as an existing-patient duplicate), so each
+        // unique identity is evaluated against the existing patients exactly
+        // once and later repeats always point back at their first row.
+        const identityRow = {
+          firstName,
+          lastName,
+          dateOfBirth: dobIdx >= 0 && cols[dobIdx]?.trim() ? cols[dobIdx].trim() : '',
+          phone: phoneIdx >= 0 && cols[phoneIdx]?.trim() ? cols[phoneIdx].trim() : '',
+          email: emailIdx >= 0 && cols[emailIdx]?.trim() ? cols[emailIdx].trim() : '',
+          address: addressIdx >= 0 && cols[addressIdx]?.trim() ? cols[addressIdx].trim() : '',
+          notes: notesIdx >= 0 && cols[notesIdx]?.trim() ? cols[notesIdx].trim() : '',
+        }
+        const tupleKey = identityKey(buildIdentityTuple(identityRow))
+        const firstSeenRow = seenInFile.get(tupleKey)
+        if (firstSeenRow !== undefined) {
+          duplicatesInFile++
+          skipped++
+          errors.push(`Row ${i + 1}: exact duplicate of row ${firstSeenRow} in this file — skipped`)
+          continue
+        }
+        // DATAIO_IMPORT_NO_DEDUPE (existing patients): before creating, the
+        // exact-identity tuple is matched against the importing doctor's
+        // existing patients. A match skips the row — the record is never
+        // merged or modified.
+        const existingMatch = existingMatcher.findExistingMatch(identityRow)
+        if (existingMatch) {
+          duplicatesExisting++
+          skipped++
+          errors.push(`Row ${i + 1}: identical to existing patient "${existingMatch.firstName} ${existingMatch.lastName}" — skipped as duplicate`)
+          seenInFile.set(tupleKey, i + 1)
+          continue
+        }
+        seenInFile.set(tupleKey, i + 1)
 
         try {
           await db.patient.create({
@@ -535,7 +587,7 @@ export async function registerPatientRoutes(server: FastifyInstance): Promise<vo
         }
       }
 
-      return reply.status(200).send({ success: true, imported, skipped, errors: errors.slice(0, 10), totalErrors: errors.length })
+      return reply.status(200).send({ success: true, imported, skipped, duplicatesInFile, duplicatesExisting, errors: errors.slice(0, 10), totalErrors: errors.length })
     } catch (error) {
       console.error('Import error:', error)
       return reply.status(500).send({ error: 'Failed to import patients' })
