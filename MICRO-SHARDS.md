@@ -91,6 +91,30 @@ Impact-map aliases: `qa-report-pdf` and `qa-prescription-pdf` (per
 `micro:save-pdf` today; `qa-nav` and `qa-en-ui-spotcheck` remain covered by
 the coarse `surface` lane until their micro bodies are needed.
 
+## The final-fix round shards (directive §12 — the 14 targeted reruns)
+
+The final-fix build (P1 camera plist + P2 native print/PDF + P3 toast/tour-Esc/DOB/dedupe) adds 14
+targeted shards. The legacy `micro:print` / `micro:save-pdf` names still dispatch — they now
+DELEGATE to the split shards below (the old WKWebView-print flows they tested are gone from the
+product; the pre-fix history lives in git at the frozen DMG 87f2fe3f).
+
+| Shard (`QA_FOCUS=micro:`) | Evidence artifact | Status | Body |
+|---|---|---|---|
+| `camera-software` | `qa-camera-software` | **implemented** | `micro_camera_software` — the classified, VISIBLE camera failure UX (viewfinder on camera-equipped machines; the classified error + recovery on runners without hardware — a silent failure is the P1) |
+| `camera-permission-contract` | `qa-camera-permission-contract` | **implemented** | `micro_camera_permission_contract` — PlistBuddy proof on the INSTALLED app's Info.plist: `NSCameraUsageDescription` = the exact expected string; the minimal-permission audit (no other usage keys); `plutil -lint`. The build-time proof of the STAGED bundle also runs in product-functional-test.yml before the DMG is built |
+| `print-document` | `qa-print-document` | **implemented** | `micro_print_document` — the viewer Print via the ff-2b native bridge: a REAL PDF temp file (magic/size/0600/unpredictable name contracts) + Preview running + the success toast + the wrong-patient P0 content check |
+| `print-report` | `qa-print-report` | **implemented** | `micro_print_report` — the report Print: pdf-lib generation → the native bridge; the patient-name content + isolation checks |
+| `print-prescription` | `qa-print-prescription` | **implemented** | `micro_print_prescription` — the rx Print: pdf-lib generation → the native bridge; the medication-sentinel content + isolation checks |
+| `save-pdf-document` | `qa-save-pdf-document` | **implemented** | `micro_save_pdf_document` — the viewer Save-as-PDF via the NATIVE save panel (tauri-plugin-dialog); magic+size+content+isolation on the saved file |
+| `save-pdf-report` | `qa-save-pdf-report` | **implemented** | `micro_save_pdf_report` — the report "Download as PDF" → the native panel |
+| `save-pdf-prescription` | `qa-save-pdf-prescription` | **implemented** | `micro_save_pdf_prescription` — the rx preview "Save as PDF" → the native panel |
+| `toast-feedback` | `qa-toast-feedback` | **implemented** | `micro_toast_feedback` — three visible-toast flows (patient mutation success / CSV export async / camera destructive) OCR-verified on screen (the ff-2c mount) |
+| `tour-escape` | `qa-tour-escape` | **implemented** | `micro_tour_escape` — the ff-2d contract: the "Press Esc" hint is GONE; the physical Escape is recorded honestly (inert); the visible Skip control unmounts the tour |
+| `csv-import-dob` | `qa-csv-import-dob` | **implemented** | `micro_csv_import_dob` — invalid/impossible DOBs rejected with visible per-row errors (1900-02-29, 2023-02-30, month 13, future, loose format); the historical 1920-02-29 imports; the impossible rows never become patients |
+| `csv-import-duplicate` | `qa-csv-import-duplicate` | **implemented** | `micro_csv_import_duplicate` — the conservative dedupe: within-file exact duplicates skipped + reported; re-importing the same file creates ZERO patients ("matched existing patients" reported); same-name/different-DOB rows both import |
+| `security-temp-files` | `qa-security-temp-files` | **implemented** | `micro_security_temp_files` — the §4 PHI temp lifecycle: 0600 files / 0700 dir, opaque unpredictable names (no PHI), no content in logs, the >24h stale sweep at app start (fresh artifacts survive) |
+| `patients-smoke` | `qa-patients-smoke` | **implemented** | `micro_patients_smoke` — the light patients regression: GUI create → open → search round-trip → the foreign-patient isolation echo |
+
 ## The green-freeze rule
 
 Once a micro shard is GREEN on a given DMG (SHA-256 recorded in its evidence

@@ -213,8 +213,8 @@ jobs:
               "camera":            "implemented",
               "viewer-pdf":        "implemented",
               "viewer-image":      "implemented",
-              "print":             "implemented",
-              "save-pdf":          "implemented",
+              "print":             "implemented (ff-2b: delegated to the print-document/report/prescription split shards — the native bridge)",
+              "save-pdf":          "implemented (ff-2b: delegated to the save-pdf-document/report/prescription split shards — the native save panel)",
               "backup":            "implemented",
               "csv-export":        "implemented",
               "csv-import-cancel": "implemented",
@@ -241,6 +241,21 @@ jobs:
               "tour-en":           "pending-feature (guided-tour worktree)",
               "tour-ar":           "pending-feature (guided-tour worktree)",
               "rtl":              "pending-feature (i18n worktree)",
+              # ---- the ff-round final-fix shards (directive §12) ----
+              "camera-software":             "implemented (the classified, visible camera failure UX)",
+              "camera-permission-contract":   "implemented (PlistBuddy proof on the INSTALLED app's Info.plist)",
+              "print-document":              "implemented (the native print bridge: temp PDF + Preview)",
+              "print-report":                "implemented (pdf-lib generation + the native bridge)",
+              "print-prescription":          "implemented (pdf-lib generation + the native bridge)",
+              "save-pdf-document":           "implemented (the native save panel)",
+              "save-pdf-report":             "implemented (the native save panel)",
+              "save-pdf-prescription":       "implemented (the native save panel)",
+              "toast-feedback":              "implemented (the mounted shadcn renderer — visible feedback)",
+              "tour-escape":                 "implemented (the removed Esc hint + the visible-control exit)",
+              "csv-import-dob":              "implemented (invalid DOB rejection)",
+              "csv-import-duplicate":        "implemented (the conservative dedupe contract)",
+              "security-temp-files":         "implemented (the PHI temp lifecycle)",
+              "patients-smoke":              "implemented (the light patients regression)",
           }
           tokens = [t.strip().lower() for t in sys.argv[1].split(",") if t.strip()] if len(sys.argv) > 1 and sys.argv[1].strip() else []
           if not tokens:
