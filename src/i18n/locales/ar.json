@@ -859,7 +859,6 @@
   "tour.controls.skip": "تخطي",
   "tour.controls.finish": "إنهاء",
   "tour.progress": "الخطوة {current} من {total}",
-  "tour.controls.dismissHint": "اضغط Esc لمغادرة الجولة في أي وقت",
   "tour.complete.title": "اكتملت الجولة",
   "tour.complete.description": "يمكنك العثور على الدليل مرة أخرى في أي وقت ضمن «المساعدة والدليل» في شريط الرأس.",
   "tour.help.subtitle": "قم بجولة إرشادية في MediVault",

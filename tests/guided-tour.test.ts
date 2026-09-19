@@ -25,8 +25,12 @@
  *   never offered again automatically afterwards.
  * - The mascot is an inline SVG component (no external image assets —
  *   offline app + the CI's no-PHI/no-credentials gates).
- * - Robustness: Esc dismisses at any step, off-screen targets are
- *   scrolled into view, and window resize re-measures the spotlight.
+ * - Robustness: the Escape/arrows keydown handler stays armed (a
+ *   plain-browser affordance) but is NEVER advertised to the doctor —
+ *   on the macOS WKWebView shell Escape never reaches the DOM
+ *   (TOUR_ESC_HINT_INOPERATIVE), so the visible Skip control is the
+ *   supported exit; off-screen targets are scrolled into view, and
+ *   window resize re-measures the spotlight.
  */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -171,7 +175,6 @@ describe('guided tour — i18n catalog contract (English + Arabic)', () => {
     ["tour.controls.next", "Next"],
     ["tour.controls.skip", "Skip"],
     ["tour.controls.finish", "Finish"],
-    ["tour.controls.dismissHint", "Press Esc to leave the tour at any time"],
     ["tour.complete.title", "Tour complete"],
     ["tour.complete.description", "Find the guide again anytime under Help & Guide in the header."],
     ["tour.help.subtitle", "Take a guided tour of MediVault"],
@@ -249,6 +252,28 @@ describe('guided tour — i18n catalog contract (English + Arabic)', () => {
       expect(en[key], `missing en catalog key: ${key}`).toBeDefined()
       expect(ar[key], `missing ar catalog key: ${key}`).toBeDefined()
     }
+  })
+
+  it('the inoperative Esc hint is GONE — no catalog key, no rendered instruction (WKWebView never delivers Escape)', () => {
+    // P3 TOUR_ESC_HINT_INOPERATIVE: real CGEvent keyboard testing on the
+    // macOS runners proved Escape NEVER reaches the WKWebView DOM, so the
+    // "Press Esc to leave the tour" hint was a false instruction and was
+    // deliberately removed. The keydown handler itself STAYS (it is correct
+    // and unit-proven in plain browsers); the VISIBLE Skip / Finish
+    // controls are the supported exit on every platform.
+    for (const file of TOUR_FILES) {
+      const source = readRepo(file)
+      expect(source, `${file} must not reference the removed dismissHint string`).not.toContain('dismissHint')
+      expect(source, `${file} must not instruct the doctor to press Esc`).not.toMatch(
+        /\b(?:press|hit)\s+esc\b/i,
+      )
+    }
+    expect(en, 'tour.controls.dismissHint must stay out of the en catalog').not.toHaveProperty(
+      'tour.controls.dismissHint',
+    )
+    expect(ar, 'tour.controls.dismissHint must stay out of the ar catalog').not.toHaveProperty(
+      'tour.controls.dismissHint',
+    )
   })
 
   it('the ENGLISH catalog values are pinned byte-exact (the QA harness needle contract)', () => {
@@ -384,7 +409,7 @@ describe('guided tour — controls, safety, robustness', () => {
     expect(mascot).toContain('useTourStrings()')
   })
 
-  it('Esc dismisses at any step; off-screen targets scroll into view; resize re-measures', () => {
+  it('the keydown handler stays armed (Escape/arrows); off-screen targets scroll into view; resize re-measures', () => {
     const engine = readRepo(`${TOUR_DIR}/guided-tour.tsx`)
     expect(engine).toMatch(/e\.key === 'Escape'/)
     expect(engine).toMatch(/scrollIntoView\(\{ block: 'center', inline: 'nearest' \}\)/)

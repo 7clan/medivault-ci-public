@@ -331,7 +331,6 @@ export function useTourStrings() {
       skip: t('tour.controls.skip'),
       finish: t('tour.controls.finish'),
       stepOf: (current: number, total: number): string => t('tour.progress', { current, total }),
-      dismissHint: t('tour.controls.dismissHint'),
       completeTitle: t('tour.complete.title'),
       completeDescription: t('tour.complete.description'),
       helpMenuTitle: t('header.helpGuide'),

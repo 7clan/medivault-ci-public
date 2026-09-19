@@ -859,7 +859,6 @@
   "tour.controls.skip": "Skip",
   "tour.controls.finish": "Finish",
   "tour.progress": "Step {current} of {total}",
-  "tour.controls.dismissHint": "Press Esc to leave the tour at any time",
   "tour.complete.title": "Tour complete",
   "tour.complete.description": "Find the guide again anytime under Help & Guide in the header.",
   "tour.help.subtitle": "Take a guided tour of MediVault",
