@@ -661,6 +661,11 @@ export function ImportPatientsDialog({
                   <span className="font-medium">lastName</span>{' '}
                   {t('importExport.formatHintSuffix')}
                 </p>
+                {/* DATAIO_IMPORT_BAD_DOB: visible DOB format hint — the server
+                    remains the enforcement point; this is guidance only. */}
+                <p className="text-[11px] text-muted-foreground mt-1.5">
+                  {t('importExport.dobFormatHint')}
+                </p>
               </motion.div>
             )}
           </div>

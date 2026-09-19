@@ -210,6 +210,7 @@
   "importExport.formatHintPrefix": "Only",
   "importExport.formatHintAnd": "and",
   "importExport.formatHintSuffix": "are required. Maximum 1,000 rows per import.",
+  "importExport.dobFormatHint": "Date of Birth must be a real calendar date in YYYY-MM-DD format (e.g. 1985-03-25), year 1900 or later, not in the future.",
   "importExport.importAnother": "Import Another",
   "importExport.importing": "Importing…",
   "importExport.importFailed": "Import Failed",
