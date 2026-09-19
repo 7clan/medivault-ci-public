@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { useToast } from '@/hooks/use-toast'
+import { classifyCameraError, type CameraErrorKind } from '@/lib/camera-errors'
 import { useAppStore, type PatientInfo } from '@/store/app-store'
 import { DOCUMENT_CATEGORIES } from '@/lib/utils-helpers'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -44,6 +45,7 @@ export function ScanCapture() {
   const [notes, setNotes] = useState('')
   const [uploading, setUploading] = useState(false)
   const [cameraActive, setCameraActive] = useState(false)
+  const [cameraError, setCameraError] = useState<{ title: string; desc: string } | null>(null)
   const [capturedImages, setCapturedImages] = useState<File[]>([])
   const [uploadedFiles, setUploadedFiles] = useState<File[]>([])
   const [cameraFacingMode, setCameraFacingMode] = useState<'environment' | 'user'>('environment')
@@ -82,7 +84,33 @@ export function ScanCapture() {
     return () => { mounted = false }
   }, [])
 
+  const cameraErrorMessage = (kind: CameraErrorKind): { title: string; desc: string } => {
+    switch (kind) {
+      case 'permission-denied':
+        return { title: t('scan.cameraDeniedTitle'), desc: t('scan.cameraDeniedDesc') }
+      case 'no-camera':
+        return { title: t('scan.cameraUnavailableTitle'), desc: t('scan.cameraUnavailableDesc') }
+      case 'camera-busy':
+        return { title: t('scan.cameraBusyTitle'), desc: t('scan.cameraBusyDesc') }
+      case 'not-supported':
+        return { title: t('scan.cameraNotSupportedTitle'), desc: t('scan.cameraNotSupportedDesc') }
+      default:
+        return { title: t('scan.cameraGenericTitle'), desc: t('scan.cameraGenericDesc') }
+    }
+  }
+
+  const showCameraError = (kind: CameraErrorKind) => {
+    const message = cameraErrorMessage(kind)
+    setCameraError(message)
+    toast({ title: message.title, description: message.desc, variant: 'destructive' })
+  }
+
   const startCamera = async () => {
+    setCameraError(null)
+    if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
+      showCameraError('not-supported')
+      return
+    }
     try {
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop())
@@ -95,7 +123,7 @@ export function ScanCapture() {
       setCameraActive(true)
     } catch (err) {
       console.error('Camera error:', err)
-      toast({ title: t('scan.cameraDeniedTitle'), description: t('scan.cameraDeniedDesc'), variant: 'destructive' })
+      showCameraError(classifyCameraError(err))
     }
   }
 
@@ -267,6 +295,17 @@ export function ScanCapture() {
               )}
             </div>
           </div>
+
+          {cameraError && (
+            <div
+              role="alert"
+              data-qa="camera-error"
+              className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 dark:border-red-900 dark:bg-red-950/30"
+            >
+              <p className="text-sm font-semibold text-red-800 dark:text-red-300">{cameraError.title}</p>
+              <p className="mt-1 text-sm text-red-700 dark:text-red-400">{cameraError.desc}</p>
+            </div>
+          )}
 
           {!cameraActive ? (
             <motion.button onClick={startCamera} className="w-full aspect-video rounded-xl bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-800 dark:to-gray-900 border-2 border-dashed border-emerald-300 dark:border-emerald-700 flex flex-col items-center justify-center gap-3 hover:border-emerald-400 dark:hover:border-emerald-600 transition-all duration-300 group relative overflow-hidden" whileHover={{ scale: 1.005 }} whileTap={{ scale: 0.995 }}>
