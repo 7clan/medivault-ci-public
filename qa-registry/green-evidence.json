@@ -1,8 +1,8 @@
 {
  "schema": "medivault.green-evidence-registry",
  "version": 1,
- "generated_utc": "2026-09-19T13:00:00Z",
- "generated_by": "wave-7 acceptance promotion (the P patients shard GREEN at 87f2fe3f)",
+ "generated_utc": "2026-09-20T19:45:00Z",
+ "generated_by": "the final acceptance promotion (no-build source acceptance run 35531494059 GREEN at 5f2666 — ACCEPTED FINAL SOFTWARE CANDIDATE)",
  "repositories": {
   "private": "7clan/medivault (branch platform/macos — the QA canonical)",
   "public_mirror": "7clan/medivault-ci-public (branch main — CI executes here)"
@@ -44,6 +44,49 @@
     "FEATURE D: English+Arabic/RTL i18n (921-key catalogs, medical-record content never modified)"
    ],
    "status": "ACCEPTED BASELINE — the wave-7 acceptance COMPLETE: the P patients regression (run 35435787789, EXPLORATORY-QA-GREEN-patients, zero P1/P2) greened at this exact SHA-256 on the harness-fixed (PD33-PD44, zero product changes) public main 2c9c167. Per the acceptance rule every same-DMG micro GREEN promotes from PROVISIONAL to ACCEPTED: the 7 wave-7 rerun shards (backup, viewer-pdf, viewer-image, camera, tour-ar, bulk-delete, save-pdf) + the 6 same-DMG frozen greens (print, csv-import-cancel, security, rtl, csv-export, tour-en) + the §12 finals re-proofs (tour-en run 35441003997 with PD44, security run 35440378070). ZERO real product bugs across wave 7."
+  },
+  "5f2666": {
+   "sha256": "5f2666415ceff54bcf72462d59a0e01f929404d68976701f8e61200502b46624",
+   "source_run": 35457105922,
+   "source_public_sha": "a676f1109515d9907d1e59c86cc9cb5ebc235e36 (the DMG build ref on final-fix/physical-mac; every later canonical ref differs only in harness/docs/registry — the product tree is identical)",
+   "artifact_id": 10588965807,
+   "artifact_name": "product-test-dmg-arm64 (MediVault-0.1.1-firstrun-arm64.dmg + .sha256 sidecar + smoke-screen.png; the contained DMG SHA-256 independently re-verified at download: NOT the artifact-ZIP digest)",
+   "contains_product_fixes": [
+    "P1 camera: NSCameraUsageDescription in the macOS bundle + specific camera failure UX (d34735a1a87ebd88463fd66d12a7163bc45d888e)",
+    "P2 print: native macOS print/PDF bridge — real PDF generation, secure temp lifecycle (UUID-named 0600 temp files, 24h startup sweep), native save dialog, loopback IPC capability (dea20459072ad6c3663fa547369b4bfb2d54d8fc)",
+    "P2 toast: the shadcn use-toast renderer mounted — one connected toast architecture (705579cdbe5d61e8695f8eeea772aff0930a522c)",
+    "P3 tour: the inoperative WKWebView Escape hint removed — visible Skip/Close controls are the supported exit (c73f465945948404791ef4d243dc49c62b94ed5f)",
+    "P3 DOB: strict calendar validation of CSV-import dates of birth — 1900+, not future (85bfa6d89b557dd07eea5d6efddbb06abef5105b)",
+    "P3 dedupe: the conservative duplicate contract — exact-identity within-file + existing-patient dedupe, always reported (9e154850e2928b736344c1b9d0efd165d19cad80)"
+   ],
+   "no_build_acceptance_run": 35531494059,
+   "final_private_sha": "5d08ffbe22854d4bd8a4801d209a2e7241c239f8 (7clan/medivault platform/macos — the landing of the validated final-fix/physical-mac)",
+   "final_public_sha": "aee58ca148927e754d178498d9ecc4e4de9d644c (7clan/medivault-ci-public main — the validated 819e7f6 fix tree + the canonical mirror snapshot)",
+   "cumulative_targeted_same_dmg_green_evidence": {
+    "count": 14,
+    "shards": [
+     "camera-permission-contract (run 35458579008 job 105938235271)",
+     "camera-software (run 35461389454 job 105945828196)",
+     "csv-import-dob (run 35466842685 job 105960665790)",
+     "csv-import-duplicate (run 35464211588 job 105953375366)",
+     "patients-smoke (run 35468738821 job 105965746624)",
+     "print-document (run 35464211588 job 105953375321)",
+     "print-prescription (run 35468738821 job 105965746584)",
+     "print-report (run 35466842685 job 105960665861)",
+     "save-pdf-document (run 35473232843 job 105977941054)",
+     "save-pdf-prescription (run 35466842685 job 105960665746)",
+     "save-pdf-report (run 35466842685 job 105960665726)",
+     "security-temp-files (run 35464211588 job 105953375441)",
+     "toast-feedback (run 35464211588 job 105953375337)",
+     "tour-escape (run 35458579008 job 105938235171)"
+    ],
+    "promotion": "all 14 PROVISIONAL -> ACCEPTED by the no-build source acceptance 35531494059 GREEN at this exact SHA-256 (the acceptance rule; the source run's red was D/ENV-classified — commit ad8edf3 documents the FaceTime classification — not a product regression)"
+   },
+   "historical_superseded_reds": {
+    "source_run_gui": "35457105922 GUI job 105936645260 [D/ENV — the GitHub-hosted macOS runner launched the FaceTime activation window over MediVault between the Password click and the Confirm lookup (17:27:06Z OCR); superseded by the no-build acceptance 35531494059, which re-encountered the FaceTime mode at the Confirm step and recovered via the corrected sysdialog cascade]",
+    "wave_chain": "runs 35458579008 / 35461389454 / 35464211588 / 35466842685 / 35468738821 / 35470266728 / 35471754892 [each red job a D-class harness iteration, superseded by the same capability's GREEN job; the 13 harness(D) commits a676f11..819e7f6 document every fix; ZERO product bugs across the chain]"
+   },
+   "status": "ACCEPTED FINAL SOFTWARE CANDIDATE — the no-build source acceptance run 35531494059 (micro:core-startup on canonical main aee58ca1, the corrected first-boot storm/FaceTime recovery harness; NO compile, NO package, NO Tauri build, NO DMG generation — artifact 10588965807 reused, SHA-256 proved in-shard) GREENED the full first-run chain: hash-verified install -> first launch -> SMAppService registration -> supervisor healthy -> PostgreSQL 127.0.0.1:55432 + API /ready=200 -> hand-off -> account creation (the BUG-PD34 submit ladder) -> the FaceTime mode itself re-encountered AND recovered (dismissed via its own Cancel at the Confirm step) -> language prompt (English) -> tour offer dismissed via the card's Skip -> dashboard reached -> quit/reopen -> clean teardown, no orphan regression; loopback-only binds re-proven. VERDICT GREEN with P0=0 P1=0 P2=0 P3=0 D=3 (non-stopping harness observations in the auxiliary theme/Display-Name surface probes) ENV=0. The 14 cumulative targeted same-DMG GREENs promote PROVISIONAL->ACCEPTED. Inherited frozen GREENs from the 87f2fe3f baseline remain valid per the impact map (the six fixes' affected capabilities were exactly the re-proven set): final security evidence = security (87f2fe3f) + security-temp-files + camera-permission-contract (5f2666); final print/save-PDF software evidence = the six print-*/save-pdf-* shards (5f2666); final camera software-path evidence = camera-software + camera-permission-contract (5f2666; camera hardware ENV on hosted runners, no fake camera); final Arabic/RTL evidence = tour-ar + rtl + csv-export GREEN (87f2fe3f, preserved) + the Arabic محمد fixtures inside csv-import-duplicate/csv-import-dob (5f2666); final bulk-patient evidence = the §20 bulk-delete matrix GREEN (87f2fe3f, preserved) + patients-smoke (5f2666); final import DOB/dedupe evidence = csv-import-dob + csv-import-duplicate (5f2666). PHYSICAL items remain PENDING and do NOT invalidate software QA: PHYSICAL CAMERA (clinic hardware), PHYSICAL PRINTER (clinic hardware), GATEKEEPER / real controlled-Mac installation."
   }
  },
  "environment_baseline": {
@@ -355,6 +398,172 @@
    "run_id": 35440378070,
    "date": "2026-09-19",
    "note": "GREEN"
+  },
+  {
+   "capability": "CORE / STARTUP — the FINAL no-build source acceptance (micro:core-startup = focus_surface): DMG hash-verified install, first launch, first-run setup control, SMAppService registration, supervisor + PostgreSQL (127.0.0.1:55432) + API (/ready=200) healthy, hand-off to the API-served frontend, account creation through the real setup form, first-boot storm/FaceTime recovery, language prompt + tour-offer gateway, dashboard reached, quit/reopen, clean teardown (no orphan regression), loopback-only security regression",
+   "verdict": "GREEN (EXPLORATORY-QA-GREEN-micro:core-startup; P0=0 P1=0 P2=0 P3=0 D=3-non-stopping ENV=0)",
+   "product_source_sha_public": "aee58ca148927e754d178498d9ecc4e4de9d644c (canonical main — harness/docs/registry-only delta from the a676f11 DMG product tree)",
+   "dmg_sha256": "5f2666415ceff54bcf72462d59a0e01f929404d68976701f8e61200502b46624",
+   "workflow": "Micro QA Parallel Wave (no-build: source_run_id=35457105922, micro_shards=core-startup, allow_in_progress_source=true)",
+   "run_id": 35531494059,
+   "job_id": 106132836799,
+   "artifact_id": 10612226176,
+   "date": "2026-09-20",
+   "note": "THE FINAL SOURCE ACCEPTANCE — supersedes the D/ENV FaceTime red of source run 35457105922 (GUI job 105936645260) at the same DMG SHA-256 and promotes every same-DMG targeted GREEN per the impact/freeze rules"
+  },
+  {
+   "capability": "camera permission contract — the PlistBuddy proof on the INSTALLED app's Info.plist: NSCameraUsageDescription verbatim 'MediVault uses the camera to scan patient documents.' + the minimal-permission audit (the camera key ONLY)",
+   "verdict": "GREEN (PROVISIONAL -> ACCEPTED by the final no-build source acceptance 35531494059 at the same DMG SHA-256)",
+   "product_source_sha_public": "ad8edf3 (harness-only on final-fix/physical-mac; the product tree is the frozen a676f11 DMG content)",
+   "dmg_sha256": "5f2666415ceff54bcf72462d59a0e01f929404d68976701f8e61200502b46624",
+   "workflow": "Micro QA Parallel Wave (the §12 final-fix targeted rerun)",
+   "run_id": 35458579008,
+   "job_id": 105938235271,
+   "date": "2026-09-19",
+   "note": "final camera permission evidence"
+  },
+  {
+   "capability": "camera software path — the classified, visible camera failure UX (no-camera / permission states rendered honestly)",
+   "verdict": "GREEN (PROVISIONAL -> ACCEPTED by the final no-build source acceptance 35531494059 at the same DMG SHA-256)",
+   "product_source_sha_public": "792e1bf (harness-only on final-fix/physical-mac; the product tree is the frozen a676f11 DMG content)",
+   "dmg_sha256": "5f2666415ceff54bcf72462d59a0e01f929404d68976701f8e61200502b46624",
+   "workflow": "Micro QA Parallel Wave (the §12 final-fix targeted rerun)",
+   "run_id": 35461389454,
+   "job_id": 105945828196,
+   "date": "2026-09-19",
+   "note": "final camera software-path evidence (hardware remains a hosted-runner ENV record — no fake camera)"
+  },
+  {
+   "capability": "CSV import DOB validation — invalid/impossible dates of birth rejected (strict calendar, 1900+, not future)",
+   "verdict": "GREEN (PROVISIONAL -> ACCEPTED by the final no-build source acceptance 35531494059 at the same DMG SHA-256)",
+   "product_source_sha_public": "5997b1f (harness-only on final-fix/physical-mac; the product tree is the frozen a676f11 DMG content)",
+   "dmg_sha256": "5f2666415ceff54bcf72462d59a0e01f929404d68976701f8e61200502b46624",
+   "workflow": "Micro QA Parallel Wave (the §12 final-fix targeted rerun)",
+   "run_id": 35466842685,
+   "job_id": 105960665790,
+   "date": "2026-09-19",
+   "note": "final import DOB evidence (resolves DATAIO_IMPORT_BAD_DOB)"
+  },
+  {
+   "capability": "CSV import dedupe — the conservative duplicate contract (exact-identity within-file + existing-patient; present-on-one-side != match; always reported; Arabic محمد fixtures exercised)",
+   "verdict": "GREEN (PROVISIONAL -> ACCEPTED by the final no-build source acceptance 35531494059 at the same DMG SHA-256)",
+   "product_source_sha_public": "bb42920 (harness-only on final-fix/physical-mac; the product tree is the frozen a676f11 DMG content)",
+   "dmg_sha256": "5f2666415ceff54bcf72462d59a0e01f929404d68976701f8e61200502b46624",
+   "workflow": "Micro QA Parallel Wave (the §12 final-fix targeted rerun)",
+   "run_id": 35464211588,
+   "job_id": 105953375366,
+   "date": "2026-09-19",
+   "note": "final import dedupe evidence (resolves DATAIO_IMPORT_NO_DEDUPE)"
+  },
+  {
+   "capability": "the light patients regression (the post-DOB/dedupe-fix safety re-check of the patient family)",
+   "verdict": "GREEN (PROVISIONAL -> ACCEPTED by the final no-build source acceptance 35531494059 at the same DMG SHA-256)",
+   "product_source_sha_public": "ad991a8 (harness-only on final-fix/physical-mac; the product tree is the frozen a676f11 DMG content)",
+   "dmg_sha256": "5f2666415ceff54bcf72462d59a0e01f929404d68976701f8e61200502b46624",
+   "workflow": "Micro QA Parallel Wave (the §12 final-fix targeted rerun)",
+   "run_id": 35468738821,
+   "job_id": 105965746624,
+   "date": "2026-09-19",
+   "note": "patients family safety re-check on the final candidate"
+  },
+  {
+   "capability": "native print bridge — document path (pdf-lib generation -> secure temp PDF -> /usr/bin/open Preview)",
+   "verdict": "GREEN (PROVISIONAL -> ACCEPTED by the final no-build source acceptance 35531494059 at the same DMG SHA-256)",
+   "product_source_sha_public": "bb42920 (harness-only on final-fix/physical-mac; the product tree is the frozen a676f11 DMG content)",
+   "dmg_sha256": "5f2666415ceff54bcf72462d59a0e01f929404d68976701f8e61200502b46624",
+   "workflow": "Micro QA Parallel Wave (the §12 final-fix targeted rerun)",
+   "run_id": 35464211588,
+   "job_id": 105953375321,
+   "date": "2026-09-19",
+   "note": "final print software evidence (document)"
+  },
+  {
+   "capability": "native print bridge — report path (pdf-lib generation + the native bridge)",
+   "verdict": "GREEN (PROVISIONAL -> ACCEPTED by the final no-build source acceptance 35531494059 at the same DMG SHA-256)",
+   "product_source_sha_public": "5997b1f (harness-only on final-fix/physical-mac; the product tree is the frozen a676f11 DMG content)",
+   "dmg_sha256": "5f2666415ceff54bcf72462d59a0e01f929404d68976701f8e61200502b46624",
+   "workflow": "Micro QA Parallel Wave (the §12 final-fix targeted rerun)",
+   "run_id": 35466842685,
+   "job_id": 105960665861,
+   "date": "2026-09-19",
+   "note": "final print software evidence (report)"
+  },
+  {
+   "capability": "native print bridge — prescription path (pdf-lib generation + the native bridge)",
+   "verdict": "GREEN (PROVISIONAL -> ACCEPTED by the final no-build source acceptance 35531494059 at the same DMG SHA-256)",
+   "product_source_sha_public": "ad991a8 (harness-only on final-fix/physical-mac; the product tree is the frozen a676f11 DMG content)",
+   "dmg_sha256": "5f2666415ceff54bcf72462d59a0e01f929404d68976701f8e61200502b46624",
+   "workflow": "Micro QA Parallel Wave (the §12 final-fix targeted rerun)",
+   "run_id": 35468738821,
+   "job_id": 105965746584,
+   "date": "2026-09-19",
+   "note": "final print software evidence (prescription)"
+  },
+  {
+   "capability": "native save panel — document path (real filename typed over the pre-filled name + Replace-confirmation handling)",
+   "verdict": "GREEN (PROVISIONAL -> ACCEPTED by the final no-build source acceptance 35531494059 at the same DMG SHA-256)",
+   "product_source_sha_public": "819e7f6 (harness-only on final-fix/physical-mac; the product tree is the frozen a676f11 DMG content)",
+   "dmg_sha256": "5f2666415ceff54bcf72462d59a0e01f929404d68976701f8e61200502b46624",
+   "workflow": "Micro QA Parallel Wave (the §12 final-fix targeted rerun)",
+   "run_id": 35473232843,
+   "job_id": 105977941054,
+   "date": "2026-09-19",
+   "note": "final save-PDF software evidence (document) — the last §12 shard to green (8th attempt)"
+  },
+  {
+   "capability": "native save panel — prescription path",
+   "verdict": "GREEN (PROVISIONAL -> ACCEPTED by the final no-build source acceptance 35531494059 at the same DMG SHA-256)",
+   "product_source_sha_public": "5997b1f (harness-only on final-fix/physical-mac; the product tree is the frozen a676f11 DMG content)",
+   "dmg_sha256": "5f2666415ceff54bcf72462d59a0e01f929404d68976701f8e61200502b46624",
+   "workflow": "Micro QA Parallel Wave (the §12 final-fix targeted rerun)",
+   "run_id": 35466842685,
+   "job_id": 105960665746,
+   "date": "2026-09-19",
+   "note": "final save-PDF software evidence (prescription)"
+  },
+  {
+   "capability": "native save panel — report path",
+   "verdict": "GREEN (PROVISIONAL -> ACCEPTED by the final no-build source acceptance 35531494059 at the same DMG SHA-256)",
+   "product_source_sha_public": "5997b1f (harness-only on final-fix/physical-mac; the product tree is the frozen a676f11 DMG content)",
+   "dmg_sha256": "5f2666415ceff54bcf72462d59a0e01f929404d68976701f8e61200502b46624",
+   "workflow": "Micro QA Parallel Wave (the §12 final-fix targeted rerun)",
+   "run_id": 35466842685,
+   "job_id": 105960665726,
+   "date": "2026-09-19",
+   "note": "final save-PDF software evidence (report)"
+  },
+  {
+   "capability": "the PHI temp lifecycle (print/save temp files: 0600 UUID-named in a 0700 dir, 24h startup sweep, no leakage)",
+   "verdict": "GREEN (PROVISIONAL -> ACCEPTED by the final no-build source acceptance 35531494059 at the same DMG SHA-256)",
+   "product_source_sha_public": "bb42920 (harness-only on final-fix/physical-mac; the product tree is the frozen a676f11 DMG content)",
+   "dmg_sha256": "5f2666415ceff54bcf72462d59a0e01f929404d68976701f8e61200502b46624",
+   "workflow": "Micro QA Parallel Wave (the §12 final-fix targeted rerun)",
+   "run_id": 35464211588,
+   "job_id": 105953375441,
+   "date": "2026-09-19",
+   "note": "final security evidence (temp-file PHI lifecycle) alongside the preserved 87f2fe3f security pass"
+  },
+  {
+   "capability": "the mounted shadcn toast renderer — visible feedback (one connected toast architecture)",
+   "verdict": "GREEN (PROVISIONAL -> ACCEPTED by the final no-build source acceptance 35531494059 at the same DMG SHA-256)",
+   "product_source_sha_public": "bb42920 (harness-only on final-fix/physical-mac; the product tree is the frozen a676f11 DMG content)",
+   "dmg_sha256": "5f2666415ceff54bcf72462d59a0e01f929404d68976701f8e61200502b46624",
+   "workflow": "Micro QA Parallel Wave (the §12 final-fix targeted rerun)",
+   "run_id": 35464211588,
+   "job_id": 105953375337,
+   "date": "2026-09-19",
+   "note": "final toast feedback evidence"
+  },
+  {
+   "capability": "the visible-control tour exit (the inoperative WKWebView Esc hint removed; the card's Skip works)",
+   "verdict": "GREEN (PROVISIONAL -> ACCEPTED by the final no-build source acceptance 35531494059 at the same DMG SHA-256)",
+   "product_source_sha_public": "ad8edf3 (harness-only on final-fix/physical-mac; the product tree is the frozen a676f11 DMG content)",
+   "dmg_sha256": "5f2666415ceff54bcf72462d59a0e01f929404d68976701f8e61200502b46624",
+   "workflow": "Micro QA Parallel Wave (the §12 final-fix targeted rerun)",
+   "run_id": 35458579008,
+   "job_id": 105938235171,
+   "date": "2026-09-19",
+   "note": "resolves TOUR_ESC_HINT_INOPERATIVE"
   }
  ],
  "frozen_green_platform_stages": [
@@ -417,10 +626,14 @@
  ],
  "open_items_not_yet_frozen": [
   {
-   "capability": "print family (window.print/window.open inoperative in WKWebView) — documented next-round product gap, P3 backlog"
+   "capability": "print family (window.print/window.open inoperative in WKWebView) — documented next-round product gap, P3 backlog",
+   "resolution": "RESOLVED on the final candidate 5f2666 by the native macOS print/PDF bridge (dea2045): print-document / print-report / print-prescription + save-pdf-document / save-pdf-report / save-pdf-prescription all GREEN (see frozen_green). The physical printer remains a clinic-hardware item.",
+   "resolved_utc": "2026-09-20T19:34:10Z"
   },
   {
-   "capability": "P3 product backlog: DATAIO_IMPORT_NO_DEDUPE (identical rows import twice), DATAIO_IMPORT_BAD_DOB ('not-a-date' accepted verbatim)"
+   "capability": "P3 product backlog: DATAIO_IMPORT_NO_DEDUPE (identical rows import twice), DATAIO_IMPORT_BAD_DOB ('not-a-date' accepted verbatim)",
+   "resolution": "RESOLVED on the final candidate 5f2666: fix(import) 85bfa6d (strict DOB calendar validation) + fix(import) 9e15485 (conservative exact-identity dedupe) — micro:csv-import-dob + micro:csv-import-duplicate both GREEN (see frozen_green).",
+   "resolved_utc": "2026-09-20T19:34:10Z"
   },
   {
    "capability": "de1-de4 ENV family (physical printer absent on hosted runners)"
@@ -437,7 +650,21 @@
   },
   {
    "capability": "P3 product backlog (wave-7 additions): TOUR_ESC_HINT_INOPERATIVE — the welcome card's 'Press Esc to leave' hint does not work in the WKWebView/Tauri build (keyboard delivery; the component's keydown logic passes its unit tests) — verify on the clinic machine, then remove the hint or wire the native key event",
-   "class": "P3"
+   "class": "P3",
+   "resolution": "RESOLVED on the final candidate 5f2666: fix(tour) c73f465 removed the inoperative Esc hint (the visible Skip control retained) — micro:tour-escape GREEN (see frozen_green).",
+   "resolved_utc": "2026-09-20T19:34:10Z"
+  },
+  {
+   "capability": "PHYSICAL CAMERA validation — PENDING until tested on actual clinic hardware (software path proven on 5f2666: camera-software + camera-permission-contract GREEN; hosted-runner camera hardware is an honest ENV record, no fake camera was ever used)",
+   "class": "PHYSICAL-PENDING"
+  },
+  {
+   "capability": "PHYSICAL PRINTER validation — PENDING until tested on actual clinic hardware (software path proven on 5f2666: the six print/save-pdf native-bridge shards GREEN)",
+   "class": "PHYSICAL-PENDING"
+  },
+  {
+   "capability": "GATEKEEPER / real controlled-Mac installation — PENDING until performed on the actual target Mac (the frozen gui-acceptance-ci campaign remains the separate public-distribution-path proof; PRODUCT_FUNCTIONAL_TEST_INSTALL is non-quarantined by construction)",
+   "class": "PHYSICAL-PENDING"
   }
  ],
  "rules": {
