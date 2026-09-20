@@ -206,11 +206,13 @@ const FLOW_PINS: FlowPin[] = [
     ],
   },
   {
-    flow: 'Camera permission failure',
+    flow: 'Camera permission failure (classified UX — ff-2a merge)',
     file: 'src/components/scan-capture.tsx',
     needles: [
       { what: 'store import', re: /from ['"]@\/hooks\/use-toast['"]/ },
-      { what: 'camera-denied toast (destructive)', re: /toast\(\{ title: t\('scan\.cameraDeniedTitle'\), description: t\('scan\.cameraDeniedDesc'\), variant: 'destructive' \}\)/ },
+      { what: 'classified error path', re: /showCameraError\(classifyCameraError\(err\)\)/ },
+      { what: 'destructive toast for every camera failure class', re: /toast\(\{ title: message\.title, description: message\.desc, variant: 'destructive' \}\)/ },
+      { what: 'permission-denied message mapping', re: /title: t\('scan\.cameraDeniedTitle'\), desc: t\('scan\.cameraDeniedDesc'\)/ },
     ],
   },
   {
