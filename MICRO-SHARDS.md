@@ -28,6 +28,20 @@ inputs:
   sibling_run_ids:  <optional earlier run ids whose qa-* evidence joins the gallery>
 ```
 
+Campaign note (the 5f2666 final candidate): the final acceptance run
+35531494059 was dispatched with `allow_in_progress_source=true` because its
+owning source run 35457105922 had completed RED — a red later proven and
+reclassified as D/ENV macOS-runner interference (the FaceTime activation
+window; commit ad8edf3), not a product regression. For this campaign the
+generic PROVISIONAL marker implied by that gate mode is therefore superseded
+by the explicit replacement-acceptance rule recorded in
+`qa-registry/green-evidence.json` (`rules.replacement_acceptance`):
+35531494059 reused and hash-verified the SAME immutable DMG (5f2666…) and
+GREENed core-startup — including re-encountering and recovering from the
+FaceTime mode — making it the replacement acceptance authority. The source
+run 35457105922 itself remains completed/failure historically; it is NOT
+claimed GREEN.
+
 Each matrix entry = **ONE micro shard on its OWN clean macOS VM** (the
 harness's FRESH_STATE gateway demands a pristine runner per invocation),
 proves the frozen DMG SHA-256 itself before launch, runs the FULL gateway
